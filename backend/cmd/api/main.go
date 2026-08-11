@@ -295,16 +295,8 @@ func main() {
 		logger.Error("configure portrait repository", "error", err)
 		os.Exit(1)
 	}
-	portraitGenerator := einoagent.NewConfigurablePortraitGenerator(adminAIConfigService, einoagent.Config{
-		Enabled:       cfg.EinoEnabled,
-		BaseURL:       cfg.EinoBaseURL,
-		APIKey:        cfg.EinoAPIKey,
-		Model:         cfg.EinoModel,
-		Timeout:       cfg.EinoTimeout,
-		Temperature:   cfg.EinoTemperature,
-		MaxTokens:     cfg.EinoMaxTokens,
-		MaxIterations: cfg.EinoMaxIterations,
-	})
+	einoConfig := defaultEinoConfig(cfg)
+	portraitGenerator := einoagent.NewConfigurablePortraitGenerator(adminAIConfigService, einoConfig)
 	portraitService, err := portraitapp.NewService(portraitRepo, portraitapp.WithGenerator(portraitGenerator))
 	if err != nil {
 		logger.Error("configure portrait service", "error", err)
@@ -321,51 +313,15 @@ func main() {
 		logger.Error("configure exercise repository", "error", err)
 		os.Exit(1)
 	}
-	mathSolver := einoagent.NewConfigurableMathSolver(adminAIConfigService, einoagent.Config{
-		Enabled:       cfg.EinoEnabled,
-		BaseURL:       cfg.EinoBaseURL,
-		APIKey:        cfg.EinoAPIKey,
-		Model:         cfg.EinoModel,
-		Timeout:       cfg.EinoTimeout,
-		Temperature:   cfg.EinoTemperature,
-		MaxTokens:     cfg.EinoMaxTokens,
-		MaxIterations: cfg.EinoMaxIterations,
-	})
-	answerOCRRecognizer := einoagent.NewConfigurableAnswerOCR(adminAIConfigService, einoagent.Config{
-		Enabled:       cfg.EinoEnabled,
-		BaseURL:       cfg.EinoBaseURL,
-		APIKey:        cfg.EinoAPIKey,
-		Model:         cfg.EinoModel,
-		Timeout:       cfg.EinoTimeout,
-		Temperature:   cfg.EinoTemperature,
-		MaxTokens:     cfg.EinoMaxTokens,
-		MaxIterations: cfg.EinoMaxIterations,
-	})
+	mathSolver := einoagent.NewConfigurableMathSolver(adminAIConfigService, einoConfig)
+	answerOCRRecognizer := einoagent.NewConfigurableAnswerOCR(adminAIConfigService, einoConfig)
 	answerOCRService, err := answerocrapp.NewService(uploadStorage, answerOCRRecognizer)
 	if err != nil {
 		logger.Error("configure answer OCR service", "error", err)
 		os.Exit(1)
 	}
-	diagnostician := einoagent.NewConfigurableDiagnostician(adminAIConfigService, einoagent.Config{
-		Enabled:       cfg.EinoEnabled,
-		BaseURL:       cfg.EinoBaseURL,
-		APIKey:        cfg.EinoAPIKey,
-		Model:         cfg.EinoModel,
-		Timeout:       cfg.EinoTimeout,
-		Temperature:   cfg.EinoTemperature,
-		MaxTokens:     cfg.EinoMaxTokens,
-		MaxIterations: cfg.EinoMaxIterations,
-	})
-	questionGenerator := einoagent.NewConfigurableQuestionGenerator(adminAIConfigService, einoagent.Config{
-		Enabled:       cfg.EinoEnabled,
-		BaseURL:       cfg.EinoBaseURL,
-		APIKey:        cfg.EinoAPIKey,
-		Model:         cfg.EinoModel,
-		Timeout:       cfg.EinoTimeout,
-		Temperature:   cfg.EinoTemperature,
-		MaxTokens:     cfg.EinoMaxTokens,
-		MaxIterations: cfg.EinoMaxIterations,
-	})
+	diagnostician := einoagent.NewConfigurableDiagnostician(adminAIConfigService, einoConfig)
+	questionGenerator := einoagent.NewConfigurableQuestionGenerator(adminAIConfigService, einoConfig)
 	exerciseService, err := exerciseapp.NewService(
 		exerciseRepo,
 		exerciseapp.SolverAnswerChecker{Solver: mathSolver},
@@ -474,16 +430,7 @@ func main() {
 		logger.Error("configure session repository", "error", err)
 		os.Exit(1)
 	}
-	tutorAgent := einoagent.NewConfigurableTutorAgent(adminAIConfigService, einoagent.Config{
-		Enabled:       cfg.EinoEnabled,
-		BaseURL:       cfg.EinoBaseURL,
-		APIKey:        cfg.EinoAPIKey,
-		Model:         cfg.EinoModel,
-		Timeout:       cfg.EinoTimeout,
-		Temperature:   cfg.EinoTemperature,
-		MaxTokens:     cfg.EinoMaxTokens,
-		MaxIterations: cfg.EinoMaxIterations,
-	})
+	tutorAgent := einoagent.NewConfigurableTutorAgent(adminAIConfigService, einoConfig)
 	sessionService, err := sessionapp.NewService(
 		sessionRepo,
 		sessionapp.WithChatAgent(tutorAgent),
@@ -518,16 +465,7 @@ func main() {
 		logger.Error("configure question repository", "error", err)
 		os.Exit(1)
 	}
-	questionParser := einoagent.NewConfigurableQuestionParser(adminAIConfigService, einoagent.Config{
-		Enabled:       cfg.EinoEnabled,
-		BaseURL:       cfg.EinoBaseURL,
-		APIKey:        cfg.EinoAPIKey,
-		Model:         cfg.EinoModel,
-		Timeout:       cfg.EinoTimeout,
-		Temperature:   cfg.EinoTemperature,
-		MaxTokens:     cfg.EinoMaxTokens,
-		MaxIterations: cfg.EinoMaxIterations,
-	})
+	questionParser := einoagent.NewConfigurableQuestionParser(adminAIConfigService, einoConfig)
 	questionService, err := questionapp.NewService(questionRepo, questionapp.WithParser(questionParser))
 	if err != nil {
 		logger.Error("configure question service", "error", err)
@@ -1061,6 +999,19 @@ func newLogger(cfg config.Config) *slog.Logger {
 		level = slog.LevelDebug
 	}
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+}
+
+func defaultEinoConfig(cfg config.Config) einoagent.Config {
+	return einoagent.Config{
+		Enabled:       cfg.EinoEnabled,
+		BaseURL:       cfg.EinoBaseURL,
+		APIKey:        cfg.EinoAPIKey,
+		Model:         cfg.EinoModel,
+		Timeout:       cfg.EinoTimeout,
+		Temperature:   cfg.EinoTemperature,
+		MaxTokens:     cfg.EinoMaxTokens,
+		MaxIterations: cfg.EinoMaxIterations,
+	}
 }
 
 func requireSharedRedis(ctx context.Context, cfg config.Config, redisClient *goredis.Client) error {
