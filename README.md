@@ -87,7 +87,6 @@ Windows 也可以运行根目录的 `start.bat` 同时启动前后端。默认�
 ├── docs/                  # 当前技术文档、待办和历史归档
 ├── scripts/               # 已有环境的生产升级脚本
 ├── docker-compose.yml     # PostgreSQL、Redis、Go API、前端编排
-├── nginx-site.conf        # 站点反向代理配置
 └── .env.example           # 唯一环境变量模板
 ```
 

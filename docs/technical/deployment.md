@@ -19,7 +19,7 @@ PostgreSQL、Redis 和 Go API 默认只绑定宿主机回环地址；前端默�
 Copy-Item .env.example .env
 ```
 
-生产环境至少要替换数据库密码、`JWT_SECRET_KEY`、`FERNET_SECRET_KEY`、初始管理员密码、CORS 和管理网段。对象存储后端与云存储凭据不从 `.env` 读取，首次部署后由管理员在“系统设置 > 存储设置”中测试并保存；数据库中的 Access Key 和 Secret Key 使用 `FERNET_SECRET_KEY` 加密，因此该密钥必须稳定保存，不能在重启时轮换或留空。设置 `ENVIRONMENT=production`，不要把开发密钥或真实 `.env` 提交到仓库。启用公众号时还必须按消息模式设置 `WECHAT_OFFICIAL_ACCOUNT_*` 配置；`APP_SECRET`、`TOKEN` 和非明文模式使用的 `AES_KEY` 应由部署密钥系统或权限收紧的 `.env` 提供，不能写入镜像、Compose 文件或版本库。任何凭据出现在截图、日志或聊天记录中都视为泄露，应先在对应供应商控制台轮换再部署。
+使用 Compose 前必须在 `.env` 中显式设置每个环境唯一的随机 `POSTGRES_PASSWORD`；非开发环境会拒绝空值、占位值、与用户名相同或少于 16 字节的密码。生产环境还必须替换 `JWT_SECRET_KEY`、`FERNET_SECRET_KEY`、初始管理员密码、CORS 和管理网段。对象存储后端与云存储凭据不从 `.env` 读取，首次部署后由管理员在“系统设置 > 存储设置”中测试并保存；数据库中的 Access Key 和 Secret Key 使用 `FERNET_SECRET_KEY` 加密，因此该密钥必须稳定保存，不能在重启时轮换或留空。设置 `ENVIRONMENT=production`，不要把开发密钥或真实 `.env` 提交到仓库。启用公众号时还必须按消息模式设置 `WECHAT_OFFICIAL_ACCOUNT_*` 配置；`APP_SECRET`、`TOKEN` 和非明文模式使用的 `AES_KEY` 应由部署密钥系统或权限收紧的 `.env` 提供，不能写入镜像、Compose 文件或版本库。任何凭据出现在截图、日志或聊天记录中都视为泄露，应先在对应供应商控制台轮换再部署。
 
 对象存储运行配置遵循以下操作契约：
 
@@ -124,7 +124,7 @@ ORDER BY version;
 
 ## 反向代理
 
-`frontend/nginx.conf` 负责前端容器内的静态资源和 API 转发，根目录 `nginx-site.conf` 可用于站点级反向代理。部署时应确认：
+`frontend/nginx.conf` 负责前端容器内的静态资源和 API 转发。站点级边缘代理由各部署环境独立管理，不从仓库示例配置覆盖。部署时应确认：
 
 默认请求超时按工作负载分层：
 
@@ -146,7 +146,7 @@ ORDER BY version;
 - TLS、HSTS、CSP 和其他安全响应头由边缘代理统一设置；
 - `/metrics` 和详细健康信息只对管理网络开放。
 
-首次部署时需由运维人员基于 `nginx-site.conf` 配置站点；`scripts/update.sh` 不修改 Nginx。已经部署的服务器不会因代码更新自动改写 `/etc/nginx`；应先用 `sudo nginx -T` 确认实际生效的站点文件，再将 `/api/` location 中的 `proxy_read_timeout` 调整为 `300s`，随后执行：
+首次部署时需由运维人员在实际的边缘代理中配置站点；`scripts/update.sh` 不修改 Nginx。已经部署的服务器不会因代码更新自动改写 `/etc/nginx`；应先用 `sudo nginx -T` 确认实际生效的站点文件，再将 `/api/` location 中的 `proxy_read_timeout` 调整为 `300s`，随后执行：
 
 ```bash
 sudo nginx -t

@@ -22,6 +22,7 @@ const (
 	defaultAPIPrefix         = "/api/v1"
 	defaultJWTSecretKey      = "your-secret-key-change-in-production"
 	defaultAdminPassword     = "admin123"
+	minProductionDBPassBytes = 16
 	minProductionSecretBytes = 32
 	maxWechatTemplateIDBytes = 256
 )
@@ -172,7 +173,7 @@ func Load() (Config, error) {
 		PostgresHost:              envString("POSTGRES_HOST", "localhost"),
 		PostgresPort:              envInt("POSTGRES_PORT", 5432),
 		PostgresUser:              envString("POSTGRES_USER", "postgres"),
-		PostgresPassword:          envString("POSTGRES_PASSWORD", "postgres"),
+		PostgresPassword:          envString("POSTGRES_PASSWORD", ""),
 		PostgresDB:                envString("POSTGRES_DB", "math_platform"),
 		DBPoolSize:                envInt("DB_POOL_SIZE", 12),
 		DBPoolMinConns:            envInt("DB_POOL_MIN_CONNS", 0),
@@ -264,6 +265,9 @@ func Load() (Config, error) {
 	}
 	if cfg.DBPoolMinConns > cfg.DBPoolSize {
 		return Config{}, errors.New("DB_POOL_MIN_CONNS must not exceed DB_POOL_SIZE")
+	}
+	if err := validateProductionDatabaseConfig(cfg); err != nil {
+		return Config{}, err
 	}
 	if cfg.RedisMaxConnections <= 0 {
 		return Config{}, errors.New("REDIS_MAX_CONNECTIONS must be greater than 0")
@@ -589,6 +593,19 @@ func validateProductionAuthConfig(cfg Config) error {
 	}
 	if !strongConfigPassword(adminPassword) {
 		return errors.New("ADMIN_PASSWORD must be 8-72 bytes and include uppercase, lowercase, digit, and special characters outside development")
+	}
+	return nil
+}
+
+func validateProductionDatabaseConfig(cfg Config) error {
+	if !isStrictEnvironment(cfg.Environment) {
+		return nil
+	}
+	password := strings.TrimSpace(cfg.PostgresPassword)
+	if len([]byte(password)) < minProductionDBPassBytes || placeholderSecret(password) ||
+		strings.EqualFold(password, "postgres") || strings.EqualFold(password, "password") ||
+		strings.EqualFold(password, strings.TrimSpace(cfg.PostgresUser)) {
+		return errors.New("POSTGRES_PASSWORD must be a non-placeholder password with at least 16 bytes outside development")
 	}
 	return nil
 }
