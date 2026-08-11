@@ -238,7 +238,7 @@ export async function loadStudentHomeData(): Promise<PersonalHomeData> {
   const [overviewResult, masteryResult, sessionsResult, classResult, dailyQuestionResult] = await Promise.allSettled([
     apiClient.get<StudentOverviewResponse>('/progress/overview').then((response) => response.data),
     apiClient.get<StudentMasteryResponse>('/progress/mastery').then((response) => response.data),
-    sessionService.getSessions(4, 0),
+    sessionService.getSessions(4, 0, { withUserMessages: true }),
     classService.getMyClass(),
     dailyQuestionService.getToday(),
   ]);

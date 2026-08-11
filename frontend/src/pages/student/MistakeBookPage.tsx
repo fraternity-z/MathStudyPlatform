@@ -136,11 +136,11 @@ function QuestionPreview({ exercise }: { exercise: MistakeExercise }) {
   }
 
   return (
-    <div className="min-w-0 max-w-full space-y-2">
+    <div className="min-w-0 max-w-full space-y-2 text-left [&_.katex-display]:text-left [&_.katex-display_.katex]:text-left">
       <ExerciseMathContent
         value={normalizedContent}
         block
-        className="line-clamp-3 text-base font-semibold leading-7 text-surface-900 dark:text-surface-100"
+        className="w-fit line-clamp-3 text-base font-semibold leading-7 text-surface-900 dark:text-surface-100"
       />
     </div>
   );
