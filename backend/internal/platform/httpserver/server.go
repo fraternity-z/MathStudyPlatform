@@ -2,11 +2,8 @@ package httpserver
 
 import (
 	"log/slog"
-	"mime"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,7 +11,6 @@ import (
 	"mathstudy/backend/internal/platform/health"
 	"mathstudy/backend/internal/platform/metrics"
 	"mathstudy/backend/internal/platform/middleware"
-	"mathstudy/backend/internal/platform/uploadpath"
 )
 
 // RouteRegistrar attaches business routes to the shared mux.
@@ -45,13 +41,6 @@ func NewHandler(cfg config.Config, logger *slog.Logger, checker health.Checker, 
 		}
 	}
 
-	uploadsDir, err := filepath.Abs(cfg.UploadsDir)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(uploadsDir, 0o750); err != nil {
-		return nil, err
-	}
 	managementAccess, err := newManagementAccess(cfg.ManagementAllowedCIDRs)
 	if err != nil {
 		return nil, err
@@ -86,7 +75,6 @@ func NewHandler(cfg config.Config, logger *slog.Logger, checker health.Checker, 
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(store.Render()))
 	})
-	mux.Handle("/uploads/", http.StripPrefix("/uploads/", uploadsFileHandler(uploadsDir)))
 	for _, registrar := range options.registrars {
 		registrar(mux)
 	}
@@ -206,36 +194,6 @@ func notFoundHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
-}
-
-func uploadsFileHandler(root string) http.Handler {
-	fs := http.Dir(root)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
-			return
-		}
-		cleanPath, ok := uploadpath.CleanServablePath(r.URL.Path)
-		if !ok {
-			writeError(w, http.StatusNotFound, "NOT_FOUND", "uploaded file not found")
-			return
-		}
-		file, err := fs.Open(cleanPath)
-		if err != nil {
-			writeError(w, http.StatusNotFound, "NOT_FOUND", "uploaded file not found")
-			return
-		}
-		defer file.Close()
-		stat, err := file.Stat()
-		if err != nil || stat.IsDir() {
-			writeError(w, http.StatusNotFound, "NOT_FOUND", "uploaded file not found")
-			return
-		}
-		if uploadpath.IsDocumentKey(cleanPath) {
-			w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": stat.Name()}))
-		}
-		http.ServeContent(w, r, stat.Name(), stat.ModTime(), file)
-	})
 }
 
 type managementAccess struct {

@@ -15,6 +15,8 @@ import (
 	"mathstudy/backend/internal/platform/redact"
 )
 
+const maxListPage = 100
+
 // Service is the administrator AI risk-control application surface.
 type Service interface {
 	GetOverview(context.Context) (airiskapp.Overview, error)
@@ -105,7 +107,7 @@ func (h *Handler) listStudents(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireAdmin(w, r); !ok {
 		return
 	}
-	page, ok := boundedInt(w, r.URL.Query().Get("page"), 1, 1, 1_000_000, "page")
+	page, ok := boundedInt(w, r.URL.Query().Get("page"), 1, 1, maxListPage, "page")
 	if !ok {
 		return
 	}
@@ -152,7 +154,7 @@ func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireAdmin(w, r); !ok {
 		return
 	}
-	page, ok := boundedInt(w, r.URL.Query().Get("page"), 1, 1, 1_000_000, "page")
+	page, ok := boundedInt(w, r.URL.Query().Get("page"), 1, 1, maxListPage, "page")
 	if !ok {
 		return
 	}

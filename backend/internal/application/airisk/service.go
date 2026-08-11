@@ -21,6 +21,7 @@ const (
 	defaultMaxConcurrency  = 2
 	defaultLeaseTTL        = 10 * time.Minute
 	maxBlockedKeywords     = 100
+	maxListPage            = 100
 )
 
 var modelReviewCategoryOrder = []string{
@@ -177,7 +178,7 @@ func (s *Service) ListStudents(ctx context.Context, filter StudentListFilter) (S
 		Total:      total,
 		Page:       filter.Page,
 		PageSize:   filter.PageSize,
-		TotalPages: numutil.TotalPages(total, filter.PageSize),
+		TotalPages: min(numutil.TotalPages(total, filter.PageSize), maxListPage),
 	}, nil
 }
 
@@ -236,7 +237,7 @@ func (s *Service) ListRiskEvents(ctx context.Context, filter EventListFilter) (E
 		Total:      total,
 		Page:       filter.Page,
 		PageSize:   filter.PageSize,
-		TotalPages: numutil.TotalPages(total, filter.PageSize),
+		TotalPages: min(numutil.TotalPages(total, filter.PageSize), maxListPage),
 	}, nil
 }
 
@@ -385,7 +386,7 @@ func normalizeStudentFilter(filter StudentListFilter) (StudentListFilter, error)
 	if filter.PageSize == 0 {
 		filter.PageSize = 20
 	}
-	if filter.Page < 1 || filter.PageSize < 1 || filter.PageSize > 100 {
+	if filter.Page < 1 || filter.Page > maxListPage || filter.PageSize < 1 || filter.PageSize > 100 {
 		return StudentListFilter{}, badRequest("分页参数超出范围")
 	}
 	filter.Search = strings.TrimSpace(filter.Search)
@@ -408,7 +409,7 @@ func normalizeEventFilter(filter EventListFilter) (EventListFilter, error) {
 	if filter.PageSize == 0 {
 		filter.PageSize = 20
 	}
-	if filter.Page < 1 || filter.PageSize < 1 || filter.PageSize > 100 {
+	if filter.Page < 1 || filter.Page > maxListPage || filter.PageSize < 1 || filter.PageSize > 100 {
 		return EventListFilter{}, badRequest("分页参数超出范围")
 	}
 	filter.Search = strings.TrimSpace(filter.Search)

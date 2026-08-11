@@ -20,6 +20,11 @@ func IsResourcePath(value string) bool {
 	return isLocalUploadPath(value, []string{"documents", "videos"})
 }
 
+// IsLocalPath reports whether value is any normalized local upload URL.
+func IsLocalPath(value string) bool {
+	return isLocalUploadPath(value, []string{"images", "documents", "videos"})
+}
+
 // IsDocumentPath reports whether value is a normalized local uploaded document URL.
 func IsDocumentPath(value string) bool {
 	return isLocalUploadPath(value, []string{"documents"})

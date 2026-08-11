@@ -778,11 +778,17 @@ func main() {
 		logger.Error("configure upload service", "error", err)
 		os.Exit(1)
 	}
+	uploadAccessRepo, err := adapterpostgres.NewUploadAccessRepository(dbPool)
+	if err != nil {
+		logger.Error("configure upload access repository", "error", err)
+		os.Exit(1)
+	}
 	uploadHandler, err := uploadhttp.NewHandler(
 		logger,
 		uploadService,
 		authService,
 		uploadhttp.WithRedisRateLimit(redisClient, cfg.RedisFallbackCacheMaxSize),
+		uploadhttp.WithProtectedLocalDownloads(cfg.UploadsDir, uploadAccessRepo),
 	)
 	if err != nil {
 		logger.Error("configure upload handler", "error", err)

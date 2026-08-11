@@ -12,6 +12,10 @@ const (
 	unauthorizedCode    = "UNAUTHORIZED"
 	unauthorizedMessage = "未认证，请先登录"
 	forbiddenCode       = "FORBIDDEN"
+	// UploadsAccessCookieName scopes browser access tokens to local upload reads.
+	UploadsAccessCookieName = "uploads_access_token"
+	// UploadsAccessCookiePath prevents the upload access token from reaching API routes.
+	UploadsAccessCookiePath = "/uploads/"
 )
 
 // RequireBearerAccessContext validates a bearer token against current server-side account state.

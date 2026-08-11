@@ -5,8 +5,11 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 	"mathstudy/backend/internal/platform/httpjson"
 	"mathstudy/backend/internal/platform/ratelimit"
 	"mathstudy/backend/internal/platform/redact"
+	"mathstudy/backend/internal/platform/uploadpath"
 )
 
 const (
@@ -40,12 +44,20 @@ type Authenticator interface {
 	DecodeActiveAccessToken(context.Context, string) (authapp.Principal, bool, error)
 }
 
+// LocalUploadAccessStore owns local-upload ownership and object-level access decisions.
+type LocalUploadAccessStore interface {
+	RecordLocalUpload(context.Context, string, string) error
+	CanAccessLocalUpload(context.Context, string, string) (bool, error)
+}
+
 // Handler serves /upload endpoints.
 type Handler struct {
-	service Service
-	auth    Authenticator
-	logger  *slog.Logger
-	limiter *ratelimit.Limiter
+	service      Service
+	auth         Authenticator
+	logger       *slog.Logger
+	limiter      *ratelimit.Limiter
+	downloadRoot string
+	localAccess  LocalUploadAccessStore
 }
 
 // Option customizes the upload HTTP handler.
@@ -66,6 +78,28 @@ func WithRedisRateLimit(client *goredis.Client, maxLocalKeys int) Option {
 			return err
 		}
 		handler.limiter = limiter
+		return nil
+	}
+}
+
+// WithProtectedLocalDownloads enables authenticated local upload reads.
+func WithProtectedLocalDownloads(root string, access LocalUploadAccessStore) Option {
+	return func(handler *Handler) error {
+		if access == nil {
+			return errors.New("upload attachment access checker is nil")
+		}
+		if strings.TrimSpace(root) == "" {
+			return errors.New("upload download root is empty")
+		}
+		absoluteRoot, err := filepath.Abs(root)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(absoluteRoot, 0o750); err != nil {
+			return err
+		}
+		handler.downloadRoot = absoluteRoot
+		handler.localAccess = access
 		return nil
 	}
 }
@@ -98,6 +132,9 @@ func (h *Handler) Register(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc("POST "+prefix+"/image", h.image)
 	mux.HandleFunc("POST "+prefix+"/resource", h.resource)
 	mux.HandleFunc("POST "+prefix+"/message-file", h.messageFile)
+	if h.downloadRoot != "" {
+		mux.Handle("/uploads/", http.StripPrefix("/uploads/", h.downloads()))
+	}
 }
 
 func (h *Handler) image(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +145,7 @@ func (h *Handler) image(w http.ResponseWriter, r *http.Request) {
 	if !h.allowUpload(w, r, principal) {
 		return
 	}
-	h.upload(w, r, uploadapp.MaxImageSize, h.service.SaveImage, "上传图片失败")
+	h.upload(w, r, principal, uploadapp.MaxImageSize, h.service.SaveImage, "上传图片失败")
 }
 
 func (h *Handler) resource(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +156,7 @@ func (h *Handler) resource(w http.ResponseWriter, r *http.Request) {
 	if !h.allowUpload(w, r, principal) {
 		return
 	}
-	h.upload(w, r, uploadapp.MaxResourceSize, h.service.SaveResourceFile, "上传资源文件失败")
+	h.upload(w, r, principal, uploadapp.MaxResourceSize, h.service.SaveResourceFile, "上传资源文件失败")
 }
 
 func (h *Handler) messageFile(w http.ResponseWriter, r *http.Request) {
@@ -130,10 +167,84 @@ func (h *Handler) messageFile(w http.ResponseWriter, r *http.Request) {
 	if !h.allowUpload(w, r, principal) {
 		return
 	}
-	h.upload(w, r, uploadapp.MaxMessageFileSize, h.service.SaveMessageFile, "上传消息文件失败")
+	h.upload(w, r, principal, uploadapp.MaxMessageFileSize, h.service.SaveMessageFile, "上传消息文件失败")
 }
 
-func (h *Handler) upload(w http.ResponseWriter, r *http.Request, maxSize int64, save func(context.Context, io.Reader, uploadapp.FileMeta) (uploadapp.Response, error), fallback string) {
+func (h *Handler) downloads() http.Handler {
+	fs := http.Dir(h.downloadRoot)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeUploadError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		principal, ok := h.requireDownloadPrincipal(w, r)
+		if !ok {
+			return
+		}
+		cleanPath, ok := uploadpath.CleanServablePath(r.URL.Path)
+		if !ok {
+			writeUploadError(w, http.StatusNotFound, "NOT_FOUND", "uploaded file not found")
+			return
+		}
+		localURL := "/uploads/" + cleanPath
+		allowed, err := h.localAccess.CanAccessLocalUpload(r.Context(), principal.UserID, localURL)
+		if err != nil {
+			h.logger.Error("check uploaded attachment access failed", "error", redact.String(err.Error()))
+			writeUploadError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "校验文件访问权限失败")
+			return
+		}
+		if !allowed {
+			writeUploadError(w, http.StatusNotFound, "NOT_FOUND", "uploaded file not found")
+			return
+		}
+		file, err := fs.Open(cleanPath)
+		if err != nil {
+			writeUploadError(w, http.StatusNotFound, "NOT_FOUND", "uploaded file not found")
+			return
+		}
+		defer file.Close()
+		stat, err := file.Stat()
+		if err != nil || stat.IsDir() {
+			writeUploadError(w, http.StatusNotFound, "NOT_FOUND", "uploaded file not found")
+			return
+		}
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("Vary", "Cookie, Authorization")
+		if uploadpath.IsDocumentKey(cleanPath) {
+			w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": stat.Name()}))
+		}
+		http.ServeContent(w, r, stat.Name(), stat.ModTime(), file)
+	})
+}
+
+func (h *Handler) requireDownloadPrincipal(w http.ResponseWriter, r *http.Request) (authapp.Principal, bool) {
+	token, ok := httpauth.BearerToken(r)
+	if !ok {
+		cookie, err := r.Cookie(httpauth.UploadsAccessCookieName)
+		if err == nil && strings.TrimSpace(cookie.Value) != "" {
+			token, ok = cookie.Value, true
+		}
+	}
+	if !ok {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeUploadError(w, http.StatusUnauthorized, "UNAUTHORIZED", "未认证，请先登录")
+		return authapp.Principal{}, false
+	}
+	principal, active, err := h.auth.DecodeActiveAccessToken(r.Context(), token)
+	if err != nil {
+		h.logger.Error("validate upload access token failed", "error", redact.String(err.Error()))
+		writeUploadError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "验证登录状态失败，请稍后重试")
+		return authapp.Principal{}, false
+	}
+	if !active {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeUploadError(w, http.StatusUnauthorized, "UNAUTHORIZED", "未认证，请先登录")
+		return authapp.Principal{}, false
+	}
+	return principal, true
+}
+
+func (h *Handler) upload(w http.ResponseWriter, r *http.Request, principal authapp.Principal, maxSize int64, save func(context.Context, io.Reader, uploadapp.FileMeta) (uploadapp.Response, error), fallback string) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxSize+multipartMemory)
 	// #nosec G120 -- MaxBytesReader bounds the complete multipart request body.
 	if err := r.ParseMultipartForm(multipartMemory); err != nil {
@@ -162,7 +273,42 @@ func (h *Handler) upload(w http.ResponseWriter, r *http.Request, maxSize int64, 
 		h.writeServiceError(w, err, fallback)
 		return
 	}
+	if uploadpath.IsLocalPath(response.URL) {
+		if h.localAccess == nil {
+			h.removeUnregisteredLocalUpload(response.URL)
+			h.logger.Error("record local upload owner failed", "error", "local upload access store is not configured")
+			writeUploadError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "保存文件访问权限失败")
+			return
+		}
+		if err := h.localAccess.RecordLocalUpload(r.Context(), principal.UserID, response.URL); err != nil {
+			if cleanupErr := h.removeUnregisteredLocalUpload(response.URL); cleanupErr != nil {
+				h.logger.Error("remove unregistered local upload failed", "error", redact.String(cleanupErr.Error()))
+			}
+			h.logger.Error("record local upload owner failed", "error", redact.String(err.Error()))
+			writeUploadError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "保存文件访问权限失败")
+			return
+		}
+	}
 	httpjson.Write(w, http.StatusOK, response)
+}
+
+func (h *Handler) removeUnregisteredLocalUpload(localURL string) error {
+	if h.downloadRoot == "" || !uploadpath.IsLocalPath(localURL) {
+		return nil
+	}
+	key, ok := uploadpath.CleanServablePath(strings.TrimPrefix(localURL, "/uploads/"))
+	if !ok {
+		return nil
+	}
+	target := filepath.Join(h.downloadRoot, filepath.FromSlash(key))
+	relative, err := filepath.Rel(h.downloadRoot, target)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return errors.New("unregistered local upload path escapes download root")
+	}
+	if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func (h *Handler) requirePrincipal(w http.ResponseWriter, r *http.Request) (authapp.Principal, bool) {

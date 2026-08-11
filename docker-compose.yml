@@ -123,7 +123,7 @@ services:
     container_name: msp_frontend
     restart: unless-stopped
     ports:
-      - "9000:80"
+      - "127.0.0.1:9000:80"
     depends_on:
       - backend
     networks:

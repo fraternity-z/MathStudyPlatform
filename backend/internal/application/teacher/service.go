@@ -29,6 +29,8 @@ var (
 
 var dayLabels = []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
 
+const maxStudentListPage = 100
+
 // Repository is the persistence surface required by teacher analytics use cases.
 type Repository interface {
 	ListAnalyticsStudents(context.Context, string, string, time.Time, time.Time) ([]AnalyticsStudentReadModel, bool, error)
@@ -403,7 +405,10 @@ func (s *Service) GetStudentsStats(ctx context.Context, teacherID string) (Stude
 
 // ListStudents returns a paginated teacher-owned student list.
 func (s *Service) ListStudents(ctx context.Context, teacherID string, filter StudentListFilter) (StudentListResponse, error) {
-	filter = normalizeStudentListFilter(filter)
+	filter, err := normalizeStudentListFilter(filter)
+	if err != nil {
+		return StudentListResponse{}, err
+	}
 	items, total, err := s.repo.ListTeacherStudents(ctx, teacherID, filter)
 	if err != nil {
 		return StudentListResponse{}, err
@@ -413,7 +418,7 @@ func (s *Service) ListStudents(ctx context.Context, teacherID string, filter Stu
 		Total:      total,
 		Page:       filter.Page,
 		PageSize:   filter.PageSize,
-		TotalPages: numutil.TotalPages(total, filter.PageSize),
+		TotalPages: min(numutil.TotalPages(total, filter.PageSize), maxStudentListPage),
 	}, nil
 }
 
@@ -616,19 +621,19 @@ func (s *Service) GetStudentDetail(ctx context.Context, teacherID string, studen
 	}, nil
 }
 
-func normalizeStudentListFilter(filter StudentListFilter) StudentListFilter {
+func normalizeStudentListFilter(filter StudentListFilter) (StudentListFilter, error) {
 	filter.ClassID = strings.TrimSpace(filter.ClassID)
 	filter.Search = strings.TrimSpace(filter.Search)
-	if filter.Page < 1 {
+	if filter.Page == 0 {
 		filter.Page = 1
 	}
-	if filter.PageSize < 1 {
+	if filter.PageSize == 0 {
 		filter.PageSize = 20
 	}
-	if filter.PageSize > 100 {
-		filter.PageSize = 100
+	if filter.Page < 1 || filter.Page > maxStudentListPage || filter.PageSize < 1 || filter.PageSize > 100 {
+		return StudentListFilter{}, ErrBadRequest
 	}
-	return filter
+	return filter, nil
 }
 
 func (s *Service) teacherStudentIDs(ctx context.Context, teacherID string) ([]string, error) {

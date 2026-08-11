@@ -56,6 +56,7 @@ type Handler struct {
 	service       Service
 	captcha       CaptchaService
 	logger        *slog.Logger
+	accessMaxAge  int
 	refreshMaxAge int
 	cookieSecure  bool
 	cookiePath    string
@@ -77,6 +78,7 @@ func NewHandler(cfg config.Config, logger *slog.Logger, service Service, captcha
 		service:       service,
 		captcha:       captcha,
 		logger:        logger,
+		accessMaxAge:  int(cfg.JWTAccessTokenExpire / time.Second),
 		refreshMaxAge: int(cfg.JWTRefreshTokenExpire / time.Second),
 		cookieSecure:  cfg.Environment != "development",
 		cookiePath:    cfg.APIV1Prefix + "/auth",
@@ -198,7 +200,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, http.StatusUnauthorized, "UNAUTHORIZED", result.Error)
 		return
 	}
-	if !h.setAuthCookies(w, result.RefreshToken) {
+	if !h.setAuthCookies(w, result.AccessToken, result.RefreshToken) {
 		writeAuthError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "登录成功但未能生成安全凭证，请稍后重试")
 		return
 	}
@@ -277,7 +279,7 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "注册成功但未能生成登录凭证，请稍后重试")
 		return
 	}
-	if !h.setAuthCookies(w, result.RefreshToken) {
+	if !h.setAuthCookies(w, result.AccessToken, result.RefreshToken) {
 		writeAuthError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "注册成功但未能生成安全凭证，请稍后重试")
 		return
 	}
@@ -343,7 +345,7 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Refresh token 无效或已过期")
 		return
 	}
-	if !h.setAuthCookies(w, refreshToken) {
+	if !h.setAuthCookies(w, accessToken, refreshToken) {
 		writeAuthError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Token 刷新失败，请稍后重试")
 		return
 	}
@@ -441,15 +443,29 @@ func (h *Handler) requirePrincipal(w http.ResponseWriter, r *http.Request) (auth
 	return httpauth.RequireBearerAccessContext(w, r, h.service.DecodeActiveAccessToken, nil, "", writeAuthError)
 }
 
-func (h *Handler) setAuthCookies(w http.ResponseWriter, refreshToken string) bool {
+func (h *Handler) setAuthCookies(w http.ResponseWriter, accessToken string, refreshToken string) bool {
 	csrfToken, err := newCSRFToken()
 	if err != nil {
 		h.logger.Error("generate csrf token failed", "error", redact.String(err.Error()))
 		return false
 	}
+	h.setUploadsAccessCookie(w, accessToken)
 	h.setRefreshCookie(w, refreshToken)
 	h.setCSRFCookie(w, csrfToken)
 	return true
+}
+
+func (h *Handler) setUploadsAccessCookie(w http.ResponseWriter, value string) {
+	// #nosec G124 -- the cookie is HttpOnly, path-scoped, and Secure outside local development.
+	http.SetCookie(w, &http.Cookie{
+		Name:     httpauth.UploadsAccessCookieName,
+		Value:    value,
+		Path:     httpauth.UploadsAccessCookiePath,
+		MaxAge:   h.accessMaxAge,
+		HttpOnly: true,
+		Secure:   h.cookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
 }
 
 func (h *Handler) setRefreshCookie(w http.ResponseWriter, value string) {
@@ -479,6 +495,16 @@ func (h *Handler) setCSRFCookie(w http.ResponseWriter, value string) {
 }
 
 func (h *Handler) clearAuthCookies(w http.ResponseWriter) {
+	// #nosec G124 -- deletion mirrors the path-scoped upload access cookie.
+	http.SetCookie(w, &http.Cookie{
+		Name:     httpauth.UploadsAccessCookieName,
+		Value:    "",
+		Path:     httpauth.UploadsAccessCookiePath,
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   h.cookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
 	// #nosec G124 -- deletion mirrors the explicit refresh-cookie security attributes.
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshCookieName,

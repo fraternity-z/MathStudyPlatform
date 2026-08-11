@@ -15,6 +15,8 @@ import (
 	"mathstudy/backend/internal/platform/redact"
 )
 
+const maxStudentListPage = 100
+
 // Service is the teacher application surface used by HTTP handlers.
 type Service interface {
 	GetDashboardStats(context.Context, string) (teacherapp.DashboardStats, error)
@@ -99,6 +101,10 @@ func (h *Handler) students(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if page > maxStudentListPage {
+		writeTeacherError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "page 必须在 1 到 100 之间")
+		return
+	}
 	pageSize, ok := parsePositiveIntQuery(w, query.Get("page_size"), 20, "page_size")
 	if !ok {
 		return
@@ -114,6 +120,10 @@ func (h *Handler) students(w http.ResponseWriter, r *http.Request) {
 		PageSize: pageSize,
 	})
 	if err != nil {
+		if errors.Is(err, teacherapp.ErrBadRequest) {
+			writeTeacherError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "分页参数超出范围")
+			return
+		}
 		h.logTeacherError("list teacher students failed", err)
 		writeTeacherError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "获取学生列表失败")
 		return
