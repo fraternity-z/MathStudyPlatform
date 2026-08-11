@@ -118,7 +118,7 @@ backend/
 ## 关键技术决策
 
 - HTTP 使用标准库 `net/http` ServeMux；数据访问使用 pgx，Redis 使用 go-redis。
-- AI/Agent 通过 Eino 和 OpenAI-compatible provider 接入，运行配置持久化到数据库。Provider 的纯主机根地址会幂等补齐 `/v1`，带路径的地址视为完整 API base 并原样保留，以兼容 `/v1beta/openai` 等非 `/v1` 端点；非流式推理模型（含 provider 命名空间下的 `gpt-5*`、`o1*`、`o3*`、`o4*`）省略采样参数并优先使用 Responses，端点明确不支持时回退 Chat Completions。Top P 已从管理端和运行时停用；管理端保存的建议值为 Temperature `1.0`、Max Tokens `4096` 和最大重试 `3` 次，但这三项留空时分别省略采样参数和关闭应用层重试，只有显式覆盖才启用。模型请求总超时默认 `1800` 秒；Agent 迭代上限独立于网络重试次数。
+- AI/Agent 通过 Eino 和 OpenAI-compatible provider 接入，运行配置持久化到数据库。Provider 的纯主机根地址会幂等补齐 `/v1`，带路径的地址视为完整 API base 并原样保留，以兼容 `/v1beta/openai` 等非 `/v1` 端点；Tutor 会话启用 Eino 上游流式输出，模型分片经 application callback 直接写入并刷新 SSE，流式请求使用 Chat Completions。非流式推理模型（含 provider 命名空间下的 `gpt-5*`、`o1*`、`o3*`、`o4*`）省略采样参数并优先使用 Responses，端点明确不支持时回退 Chat Completions。默认模型客户端共享进程级安全 Transport 和连接池，单请求仍保留独立总超时，单 provider 主机最多保留 20 条空闲连接。Top P 已从管理端和运行时停用；管理端保存的建议值为 Temperature `1.0`、Max Tokens `4096` 和最大重试 `3` 次，但这三项留空时分别省略采样参数和关闭应用层重试，只有显式覆盖才启用。模型请求总超时默认 `1800` 秒；Agent 迭代上限独立于网络重试次数。
 - 对象存储仅使用管理员保存的加密数据库配置；未配置时运行时保持停用，保存前完成真实写入探测，成功后通过原子运行时快照即时切换，进行中的请求继续使用原快照，读取不会跨后端回退。
 - 数据库只追加经过评审的 Go forward migration，不自动执行 down migration。
 - 每日一题按上海自然日持久化唯一学生任务。个性化模式在教师候选题、教师已发布题库、Solver 验证 AI 三层来源中依次选择，每层优先匹配目标知识点而不把不匹配题提前排除；可恢复的后台准备失败按持久化重试次数在当天重扫，统一题未布置时也会低成本重扫以接收教师当天补排期。历史已创建的失败任务按原班级归属原地恢复补做，补做不恢复连续天数。
@@ -132,6 +132,7 @@ backend/
 
 关键契约：
 
+- `POST /session/start-chat` 和 `POST /session/{session_id}/chat` 是端到端模型流：首次聊天可先发送 `session_info`，随后发送一次 `task_info`、多次 `message` chunk，并仅在回复保存完成后发送 `message` done。Provider 在已经输出内容后失败时不会切换候选模型，已生成内容会追加中断提示后按非计量回复保存；客户端写入失败则停止生成，不把未完整交付的助手回复保存为成功结果。
 - 图片作答从当前写入后端及仍已配置的 Local/Qiniu/S3 命名空间回读 PNG、JPEG 或 GIF，并在完整解码、OCR 置信度和数学判定均可靠后才开启事务；失败不产生 attempt、diagnosis、learning session、DKT 或 profile 更新。
 - 判题结果只有 `correct`、`incorrect`、`indeterminate` 三态；本地确定性比较不能覆盖的代数、三角、极限、导数、积分、方程/解集、矩阵和证明题可交给 Eino Math Solver，服务不可用、超时、无效输出或低置信度统一返回带阶段、原因和重试语义的降级结果。
 - 无缓存解析时，Math Solver 不接收标准答案并独立求解；候选最终答案以及推导步骤需经过单独的 `solution_verification` 调用，未验证步骤不会返回给前端。

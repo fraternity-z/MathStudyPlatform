@@ -2,7 +2,7 @@
 
 本文是仓库唯一的当前待办清单。技术文档和历史记录只引用这里，不再维护独立路线图。
 
-**更新时间**：2026-08-06
+**更新时间**：2026-08-11
 
 ## 优先级说明
 
@@ -18,7 +18,7 @@
 
 - [x] 实现图片答案 OCR；保持解析成功前不创建 attempt、diagnosis、learning session 或 DKT 更新，并补应用层、HTTP、前端和真实图片验收。
 - [x] 完善通用数学求解能力，覆盖超出当前本地模板和基础答案比较范围的题型，并定义可解释的失败与降级契约。
-- [ ] 将 Tutor 当前“单次生成后 SSE 输出”升级为 token 级流式，验证取消、超时、断连和部分输出处理。
+- [x] 2026-08-11 将 Tutor 从“完整生成后单次 SSE”升级为 provider 分片级端到端流式；`task_info`、多次 chunk 和持久化后的 done 逐事件刷新，断连/取消会停止生成且不发送 done，provider 部分失败会追加中断提示并保持已完成回复的分片与历史一致，流开始后不跨候选模型拼接回复。默认模型客户端复用安全 HTTP Transport 和连接池，同时保留单请求超时。临时测试覆盖正常分片、缺失尾段、部分失败、写回失败、候选切换和 64 路并发连接复用，`go test -race` 通过后已删除测试源码；全量 `go test ./...`、`go vet ./...`、`go build ./...`、前端 lint 和生产构建通过。
 - [ ] 对外部 provider 的 Tutor、Portrait、Diagnostician、Math Solver、Question Parser、Question Generator 和 OCR 做真实运行质量验收。
 
 ### AI 自主练习加固

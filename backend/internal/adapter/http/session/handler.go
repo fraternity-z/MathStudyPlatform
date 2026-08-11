@@ -22,8 +22,8 @@ import (
 // Service is the session application surface used by HTTP handlers.
 type Service interface {
 	CreateSession(context.Context, string, *string, string) (sessionapp.CreateSessionResponse, error)
-	StartChat(context.Context, string, string, *string, string, string, []string, sessionapp.StartChatNotifier) (sessionapp.ChatResult, error)
-	ProcessChat(context.Context, string, string, string, []string) (sessionapp.ChatResult, error)
+	StartChat(context.Context, string, string, *string, string, string, []string, sessionapp.StartChatNotifier, sessionapp.ChatStreamCallbacks) (sessionapp.ChatResult, error)
+	ProcessChat(context.Context, string, string, string, []string, sessionapp.ChatStreamCallbacks) (sessionapp.ChatResult, error)
 	GetHistory(context.Context, string, string, int, int) (sessionapp.HistoryResponse, error)
 	GetSessions(context.Context, string, int, int, bool) (sessionapp.SessionListResponse, error)
 	EndSession(context.Context, string, string) (sessionapp.EndResponse, error)
@@ -99,6 +99,14 @@ type batchDeleteRequest struct {
 	SessionIDs []string `json:"session_ids"`
 }
 
+type chatSSEWriter struct {
+	response     http.ResponseWriter
+	started      bool
+	taskWritten  bool
+	chunkWritten bool
+	err          error
+}
+
 func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 	principal, ok := h.requirePrincipal(w, r)
 	if !ok {
@@ -139,12 +147,22 @@ func (h *Handler) chat(w http.ResponseWriter, r *http.Request) {
 		writeSessionError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "消息内容不能为空")
 		return
 	}
-	result, err := h.service.ProcessChat(r.Context(), r.PathValue("session_id"), principal.UserID, request.Message, request.Attachments)
+	stream := &chatSSEWriter{response: w}
+	result, err := h.service.ProcessChat(
+		r.Context(),
+		r.PathValue("session_id"),
+		principal.UserID,
+		request.Message,
+		request.Attachments,
+		stream.callbacks(),
+	)
 	if err != nil {
-		h.writeChatFailure(w, err, "process chat fallback failed")
+		h.writeChatStreamFailure(stream, err, "process chat failed")
 		return
 	}
-	writeSSEChatResult(w, result)
+	if err := stream.writeResult(result); err != nil {
+		h.logger.Debug("session chat stream closed before completion", "error", redact.String(err.Error()))
+	}
 }
 
 func (h *Handler) startChat(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +178,7 @@ func (h *Handler) startChat(w http.ResponseWriter, r *http.Request) {
 		request.Mode = "chat"
 	}
 
-	streamStarted := false
+	stream := &chatSSEWriter{response: w}
 	result, err := h.service.StartChat(
 		r.Context(),
 		principal.UserID,
@@ -170,44 +188,49 @@ func (h *Handler) startChat(w http.ResponseWriter, r *http.Request) {
 		request.Message,
 		request.Attachments,
 		func(session sessionapp.StartChatSession) {
-			prepareSSEHeaders(w)
-			w.WriteHeader(http.StatusOK)
-			streamStarted = true
-			if err := writeSSEEventChecked(w, "session_info", session); err != nil {
-				h.logSessionError("write first chat session info failed", err)
-				return
+			if err := stream.writeEvent("session_info", session); err != nil {
+				h.logger.Debug("first chat stream closed before generation", "error", redact.String(err.Error()))
 			}
-			flushSSE(w)
 		},
+		stream.callbacks(),
 	)
 	if err != nil {
-		if streamStarted {
-			if errors.Is(err, context.Canceled) {
-				h.logger.Debug("first chat request canceled")
-				return
-			}
-			if errors.Is(err, context.DeadlineExceeded) {
-				writeSSEErrorEvent(w, "REQUEST_TIMEOUT", "请求处理超时，请稍后重试")
-				flushSSE(w)
-				return
-			}
-			h.logSessionError("process first chat after session creation failed", err)
-			code, message := "PROCESSING_ERROR", "处理消息时发生错误，请稍后重试"
-			if riskCode, riskMessage, ok := aiRiskSSEError(err); ok {
-				code, message = riskCode, riskMessage
-			} else if errors.Is(err, sessionapp.ErrStartChatInProgress) {
-				code, message = "FIRST_CHAT_IN_PROGRESS", "首次消息仍在处理中，请稍后同步会话历史"
-			} else if errors.Is(err, sessionapp.ErrFirstChatCannotResume) {
-				code, message = "FIRST_CHAT_NOT_RESUMABLE", "会话历史已发生变化，无法安全补写首次回复"
-			}
-			writeSSEErrorEvent(w, code, message)
-			flushSSE(w)
-			return
-		}
-		h.writeChatFailure(w, err, "start chat failed")
+		h.writeChatStreamFailure(stream, err, "start chat failed")
 		return
 	}
-	writeSSEChatEvents(w, result)
+	if err := stream.writeResult(result); err != nil {
+		h.logger.Debug("first chat stream closed before completion", "error", redact.String(err.Error()))
+	}
+}
+
+func (h *Handler) writeChatStreamFailure(stream *chatSSEWriter, err error, logMessage string) {
+	if !stream.started {
+		h.writeChatFailure(stream.response, err, logMessage)
+		return
+	}
+	if errors.Is(err, context.Canceled) || stream.err != nil {
+		h.logger.Debug("session chat stream canceled")
+		return
+	}
+
+	code, message := "PROCESSING_ERROR", "处理消息时发生错误，请稍后重试"
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		code, message = "REQUEST_TIMEOUT", "请求处理超时，请稍后重试"
+	case errors.Is(err, sessionapp.ErrStartChatInProgress):
+		code, message = "FIRST_CHAT_IN_PROGRESS", "首次消息仍在处理中，请稍后同步会话历史"
+	case errors.Is(err, sessionapp.ErrFirstChatCannotResume):
+		code, message = "FIRST_CHAT_NOT_RESUMABLE", "会话历史已发生变化，无法安全补写首次回复"
+	default:
+		if riskCode, riskMessage, ok := aiRiskSSEError(err); ok {
+			code, message = riskCode, riskMessage
+		} else {
+			h.logSessionError(logMessage, err)
+		}
+	}
+	if writeErr := stream.writeEvent("error", map[string]string{"type": "error", "code": code, "message": message}); writeErr != nil {
+		h.logger.Debug("session chat stream closed while writing error", "error", redact.String(writeErr.Error()))
+	}
 }
 
 func (h *Handler) writeChatFailure(w http.ResponseWriter, err error, logMessage string) {
@@ -449,26 +472,80 @@ func decodeRequest(w http.ResponseWriter, r *http.Request, target any) bool {
 	return httpjson.DecodeStrictOrDetailError(w, r, 1<<20, target)
 }
 
-func writeSSEChatResult(w http.ResponseWriter, result sessionapp.ChatResult) {
-	prepareSSEHeaders(w)
-	w.WriteHeader(http.StatusOK)
-	writeSSEChatEvents(w, result)
+func (s *chatSSEWriter) callbacks() sessionapp.ChatStreamCallbacks {
+	return sessionapp.ChatStreamCallbacks{
+		OnStart: func(start sessionapp.ChatStreamStart) error {
+			return s.writeTask(start.TaskID)
+		},
+		OnChunk: func(chunk sessionapp.ChatStreamChunk) error {
+			return s.writeChunk(chunk.MessageID, chunk.Agent, chunk.Content)
+		},
+	}
 }
 
-func writeSSEChatEvents(w http.ResponseWriter, result sessionapp.ChatResult) {
-	writeSSEEvent(w, "task_info", map[string]string{"task_id": result.TaskID})
-	writeSSEEvent(w, "message", map[string]any{
+func (s *chatSSEWriter) writeTask(taskID string) error {
+	if s.taskWritten {
+		return s.err
+	}
+	if err := s.writeEvent("task_info", map[string]string{"task_id": taskID}); err != nil {
+		return err
+	}
+	s.taskWritten = true
+	return nil
+}
+
+func (s *chatSSEWriter) writeChunk(messageID string, agent string, content string) error {
+	if content == "" {
+		return nil
+	}
+	if err := s.writeEvent("message", map[string]any{
 		"type":       "chunk",
-		"content":    result.Content,
-		"agent":      result.Agent,
-		"message_id": result.MessageID,
-	})
-	writeSSEEvent(w, "message", map[string]any{
+		"content":    content,
+		"agent":      agent,
+		"message_id": messageID,
+	}); err != nil {
+		return err
+	}
+	s.chunkWritten = true
+	return nil
+}
+
+func (s *chatSSEWriter) writeResult(result sessionapp.ChatResult) error {
+	if !s.taskWritten {
+		if err := s.writeTask(result.TaskID); err != nil {
+			return err
+		}
+	}
+	if !s.chunkWritten && result.Content != "" {
+		if err := s.writeChunk(result.MessageID, result.Agent, result.Content); err != nil {
+			return err
+		}
+	}
+	return s.writeEvent("message", map[string]any{
 		"type":       "done",
 		"message_id": result.MessageID,
 		"agent":      result.Agent,
 	})
-	flushSSE(w)
+}
+
+func (s *chatSSEWriter) writeEvent(event string, payload any) error {
+	if s.err != nil {
+		return s.err
+	}
+	if !s.started {
+		prepareSSEHeaders(s.response)
+		s.response.WriteHeader(http.StatusOK)
+		s.started = true
+	}
+	if err := writeSSEEventChecked(s.response, event, payload); err != nil {
+		s.err = err
+		return err
+	}
+	if err := flushSSEChecked(s.response); err != nil {
+		s.err = err
+		return err
+	}
+	return nil
 }
 
 func writeSessionSSEError(w http.ResponseWriter, code string, message string) {
@@ -503,9 +580,11 @@ func writeSSEEventChecked(w http.ResponseWriter, event string, payload any) erro
 }
 
 func flushSSE(w http.ResponseWriter) {
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
+	_ = flushSSEChecked(w)
+}
+
+func flushSSEChecked(w http.ResponseWriter) error {
+	return http.NewResponseController(w).Flush()
 }
 
 func writeSessionError(w http.ResponseWriter, status int, code, message string) {

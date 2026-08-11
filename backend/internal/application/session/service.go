@@ -42,6 +42,8 @@ var ErrStartChatInProgress = errors.New("first chat is still being processed")
 // append a missing first reply out of chronological order.
 var ErrFirstChatCannotResume = errors.New("first chat can no longer be resumed")
 
+const interruptedAssistantSuffix = "\n\n> 回复生成中断，请稍后重试。"
+
 // Repository is the persistence surface required by session use cases.
 type Repository interface {
 	CreateSession(context.Context, LearningSession, Message) error
@@ -210,6 +212,12 @@ type ChatAgent interface {
 	Generate(context.Context, ChatAgentInput) (ChatAgentOutput, error)
 }
 
+// StreamingChatAgent incrementally generates assistant content while retaining
+// the complete output for persistence.
+type StreamingChatAgent interface {
+	Stream(context.Context, ChatAgentInput, ChatAgentChunkHandler) (ChatAgentOutput, error)
+}
+
 // ChatAgentInput carries session context into the configured agent runtime.
 type ChatAgentInput struct {
 	SessionID         string
@@ -224,6 +232,48 @@ type ChatAgentInput struct {
 type ChatAgentOutput struct {
 	Agent   string
 	Content string
+}
+
+// ChatAgentChunk is one incremental assistant output from the configured model.
+type ChatAgentChunk struct {
+	Agent   string
+	Content string
+}
+
+// ChatAgentChunkHandler consumes one incremental assistant output.
+type ChatAgentChunkHandler func(ChatAgentChunk) error
+
+// ChatStreamStart identifies the task before model output begins.
+type ChatStreamStart struct {
+	TaskID    string
+	MessageID string
+	Agent     string
+}
+
+// ChatStreamChunk carries one transport-neutral assistant content increment.
+type ChatStreamChunk struct {
+	MessageID string
+	Agent     string
+	Content   string
+}
+
+// ChatStreamCallbacks lets transports publish task metadata and model output
+// without leaking SSE details into the application layer.
+type ChatStreamCallbacks struct {
+	OnStart func(ChatStreamStart) error
+	OnChunk func(ChatStreamChunk) error
+}
+
+type chatStreamDeliveryError struct {
+	cause error
+}
+
+func (e *chatStreamDeliveryError) Error() string {
+	return "deliver chat stream: " + e.cause.Error()
+}
+
+func (e *chatStreamDeliveryError) Unwrap() error {
+	return e.cause
 }
 
 // AIRequestGuard applies student AI access, content, quota, and concurrency rules.
@@ -331,8 +381,8 @@ func (s *Service) CreateSession(ctx context.Context, userID string, topic *strin
 	}, nil
 }
 
-// ProcessChat stores the user message and generates a compatible assistant SSE payload.
-func (s *Service) ProcessChat(ctx context.Context, sessionID string, userID string, message string, attachments []string) (ChatResult, error) {
+// ProcessChat stores the user message and generates an assistant response.
+func (s *Service) ProcessChat(ctx context.Context, sessionID string, userID string, message string, attachments []string, stream ChatStreamCallbacks) (ChatResult, error) {
 	if strings.TrimSpace(message) == "" {
 		return ChatResult{}, ErrEmptyMessage
 	}
@@ -389,7 +439,7 @@ func (s *Service) ProcessChat(ctx context.Context, sessionID string, userID stri
 	}); err != nil {
 		return ChatResult{}, err
 	}
-	return s.completeChat(ctx, current, userID, message, attachments, history, systemInstruction, userCreatedAt, ids)
+	return s.completeChat(ctx, current, userID, message, attachments, history, systemInstruction, userCreatedAt, ids, stream)
 }
 
 func normalizeChatAttachments(attachments []string) ([]string, error) {
@@ -430,28 +480,125 @@ func (s *Service) recentHistory(ctx context.Context, sessionID string) ([]Messag
 	return messages, nil
 }
 
-func (s *Service) generateAssistant(ctx context.Context, input ChatAgentInput) (ChatAgentOutput, bool) {
+func (s *Service) generateAssistant(ctx context.Context, input ChatAgentInput, onChunk ChatAgentChunkHandler) (ChatAgentOutput, bool, error) {
 	if s.agent == nil {
-		return ChatAgentOutput{
+		output := ChatAgentOutput{
 			Agent:   "tutor",
 			Content: "智能导师尚未配置；你的消息已保存。请管理员在 AI 模型设置中配置导师智能体，或在后端配置 EINO_ENABLED、EINO_API_KEY 和 EINO_MODEL 后恢复回复。",
-		}, false
+		}
+		return deliverAssistantOutput(output, false, onChunk)
 	}
-	output, err := s.agent.Generate(ctx, input)
+
+	emitted := false
+	var deliveredContent strings.Builder
+	deliver := func(chunk ChatAgentChunk) error {
+		if chunk.Content == "" {
+			return nil
+		}
+		if chunk.Agent == "" {
+			chunk.Agent = "tutor"
+		}
+		if onChunk != nil {
+			if err := onChunk(chunk); err != nil {
+				return wrapChatStreamDeliveryError(err)
+			}
+		}
+		deliveredContent.WriteString(chunk.Content)
+		emitted = true
+		return nil
+	}
+
+	var output ChatAgentOutput
+	var err error
+	if streamingAgent, ok := s.agent.(StreamingChatAgent); ok && onChunk != nil {
+		output, err = streamingAgent.Stream(ctx, input, deliver)
+	} else {
+		output, err = s.agent.Generate(ctx, input)
+	}
 	if err != nil {
-		return ChatAgentOutput{
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return output, false, ctxErr
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return output, false, err
+		}
+		var deliveryErr *chatStreamDeliveryError
+		if errors.As(err, &deliveryErr) {
+			return output, false, err
+		}
+		if strings.TrimSpace(output.Content) != "" {
+			if output.Agent == "" {
+				output.Agent = "tutor"
+			}
+			chunk := output.Content + interruptedAssistantSuffix
+			if emitted {
+				streamed := deliveredContent.String()
+				if strings.HasPrefix(output.Content, streamed) {
+					chunk = output.Content[len(streamed):] + interruptedAssistantSuffix
+					output.Content += interruptedAssistantSuffix
+				} else {
+					output.Content = streamed + interruptedAssistantSuffix
+					chunk = interruptedAssistantSuffix
+				}
+			} else {
+				output.Content = chunk
+			}
+			if err := deliver(ChatAgentChunk{Agent: output.Agent, Content: chunk}); err != nil {
+				return output, false, err
+			}
+			return output, false, nil
+		}
+		fallback := ChatAgentOutput{
 			Agent:   "tutor",
 			Content: "智能导师暂时不可用；你的消息已保存。请稍后重试，或联系管理员检查导师智能体模型配置。",
-		}, false
+		}
+		return deliverAssistantOutput(fallback, false, deliver)
 	}
 	if output.Agent == "" {
 		output.Agent = "tutor"
 	}
-	if output.Content == "" {
+	if strings.TrimSpace(output.Content) == "" {
 		output.Content = "智能导师暂未生成有效回复，请稍后重试。"
-		return output, false
+		return deliverAssistantOutput(output, false, deliver)
 	}
-	return output, true
+	if !emitted {
+		if err := deliver(ChatAgentChunk{Agent: output.Agent, Content: output.Content}); err != nil {
+			return output, false, err
+		}
+	} else if streamed := deliveredContent.String(); streamed != output.Content {
+		if strings.HasPrefix(output.Content, streamed) {
+			if err := deliver(ChatAgentChunk{Agent: output.Agent, Content: output.Content[len(streamed):]}); err != nil {
+				return output, false, err
+			}
+		} else {
+			output.Content = streamed + interruptedAssistantSuffix
+			if err := deliver(ChatAgentChunk{Agent: output.Agent, Content: interruptedAssistantSuffix}); err != nil {
+				return output, false, err
+			}
+			return output, false, nil
+		}
+	}
+	return output, true, nil
+}
+
+func deliverAssistantOutput(output ChatAgentOutput, metered bool, onChunk ChatAgentChunkHandler) (ChatAgentOutput, bool, error) {
+	if onChunk != nil && output.Content != "" {
+		if err := onChunk(ChatAgentChunk{Agent: output.Agent, Content: output.Content}); err != nil {
+			return output, false, wrapChatStreamDeliveryError(err)
+		}
+	}
+	return output, metered, nil
+}
+
+func wrapChatStreamDeliveryError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var deliveryErr *chatStreamDeliveryError
+	if errors.As(err, &deliveryErr) {
+		return err
+	}
+	return &chatStreamDeliveryError{cause: err}
 }
 
 func releaseAILease(lease airiskapp.Lease) {

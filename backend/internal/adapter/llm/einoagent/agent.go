@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/http"
@@ -162,6 +163,7 @@ type chatAgentSpec struct {
 	name        string
 	description string
 	instruction string
+	streaming   bool
 }
 
 // NewConfigurableTutorAgent creates a Tutor Agent that reads runtime config per request.
@@ -236,6 +238,7 @@ func NewTutorAgent(ctx context.Context, cfg Config) (*Agent, error) {
 		name:        "tutor",
 		description: "高等数学学习辅导智能体，负责讲解概念、分析解题思路和给出练习建议。",
 		instruction: tutorInstruction,
+		streaming:   true,
 	})
 }
 
@@ -349,7 +352,7 @@ func newChatModelAgent(ctx context.Context, cfg Config, spec chatAgentSpec) (*Ag
 	}
 	return &Agent{
 		name:   spec.name,
-		runner: adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent}),
+		runner: adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent, EnableStreaming: spec.streaming}),
 	}, nil
 }
 
@@ -370,6 +373,54 @@ func (a *ConfigurableAgent) Generate(ctx context.Context, input sessionapp.ChatA
 			return sessionapp.ChatAgentOutput{}, candidateSetupError{cause: err}
 		}
 		return agent.Generate(ctx, input)
+	})
+}
+
+// Stream resolves a Tutor Agent configuration and forwards model increments.
+// A candidate is only retried before any content reaches the caller.
+func (a *ConfigurableAgent) Stream(ctx context.Context, input sessionapp.ChatAgentInput, onChunk sessionapp.ChatAgentChunkHandler) (sessionapp.ChatAgentOutput, error) {
+	if a == nil {
+		return sessionapp.ChatAgentOutput{}, errors.New("configurable Eino agent is nil")
+	}
+	newAgent := a.newAgent
+	if newAgent == nil {
+		newAgent = func(ctx context.Context, cfg Config) (sessionapp.ChatAgent, error) {
+			return NewTutorAgent(ctx, cfg)
+		}
+	}
+	return runWithRuntimeCandidates(ctx, a.provider, "tutor", a.fallback, func(ctx context.Context, cfg Config) (sessionapp.ChatAgentOutput, error) {
+		agent, err := newAgent(ctx, cfg)
+		if err != nil {
+			return sessionapp.ChatAgentOutput{}, candidateSetupError{cause: err}
+		}
+		delivered := false
+		deliver := func(chunk sessionapp.ChatAgentChunk) error {
+			if onChunk == nil || chunk.Content == "" {
+				return nil
+			}
+			if err := onChunk(chunk); err != nil {
+				return &streamCallbackError{cause: err}
+			}
+			delivered = true
+			return nil
+		}
+
+		var output sessionapp.ChatAgentOutput
+		if streamingAgent, ok := agent.(sessionapp.StreamingChatAgent); ok {
+			output, err = streamingAgent.Stream(ctx, input, deliver)
+		} else {
+			output, err = agent.Generate(ctx, input)
+			if err == nil {
+				err = deliver(sessionapp.ChatAgentChunk{Agent: output.Agent, Content: output.Content})
+			}
+		}
+		if err != nil {
+			var callbackErr *streamCallbackError
+			if delivered || errors.As(err, &callbackErr) {
+				return output, &nonRetryableStreamError{cause: err}
+			}
+		}
+		return output, err
 	})
 }
 
@@ -513,13 +564,23 @@ func (g *ConfigurableQuestionGenerator) GenerateQuestion(ctx context.Context, in
 	})
 }
 
-// Generate runs the tutor agent and collects the final assistant message.
+// Generate runs the agent and collects the final assistant message.
 func (a *Agent) Generate(ctx context.Context, input sessionapp.ChatAgentInput) (sessionapp.ChatAgentOutput, error) {
+	return a.run(ctx, input, nil)
+}
+
+// Stream runs the tutor agent and forwards each assistant content increment.
+func (a *Agent) Stream(ctx context.Context, input sessionapp.ChatAgentInput, onChunk sessionapp.ChatAgentChunkHandler) (sessionapp.ChatAgentOutput, error) {
+	return a.run(ctx, input, onChunk)
+}
+
+func (a *Agent) run(ctx context.Context, input sessionapp.ChatAgentInput, onChunk sessionapp.ChatAgentChunkHandler) (sessionapp.ChatAgentOutput, error) {
 	if a == nil || a.runner == nil {
 		return sessionapp.ChatAgentOutput{}, errors.New("eino tutor agent is not configured")
 	}
 	events := a.runner.Run(ctx, toMessages(input))
-	content := ""
+	var content strings.Builder
+	streamedOutput := false
 	for {
 		event, ok := events.Next()
 		if !ok {
@@ -529,23 +590,62 @@ func (a *Agent) Generate(ctx context.Context, input sessionapp.ChatAgentInput) (
 			continue
 		}
 		if event.Err != nil {
-			return sessionapp.ChatAgentOutput{}, fmt.Errorf("run Eino tutor agent: %w", event.Err)
+			return sessionapp.ChatAgentOutput{Agent: a.name, Content: content.String()}, fmt.Errorf("run Eino tutor agent: %w", event.Err)
 		}
 		if event.Output == nil || event.Output.MessageOutput == nil {
 			continue
 		}
-		message, err := event.Output.MessageOutput.GetMessage()
-		if err != nil {
-			return sessionapp.ChatAgentOutput{}, fmt.Errorf("read Eino tutor output: %w", err)
+		output := event.Output.MessageOutput
+		if output.Role != "" && output.Role != schema.Assistant {
+			continue
 		}
-		if strings.TrimSpace(message.Content) != "" {
-			content = message.Content
+		if output.IsStreaming {
+			if output.MessageStream == nil {
+				continue
+			}
+			if err := consumeAssistantStream(output.MessageStream, &content, a.name, onChunk); err != nil {
+				return sessionapp.ChatAgentOutput{Agent: a.name, Content: content.String()}, fmt.Errorf("read Eino tutor output: %w", err)
+			}
+			streamedOutput = true
+			continue
+		}
+		if streamedOutput || output.Message == nil || output.Message.Content == "" {
+			continue
+		}
+		content.Reset()
+		content.WriteString(output.Message.Content)
+		if onChunk != nil {
+			if err := onChunk(sessionapp.ChatAgentChunk{Agent: a.name, Content: output.Message.Content}); err != nil {
+				return sessionapp.ChatAgentOutput{Agent: a.name, Content: content.String()}, err
+			}
 		}
 	}
-	if strings.TrimSpace(content) == "" {
+	if strings.TrimSpace(content.String()) == "" {
 		return sessionapp.ChatAgentOutput{}, errors.New("eino tutor agent returned empty content")
 	}
-	return sessionapp.ChatAgentOutput{Agent: a.name, Content: content}, nil
+	return sessionapp.ChatAgentOutput{Agent: a.name, Content: content.String()}, nil
+}
+
+func consumeAssistantStream(stream *schema.StreamReader[*schema.Message], content *strings.Builder, agent string, onChunk sessionapp.ChatAgentChunkHandler) error {
+	defer stream.Close()
+	for {
+		message, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if message == nil || message.Content == "" {
+			continue
+		}
+		content.WriteString(message.Content)
+		if onChunk != nil {
+			if err := onChunk(sessionapp.ChatAgentChunk{Agent: agent, Content: message.Content}); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 type portraitGenerator struct {
@@ -716,6 +816,7 @@ func runWithRuntimeCandidates[T any](
 	if err != nil {
 		return zero, fmt.Errorf("load %s runtime config: %w", agentType, err)
 	}
+	var lastResult T
 	var lastErr error
 	for index, cfg := range configs {
 		if err := ctx.Err(); err != nil {
@@ -725,6 +826,7 @@ func runWithRuntimeCandidates[T any](
 		if err == nil {
 			return result, nil
 		}
+		lastResult = result
 		lastErr = err
 		if index == len(configs)-1 || !shouldTryNextChannel(err) {
 			break
@@ -733,7 +835,7 @@ func runWithRuntimeCandidates[T any](
 	if lastErr == nil {
 		return zero, fmt.Errorf("%s has no runtime candidates", agentType)
 	}
-	return zero, fmt.Errorf("%s request failed: %w", agentType, lastErr)
+	return lastResult, fmt.Errorf("%s request failed: %w", agentType, lastErr)
 }
 
 func loadRuntimeConfigs(ctx context.Context, provider RuntimeConfigProvider, agentType string, fallback Config) ([]Config, error) {
@@ -761,8 +863,26 @@ type candidateSetupError struct {
 func (e candidateSetupError) Error() string { return e.cause.Error() }
 func (e candidateSetupError) Unwrap() error { return e.cause }
 
+type streamCallbackError struct {
+	cause error
+}
+
+func (e *streamCallbackError) Error() string { return e.cause.Error() }
+func (e *streamCallbackError) Unwrap() error { return e.cause }
+
+type nonRetryableStreamError struct {
+	cause error
+}
+
+func (e *nonRetryableStreamError) Error() string { return e.cause.Error() }
+func (e *nonRetryableStreamError) Unwrap() error { return e.cause }
+
 func shouldTryNextChannel(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var streamErr *nonRetryableStreamError
+	if errors.As(err, &streamErr) {
 		return false
 	}
 	var setupErr candidateSetupError
@@ -778,14 +898,23 @@ func shouldTryNextChannel(err error) bool {
 	return errors.As(err, &networkErr)
 }
 
-func modelHTTPClient(cfg Config) *http.Client {
-	var client *http.Client
-	if cfg.HTTPClient != nil {
-		client = cfg.HTTPClient
-	} else {
-		client = outbound.NewPublicHTTPSClient(cfg.Timeout)
+var sharedModelHTTPClient = newSharedModelHTTPClient()
+
+func newSharedModelHTTPClient() *http.Client {
+	client := outbound.NewPublicHTTPSClient(20 * time.Second)
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		transport.MaxIdleConnsPerHost = 20
 	}
 	return openaicompat.WrapClient(client)
+}
+
+func modelHTTPClient(cfg Config) *http.Client {
+	if cfg.HTTPClient != nil {
+		return openaicompat.WrapClient(cfg.HTTPClient)
+	}
+	client := *sharedModelHTTPClient
+	client.Timeout = cfg.Timeout
+	return &client
 }
 
 func chatModelConfig(cfg Config) *einoopenai.ChatModelConfig {
