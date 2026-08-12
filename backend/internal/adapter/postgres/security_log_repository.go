@@ -213,42 +213,51 @@ func (r SecurityLogRepository) CreateLog(ctx context.Context, create securitylog
 	return item, nil
 }
 
-// AutoArchive archives stale active logs in batches.
+// AutoArchive archives one bounded batch of stale active logs.
 func (r SecurityLogRepository) AutoArchive(ctx context.Context, cutoff time.Time, batchSize int) (int, error) {
-	total := 0
-	for {
-		ids, err := r.staleLogIDs(ctx, cutoff, false, batchSize)
-		if err != nil {
-			return total, err
-		}
-		if len(ids) == 0 {
-			return total, nil
-		}
-		tag, err := r.DB().Exec(ctx, `UPDATE public.security_logs SET archived = true WHERE id = ANY($1)`, ids)
-		if err != nil {
-			return total, err
-		}
-		total += int(tag.RowsAffected())
+	if batchSize <= 0 {
+		return 0, fmt.Errorf("security log archive batch size must be greater than 0")
 	}
+	tag, err := r.DB().Exec(ctx, `
+		WITH candidates AS (
+			SELECT log.id
+			FROM public.security_logs log
+			WHERE log.created_at < $1 AND log.archived = false
+			ORDER BY log.created_at, log.id
+			FOR UPDATE SKIP LOCKED
+			LIMIT $2
+		)
+		UPDATE public.security_logs log
+		SET archived = true
+		FROM candidates
+		WHERE log.id = candidates.id`,
+		cutoff,
+		batchSize,
+	)
+	return int(tag.RowsAffected()), err
 }
 
-// AutoDelete deletes stale archived logs in batches.
+// AutoDelete deletes one bounded batch of stale archived logs.
 func (r SecurityLogRepository) AutoDelete(ctx context.Context, cutoff time.Time, batchSize int) (int, error) {
-	total := 0
-	for {
-		ids, err := r.staleLogIDs(ctx, cutoff, true, batchSize)
-		if err != nil {
-			return total, err
-		}
-		if len(ids) == 0 {
-			return total, nil
-		}
-		tag, err := r.DB().Exec(ctx, `DELETE FROM public.security_logs WHERE id = ANY($1)`, ids)
-		if err != nil {
-			return total, err
-		}
-		total += int(tag.RowsAffected())
+	if batchSize <= 0 {
+		return 0, fmt.Errorf("security log delete batch size must be greater than 0")
 	}
+	tag, err := r.DB().Exec(ctx, `
+		WITH candidates AS (
+			SELECT log.id
+			FROM public.security_logs log
+			WHERE log.created_at < $1 AND log.archived = true
+			ORDER BY log.created_at, log.id
+			FOR UPDATE SKIP LOCKED
+			LIMIT $2
+		)
+		DELETE FROM public.security_logs log
+		USING candidates
+		WHERE log.id = candidates.id`,
+		cutoff,
+		batchSize,
+	)
+	return int(tag.RowsAffected()), err
 }
 
 // Volume returns active and archived counts.
@@ -263,32 +272,6 @@ func (r SecurityLogRepository) Volume(ctx context.Context) (securitylogapp.Volum
 		return securitylogapp.VolumeResponse{}, err
 	}
 	return volume, nil
-}
-
-func (r SecurityLogRepository) staleLogIDs(ctx context.Context, cutoff time.Time, archived bool, batchSize int) ([]string, error) {
-	rows, err := r.DB().Query(ctx, `
-		SELECT id
-		FROM public.security_logs
-		WHERE created_at < $1 AND archived = $2
-		ORDER BY created_at ASC
-		LIMIT $3`,
-		cutoff,
-		archived,
-		batchSize,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
 }
 
 const securityLogSelectSQL = `

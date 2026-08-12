@@ -44,16 +44,8 @@ type Repository interface {
 	CommonErrors(context.Context, string, []string, int) ([]CommonErrorAggregate, error)
 	LowScoreStudents(context.Context, string, []string, float64) (map[string]float64, error)
 	ActiveStudentIDsSince(context.Context, []string, time.Time) (map[string]struct{}, error)
-	StudentEnrollmentForTeacher(context.Context, string, string) (StudentEnrollment, bool, error)
-	GetUser(context.Context, string) (UserInfo, bool, error)
-	GetProfile(context.Context, string, string) (StudentProfile, bool, error)
-	AverageStudentScore(context.Context, string, string) (float64, bool, error)
-	RankByAverageScore(context.Context, string, []string) ([]StudentScore, error)
-	LastSessionStartedAt(context.Context, string) (*time.Time, error)
-	ListSessionDays(context.Context, string) ([]time.Time, error)
-	AttemptConceptCounts(context.Context, string, string) (map[string]int, error)
-	RecentAttempts(context.Context, string, string, int) ([]RecentAttempt, error)
-	RecentSessions(context.Context, string, int) ([]RecentSession, error)
+	GetStudentDetailSnapshot(context.Context, string, string) (StudentDetailSnapshot, bool, error)
+	ListStudentRecentActivity(context.Context, string, string, int, int, int) ([]StudentActivityReadModel, error)
 	RecentMistakes(context.Context, string, string, int) ([]StudentMistake, error)
 }
 
@@ -124,6 +116,32 @@ type RecentSession struct {
 	ID        string
 	StartedAt time.Time
 	EndedAt   *time.Time
+}
+
+// StudentDetailSnapshot combines the scalar and grouped inputs for student detail.
+type StudentDetailSnapshot struct {
+	Enrollment          StudentEnrollment
+	User                UserInfo
+	HasProfile          bool
+	Profile             StudentProfile
+	AverageScore        float64
+	Rank                int
+	TotalClassStudents  int
+	LastActive          *time.Time
+	SessionDays         []string
+	ConceptAttemptCount map[string]int
+	KnowledgeNames      map[string]string
+}
+
+// StudentActivityReadModel stores either a recent exercise or learning session.
+type StudentActivityReadModel struct {
+	ID        string
+	Type      string
+	StartedAt time.Time
+	EndedAt   *time.Time
+	IsCorrect bool
+	Score     float64
+	Title     string
 }
 
 // DashboardStats is returned by /teacher/dashboard/stats.
@@ -523,89 +541,56 @@ func (s *Service) GetClassAnalytics(ctx context.Context, teacherID string, class
 
 // GetStudentDetail returns teacher-facing student detail data.
 func (s *Service) GetStudentDetail(ctx context.Context, teacherID string, studentID string) (StudentDetailResponse, error) {
-	enrollment, ok, err := s.repo.StudentEnrollmentForTeacher(ctx, teacherID, studentID)
+	snapshot, ok, err := s.repo.GetStudentDetailSnapshot(ctx, teacherID, studentID)
 	if err != nil {
 		return StudentDetailResponse{}, err
 	}
 	if !ok {
 		return StudentDetailResponse{}, ErrNotFound
 	}
-	userInfo, ok, err := s.repo.GetUser(ctx, studentID)
-	if err != nil {
-		return StudentDetailResponse{}, err
-	}
-	if !ok {
+	if snapshot.User.ID == "" {
 		return StudentDetailResponse{}, ErrStudentNotFound
 	}
-	profile, hasProfile, err := s.repo.GetProfile(ctx, teacherID, studentID)
+	if !snapshot.HasProfile {
+		snapshot.Profile = StudentProfile{StudentID: studentID, MasteryVector: map[string]float64{}}
+	}
+	topicMastery := studentTopicMasteryFromSnapshot(snapshot)
+	recentRows, err := s.repo.ListStudentRecentActivity(ctx, teacherID, studentID, 10, 5, 10)
 	if err != nil {
 		return StudentDetailResponse{}, err
 	}
-	if !hasProfile {
-		profile = StudentProfile{StudentID: studentID, MasteryVector: map[string]float64{}}
-	}
-	avgScore, scoreOK, err := s.repo.AverageStudentScore(ctx, teacherID, studentID)
-	if err != nil {
-		return StudentDetailResponse{}, err
-	}
-	if !scoreOK {
-		avgScore = 0
-	}
-	classStudentIDs, err := s.repo.ListStudentsInClasses(ctx, []string{enrollment.ClassID})
-	if err != nil {
-		return StudentDetailResponse{}, err
-	}
-	rank, err := s.studentRank(ctx, teacherID, studentID, classStudentIDs)
-	if err != nil {
-		return StudentDetailResponse{}, err
-	}
-	lastActive, err := s.repo.LastSessionStartedAt(ctx, studentID)
-	if err != nil {
-		return StudentDetailResponse{}, err
-	}
-	streakDays, err := s.streakDays(ctx, studentID)
-	if err != nil {
-		return StudentDetailResponse{}, err
-	}
-	topicMastery, err := s.studentTopicMastery(ctx, teacherID, studentID, profile.MasteryVector)
-	if err != nil {
-		return StudentDetailResponse{}, err
-	}
-	recentActivity, err := s.recentActivity(ctx, teacherID, studentID)
-	if err != nil {
-		return StudentDetailResponse{}, err
-	}
+	recentActivity := studentRecentActivityFromRows(recentRows)
 	recentMistakes, err := s.repo.RecentMistakes(ctx, teacherID, studentID, 5)
 	if err != nil {
 		return StudentDetailResponse{}, err
 	}
 
 	var joinedAt *string
-	if enrollment.JoinedAt != nil {
-		value := timefmt.DateTimeMicros(*enrollment.JoinedAt)
+	if snapshot.Enrollment.JoinedAt != nil {
+		value := timefmt.DateTimeMicros(*snapshot.Enrollment.JoinedAt)
 		joinedAt = &value
 	}
 	var lastActiveText *string
-	if lastActive != nil {
-		value := timefmt.DateTimeMicros(*lastActive)
+	if snapshot.LastActive != nil {
+		value := timefmt.DateTimeMicros(*snapshot.LastActive)
 		lastActiveText = &value
 	}
 	return StudentDetailResponse{
 		Student: StudentBasicInfo{
-			ID:                 userInfo.ID,
-			Name:               displayName(userInfo),
-			Username:           userInfo.Username,
-			Email:              userInfo.Email,
-			ClassName:          enrollment.ClassName,
+			ID:                 snapshot.User.ID,
+			Name:               displayName(snapshot.User),
+			Username:           snapshot.User.Username,
+			Email:              snapshot.User.Email,
+			ClassName:          snapshot.Enrollment.ClassName,
 			JoinedAt:           joinedAt,
 			LastActive:         lastActiveText,
-			TotalStudyHours:    numutil.RoundPlaces(float64(profile.TotalStudyTimeMinutes)/60, 1),
-			TotalExercises:     profile.TotalExercises,
-			CorrectRate:        numutil.RoundPlaces(float64(profile.CorrectCount)/float64(max(profile.TotalExercises, 1))*100, 1),
-			AvgScore:           numutil.RoundPlaces(avgScore, 1),
-			Rank:               rank,
-			TotalClassStudents: len(classStudentIDs),
-			StreakDays:         streakDays,
+			TotalStudyHours:    numutil.RoundPlaces(float64(snapshot.Profile.TotalStudyTimeMinutes)/60, 1),
+			TotalExercises:     snapshot.Profile.TotalExercises,
+			CorrectRate:        numutil.RoundPlaces(float64(snapshot.Profile.CorrectCount)/float64(max(snapshot.Profile.TotalExercises, 1))*100, 1),
+			AvgScore:           numutil.RoundPlaces(snapshot.AverageScore, 1),
+			Rank:               snapshot.Rank,
+			TotalClassStudents: snapshot.TotalClassStudents,
+			StreakDays:         streakDaysFromDates(snapshot.SessionDays, s.now()),
 		},
 		TopicMastery:   topicMastery,
 		RecentActivity: recentActivity,
@@ -853,121 +838,71 @@ func (s *Service) commonErrors(ctx context.Context, teacherID string, studentIDs
 	return items, nil
 }
 
-func (s *Service) studentRank(ctx context.Context, teacherID string, studentID string, classStudentIDs []string) (int, error) {
-	rows, err := s.repo.RankByAverageScore(ctx, teacherID, classStudentIDs)
-	if err != nil {
-		return 0, err
-	}
-	for index, row := range rows {
-		if row.StudentID == studentID {
-			return index + 1, nil
-		}
-	}
-	return 0, nil
-}
-
-func (s *Service) streakDays(ctx context.Context, studentID string) (int, error) {
-	days, err := s.repo.ListSessionDays(ctx, studentID)
-	if err != nil {
-		return 0, err
-	}
-	active := make(map[string]struct{}, len(days))
-	for _, day := range days {
-		active[timefmt.Date(day)] = struct{}{}
-	}
-	current := timefmt.StartOfDay(s.now())
-	streak := 0
-	for {
-		if _, ok := active[timefmt.Date(current)]; !ok {
-			return streak, nil
-		}
-		streak++
-		current = current.AddDate(0, 0, -1)
-	}
-}
-
-func (s *Service) studentTopicMastery(ctx context.Context, teacherID string, studentID string, mastery map[string]float64) ([]StudentTopicMastery, error) {
-	conceptIDs := maputil.SortedFloatKeysByValueDesc(mastery)
-	names, err := s.repo.KnowledgeNames(ctx, conceptIDs)
-	if err != nil {
-		return nil, err
-	}
-	counts, err := s.repo.AttemptConceptCounts(ctx, teacherID, studentID)
-	if err != nil {
-		return nil, err
-	}
+func studentTopicMasteryFromSnapshot(snapshot StudentDetailSnapshot) []StudentTopicMastery {
+	conceptIDs := maputil.SortedFloatKeysByValueDesc(snapshot.Profile.MasteryVector)
 	items := make([]StudentTopicMastery, 0, len(conceptIDs))
 	for _, id := range conceptIDs {
 		items = append(items, StudentTopicMastery{
 			ConceptID:     id,
-			Topic:         nameOrUnknown(names, id),
-			Mastery:       numutil.RoundPlaces(mastery[id], 3),
-			ExerciseCount: counts[id],
+			Topic:         nameOrUnknown(snapshot.KnowledgeNames, id),
+			Mastery:       numutil.RoundPlaces(snapshot.Profile.MasteryVector[id], 3),
+			ExerciseCount: snapshot.ConceptAttemptCount[id],
 		})
 	}
-	return items, nil
+	return items
 }
 
-func (s *Service) recentActivity(ctx context.Context, teacherID string, studentID string) ([]StudentRecentActivity, error) {
-	attempts, err := s.repo.RecentAttempts(ctx, teacherID, studentID, 10)
-	if err != nil {
-		return nil, err
-	}
-	sessions, err := s.repo.RecentSessions(ctx, studentID, 5)
-	if err != nil {
-		return nil, err
-	}
-	type activityWithTime struct {
-		item StudentRecentActivity
-		at   time.Time
-	}
-	items := make([]activityWithTime, 0, len(attempts)+len(sessions))
-	for _, attempt := range attempts {
-		status := "warning"
-		if attempt.IsCorrect {
-			status = "success"
-		}
-		content := "完成\"" + stringutil.NonBlankOr(attempt.Title, "未知题目") + "\"练习"
-		if attempt.Score != 0 {
-			content += "，得分 " + formatScore(attempt.Score)
-		}
-		items = append(items, activityWithTime{
-			item: StudentRecentActivity{
-				ID:      attempt.ID,
-				Type:    "exercise",
+func studentRecentActivityFromRows(rows []StudentActivityReadModel) []StudentRecentActivity {
+	items := make([]StudentRecentActivity, 0, len(rows))
+	for _, row := range rows {
+		switch row.Type {
+		case "exercise":
+			status := "warning"
+			if row.IsCorrect {
+				status = "success"
+			}
+			content := "完成\"" + stringutil.NonBlankOr(row.Title, "未知题目") + "\"练习"
+			if row.Score != 0 {
+				content += "，得分 " + formatScore(row.Score)
+			}
+			items = append(items, StudentRecentActivity{
+				ID:      row.ID,
+				Type:    row.Type,
 				Content: content,
-				Time:    timefmt.DateTimeRFC3339(learningrange.InPlatformZone(attempt.StartedAt)),
+				Time:    timefmt.DateTimeRFC3339(learningrange.InPlatformZone(row.StartedAt)),
 				Status:  status,
-			},
-			at: attempt.StartedAt,
-		})
-	}
-	for _, session := range sessions {
-		content := "与 AI 导师对话"
-		if session.EndedAt != nil {
-			minutes := int(session.EndedAt.Sub(session.StartedAt).Minutes())
-			content += " " + strconv.Itoa(minutes) + " 分钟"
-		}
-		items = append(items, activityWithTime{
-			item: StudentRecentActivity{
-				ID:      session.ID,
-				Type:    "session",
+			})
+		case "session":
+			content := "与 AI 导师对话"
+			if row.EndedAt != nil {
+				content += " " + strconv.Itoa(int(row.EndedAt.Sub(row.StartedAt).Minutes())) + " 分钟"
+			}
+			items = append(items, StudentRecentActivity{
+				ID:      row.ID,
+				Type:    row.Type,
 				Content: content,
-				Time:    timefmt.DateTimeMicros(session.StartedAt),
+				Time:    timefmt.DateTimeMicros(row.StartedAt),
 				Status:  "info",
-			},
-			at: session.StartedAt,
-		})
+			})
+		}
 	}
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].at.After(items[j].at)
-	})
-	limit := min(10, len(items))
-	result := make([]StudentRecentActivity, 0, limit)
-	for _, item := range items[:limit] {
-		result = append(result, item.item)
+	return items
+}
+
+func streakDaysFromDates(days []string, now time.Time) int {
+	active := make(map[string]struct{}, len(days))
+	for _, day := range days {
+		active[day] = struct{}{}
 	}
-	return result, nil
+	current := timefmt.StartOfDay(now)
+	streak := 0
+	for {
+		if _, ok := active[timefmt.Date(current)]; !ok {
+			return streak
+		}
+		streak++
+		current = current.AddDate(0, 0, -1)
+	}
 }
 
 func emptyAnalytics() AnalyticsResponse {

@@ -19,7 +19,10 @@ import (
 	"mathstudy/backend/internal/platform/redact"
 )
 
-const maxImportBytes = 100 << 20
+const (
+	maxImportBytes           = 100 << 20
+	maxImportMultipartMemory = 1 << 20
+)
 
 // Service is the admin settings application surface used by HTTP handlers.
 type Service interface {
@@ -29,7 +32,7 @@ type Service interface {
 	UpdateGeneralSettings(context.Context, string, string) (adminsettingsapp.GeneralSettingsResponse, error)
 	ExportableTables(context.Context) (adminsettingsapp.ExportableTablesResponse, error)
 	ExportData(context.Context, []string, string, io.Writer) (adminsettingsapp.DataExportMetadata, error)
-	ImportData(context.Context, []byte, string) (adminsettingsapp.DataImportResponse, error)
+	ImportData(context.Context, io.Reader, string) (adminsettingsapp.DataImportResponse, error)
 	DatabaseMonitor(context.Context) (adminsettingsapp.DatabaseMonitorResponse, error)
 }
 
@@ -235,13 +238,16 @@ func (h *Handler) importDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxImportBytes)
 	// #nosec G120 -- MaxBytesReader bounds the complete import request body.
-	if err := r.ParseMultipartForm(maxImportBytes); err != nil {
+	if err := r.ParseMultipartForm(maxImportMultipartMemory); err != nil {
 		if isRequestTooLarge(err) {
 			writeAdminSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "文件大小不能超过 100MB")
 			return
 		}
 		writeAdminSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "文件读取失败: "+redact.String(err.Error()))
 		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
 	}
 	file, header, err := r.FormFile("file")
 	if err != nil {
@@ -253,16 +259,7 @@ func (h *Handler) importDatabase(w http.ResponseWriter, r *http.Request) {
 		writeAdminSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "请上传 JSON 格式的备份文件")
 		return
 	}
-	content, err := io.ReadAll(file)
-	if err != nil {
-		if isRequestTooLarge(err) {
-			writeAdminSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "文件大小不能超过 100MB")
-			return
-		}
-		writeAdminSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "文件读取失败: "+redact.String(err.Error()))
-		return
-	}
-	response, err := h.service.ImportData(r.Context(), content, principal.UserID)
+	response, err := h.service.ImportData(r.Context(), file, principal.UserID)
 	if err != nil {
 		h.writeServiceError(w, err, "导入数据库数据失败")
 		return
