@@ -8,13 +8,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	adminsettingsapp "mathstudy/backend/internal/application/adminsettings"
 	adminstorageapp "mathstudy/backend/internal/application/adminstorage"
-	"mathstudy/backend/internal/domain/user"
 	"mathstudy/backend/internal/platform/redact"
 )
 
@@ -33,6 +33,7 @@ var sensitiveSystemSettingKeys = map[string]bool{
 const (
 	maxImportBatchRows       = 500
 	maxImportBatchParameters = 60000
+	importRollbackTimeout    = 5 * time.Second
 )
 
 // AdminSettingsRepository persists system settings and database management operations.
@@ -127,10 +128,7 @@ func (r AdminSettingsRepository) ExportTable(ctx context.Context, table string, 
 	}
 	sql := "SELECT * FROM " + pgx.Identifier{"public", table}.Sanitize()
 	args := []any{}
-	switch table {
-	case "users":
-		sql += " WHERE role <> 'ADMIN'::public.userrole"
-	case "system_settings":
+	if table == "system_settings" {
 		sql += " WHERE key <> ALL($1)"
 		args = append(args, sensitiveSystemSettingKeyList())
 	}
@@ -172,8 +170,62 @@ func sensitiveSystemSettingKeyList() []string {
 	return keys
 }
 
-// ImportRows imports rows into one whitelisted table with ON CONFLICT DO NOTHING.
-func (r AdminSettingsRepository) ImportRows(ctx context.Context, table string, rows []map[string]any) (adminsettingsapp.TableImportResult, error) {
+// ImportTables imports every prepared table in one transaction.
+func (r AdminSettingsRepository) ImportTables(
+	ctx context.Context,
+	tables []adminsettingsapp.ImportTable,
+) (map[string]adminsettingsapp.TableImportResult, error) {
+	for _, table := range tables {
+		if !safeTableName(table.Name) {
+			return nil, fmt.Errorf("unsafe table name %q", table.Name)
+		}
+	}
+	if len(tables) == 0 {
+		return map[string]adminsettingsapp.TableImportResult{}, nil
+	}
+	if r.beginner == nil {
+		return nil, errors.New("database import transaction is unavailable")
+	}
+
+	tx, err := r.beginner.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("begin sanitized data import transaction: %w", err)
+	}
+	txBase, err := NewRepository(tx)
+	if err != nil {
+		return nil, rollbackImportTransaction(ctx, tx, err)
+	}
+	txRepository := AdminSettingsRepository{Repository: txBase}
+	results := make(map[string]adminsettingsapp.TableImportResult, len(tables))
+	var savepoints importSavepointSequence
+	for _, table := range tables {
+		result, importErr := txRepository.importRows(ctx, table.Name, table.Rows, &savepoints)
+		if importErr != nil {
+			return nil, rollbackImportTransaction(ctx, tx, fmt.Errorf("import %s: %w", table.Name, importErr))
+		}
+		results[table.Name] = result
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, rollbackImportTransaction(ctx, tx, fmt.Errorf("commit sanitized data import transaction: %w", err))
+	}
+	return results, nil
+}
+
+func rollbackImportTransaction(ctx context.Context, tx pgx.Tx, cause error) error {
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), importRollbackTimeout)
+	defer cancel()
+	if rollbackErr := tx.Rollback(rollbackCtx); rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
+		return errors.Join(cause, fmt.Errorf("rollback sanitized data import transaction: %w", rollbackErr))
+	}
+	return cause
+}
+
+func (r AdminSettingsRepository) importRows(
+	ctx context.Context,
+	table string,
+	rows []map[string]any,
+	savepoints *importSavepointSequence,
+) (adminsettingsapp.TableImportResult, error) {
 	if !safeTableName(table) {
 		return adminsettingsapp.TableImportResult{}, fmt.Errorf("unsafe table name %q", table)
 	}
@@ -193,7 +245,7 @@ func (r AdminSettingsRepository) ImportRows(ctx context.Context, table string, r
 		batchSize := min(maxImportBatchRows, maxImportBatchParameters/len(group.columns))
 		for start := 0; start < len(group.rows); start += batchSize {
 			end := min(start+batchSize, len(group.rows))
-			batchResult, err := r.importRowBatch(ctx, table, group.columns, group.rows[start:end])
+			batchResult, err := r.importRowBatch(ctx, table, group.columns, group.rows[start:end], savepoints)
 			result.Imported += batchResult.Imported
 			result.Skipped += batchResult.Skipped
 			result.Failed += batchResult.Failed
@@ -246,12 +298,24 @@ type importRowGroup struct {
 	rows    [][]any
 }
 
+type importSavepointSequence int
+
+func (s *importSavepointSequence) next() string {
+	*s = *s + 1
+	return fmt.Sprintf("admin_data_import_%d", *s)
+}
+
 func (r AdminSettingsRepository) importRowBatch(
 	ctx context.Context,
 	table string,
 	columns []string,
 	rows [][]any,
+	savepoints *importSavepointSequence,
 ) (adminsettingsapp.TableImportResult, error) {
+	batchSavepoint, err := r.createImportSavepoint(ctx, savepoints)
+	if err != nil {
+		return adminsettingsapp.TableImportResult{}, err
+	}
 	sql := importRowsSQL(table, columns, len(rows))
 	args := make([]any, 0, len(columns)*len(rows))
 	for _, row := range rows {
@@ -259,6 +323,9 @@ func (r AdminSettingsRepository) importRowBatch(
 	}
 	tag, err := r.DB().Exec(ctx, sql, args...)
 	if err == nil {
+		if err := r.releaseImportSavepoint(ctx, batchSavepoint); err != nil {
+			return adminsettingsapp.TableImportResult{}, err
+		}
 		imported := int(tag.RowsAffected())
 		return adminsettingsapp.TableImportResult{
 			Imported: imported,
@@ -271,10 +338,20 @@ func (r AdminSettingsRepository) importRowBatch(
 	if !isImportRowDataError(err) {
 		return adminsettingsapp.TableImportResult{}, err
 	}
+	if err := r.rollbackImportSavepoint(ctx, batchSavepoint); err != nil {
+		return adminsettingsapp.TableImportResult{}, err
+	}
+	if err := r.releaseImportSavepoint(ctx, batchSavepoint); err != nil {
+		return adminsettingsapp.TableImportResult{}, err
+	}
 
 	result := adminsettingsapp.TableImportResult{}
 	singleRowSQL := importRowsSQL(table, columns, 1)
 	for _, row := range rows {
+		rowSavepoint, savepointErr := r.createImportSavepoint(ctx, savepoints)
+		if savepointErr != nil {
+			return result, savepointErr
+		}
 		tag, rowErr := r.DB().Exec(ctx, singleRowSQL, row...)
 		if rowErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -283,14 +360,50 @@ func (r AdminSettingsRepository) importRowBatch(
 			if !isImportRowDataError(rowErr) {
 				return result, rowErr
 			}
+			if err := r.rollbackImportSavepoint(ctx, rowSavepoint); err != nil {
+				return result, err
+			}
+			if err := r.releaseImportSavepoint(ctx, rowSavepoint); err != nil {
+				return result, err
+			}
 			result.Failed++
-		} else if tag.RowsAffected() > 0 {
-			result.Imported++
 		} else {
-			result.Skipped++
+			if err := r.releaseImportSavepoint(ctx, rowSavepoint); err != nil {
+				return result, err
+			}
+			if tag.RowsAffected() > 0 {
+				result.Imported++
+			} else {
+				result.Skipped++
+			}
 		}
 	}
 	return result, nil
+}
+
+func (r AdminSettingsRepository) createImportSavepoint(
+	ctx context.Context,
+	sequence *importSavepointSequence,
+) (string, error) {
+	name := sequence.next()
+	if _, err := r.DB().Exec(ctx, "SAVEPOINT "+pgx.Identifier{name}.Sanitize()); err != nil {
+		return "", fmt.Errorf("create import savepoint: %w", err)
+	}
+	return name, nil
+}
+
+func (r AdminSettingsRepository) rollbackImportSavepoint(ctx context.Context, name string) error {
+	if _, err := r.DB().Exec(ctx, "ROLLBACK TO SAVEPOINT "+pgx.Identifier{name}.Sanitize()); err != nil {
+		return fmt.Errorf("rollback import savepoint: %w", err)
+	}
+	return nil
+}
+
+func (r AdminSettingsRepository) releaseImportSavepoint(ctx context.Context, name string) error {
+	if _, err := r.DB().Exec(ctx, "RELEASE SAVEPOINT "+pgx.Identifier{name}.Sanitize()); err != nil {
+		return fmt.Errorf("release import savepoint: %w", err)
+	}
+	return nil
 }
 
 func isImportRowDataError(err error) bool {
@@ -404,34 +517,7 @@ func filterImportRow(table string, row map[string]any) map[string]any {
 	if table == "email_templates" {
 		delete(filtered, "updated_by")
 	}
-	if table == "users" && !normalizeImportedUserRow(filtered) {
-		return map[string]any{}
-	}
 	return filtered
-}
-
-func normalizeImportedUserRow(row map[string]any) bool {
-	roleValue, ok := stringValue(row["role"])
-	if !ok {
-		return false
-	}
-	role, err := user.ParseRole(roleValue)
-	if err != nil || role == user.RoleAdmin {
-		return false
-	}
-	row["role"] = role.DBValue()
-
-	statusValue, ok := stringValue(row["status"])
-	if !ok {
-		return false
-	}
-	status, err := user.ParseStatus(statusValue)
-	if err != nil {
-		return false
-	}
-	row["status"] = status.DBValue()
-	row["is_active"] = status == user.StatusActive
-	return true
 }
 
 func stringValue(value any) (string, bool) {

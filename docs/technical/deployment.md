@@ -257,6 +257,12 @@ go test ./internal/adapter/llm/einoagent -run 'TestLiveMathSolver' -count=1 -v
 
 尚未完成的运行时验收范围记录在 [项目待办](../TODO.md)。
 
+## 完整备份与脱敏数据交换
+
+管理员“数据库”页面提供的是脱敏 JSON 数据交换，不是数据库备份或恢复工具。导出内容不包含用户账号表、管理员账号、密码和其他敏感字段，也不覆盖全部业务表；导入要求目标库已经存在所需账号和关联基础数据，不能用于空库完整恢复。旧版脱敏 JSON 中只要包含非空 `users` 数据，导入会在写库前明确拒绝，且不会生成、填充或绕过密码字段。
+
+完整备份必须使用更新流程生成的 PostgreSQL custom-format archive。`scripts/update.sh` 通过 `pg_dump --format=custom --no-owner --no-privileges` 创建 `postgres.dump`；恢复前先用 `pg_restore --list` 校验 archive，再按下方流程停止应用、清理目标 schema 并执行 `pg_restore --exit-on-error`。管理员 JSON 文件不能替代该流程。
+
 ## 更新与回滚
 
 - 使用 `scripts/update.sh --version <镜像标签>` 或按“确认数据库、拉取镜像、停止应用写入、备份数据、迁移、启动新应用”的顺序更新。脚本确认 PostgreSQL 可用并拉取新镜像时旧应用仍保持运行，随后只停止 backend/frontend，不停止数据库和 Redis。

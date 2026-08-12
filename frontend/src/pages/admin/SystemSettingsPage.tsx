@@ -75,7 +75,7 @@ export const SystemSettingsPage: React.FC = () => {
 
           {/* 数据库 Tab */}
           <TabsContent value="database" className="space-y-6">
-            <DatabaseBackupCard />
+            <SanitizedDataExchangeCard />
             <DatabaseMonitorCard />
           </TabsContent>
 
@@ -510,8 +510,8 @@ const ChangePasswordCard: React.FC = () => {
   );
 };
 
-// 数据备份恢复卡片组件
-const DatabaseBackupCard: React.FC = () => {
+// 脱敏数据交换卡片组件
+const SanitizedDataExchangeCard: React.FC = () => {
   const [exportableTables, setExportableTables] = useState<ExportableTable[]>([]);
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
   const [isExporting, setIsExporting] = useState(false);
@@ -566,11 +566,11 @@ const DatabaseBackupCard: React.FC = () => {
     try {
       const result = await systemSettingService.exportData([...selectedTables]);
       const blob = base64ToBlob(result.content, 'application/json');
-      downloadBlob(blob, result.filename, 'database_export.json');
-      setSuccess(`导出成功，共 ${result.total_records} 条记录`);
+      downloadBlob(blob, result.filename, 'sanitized_data_export.json');
+      setSuccess(`脱敏数据导出成功，共 ${result.total_records} 条记录`);
       setTimeout(() => setSuccess(''), 5000);
     } catch (err) {
-      setError(getApiErrorMessage(err, '导出失败'));
+      setError(getApiErrorMessage(err, '脱敏数据导出失败'));
     } finally {
       setIsExporting(false);
     }
@@ -587,12 +587,14 @@ const DatabaseBackupCard: React.FC = () => {
       const result = await systemSettingService.importData(file);
       setImportResult(result);
       if (result.success) {
-        setSuccess(`导入完成：${result.total_imported} 条导入，${result.total_skipped} 条跳过`);
+        setSuccess(`交换完成：${result.total_imported} 条已写入，${result.total_skipped} 条已跳过`);
+      } else if (result.total_failed > 0) {
+        setError(`交换完成但有 ${result.total_failed} 条数据未写入，请查看明细`);
       } else {
-        setError(`导入部分失败：${result.total_failed} 条失败`);
+        setError('交换完成但存在未处理的数据，请查看明细');
       }
     } catch (err) {
-      setError(getApiErrorMessage(err, '导入失败'));
+      setError(getApiErrorMessage(err, '脱敏数据导入失败'));
     } finally {
       setIsImporting(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -605,9 +607,9 @@ const DatabaseBackupCard: React.FC = () => {
         <CardHeader>
           <CardTitle className="text-xl flex items-center gap-2">
             <HardDrive className="w-5 h-5" />
-            数据备份与恢复
+            脱敏数据交换
           </CardTitle>
-          <CardDescription>导出和导入数据库数据</CardDescription>
+          <CardDescription>在已有基础数据的环境间交换所选业务数据</CardDescription>
         </CardHeader>
         <CardContent className="flex items-center justify-center py-8">
           <Loader2 className="w-6 h-6 animate-spin text-surface-400" />
@@ -621,11 +623,18 @@ const DatabaseBackupCard: React.FC = () => {
       <CardHeader>
         <CardTitle className="text-xl flex items-center gap-2">
           <HardDrive className="w-5 h-5" />
-          数据备份与恢复
+          脱敏数据交换
         </CardTitle>
-        <CardDescription>导出和导入数据库数据</CardDescription>
+        <CardDescription>在已有基础数据的环境间交换所选业务数据</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300">
+          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+          <p className="text-sm leading-5">
+            导出内容已脱敏，不包含完整用户账号、管理员账号、敏感字段及全部业务数据，不能用于空库完整恢复。
+            目标库需预先具备关联账号和基础数据；完整备份与恢复请按部署文档使用 pg_dump / pg_restore。
+          </p>
+        </div>
         {error && (
           <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400">
             <AlertCircle className="w-4 h-4 shrink-0" />
@@ -679,7 +688,7 @@ const DatabaseBackupCard: React.FC = () => {
             ) : (
               <Download className="w-4 h-4 mr-2" />
             )}
-            {isExporting ? '导出中...' : '导出数据'}
+            {isExporting ? '导出中...' : '导出脱敏数据'}
           </Button>
           <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={isImporting}>
             {isImporting ? (
@@ -687,7 +696,7 @@ const DatabaseBackupCard: React.FC = () => {
             ) : (
               <Upload className="w-4 h-4 mr-2" />
             )}
-            {isImporting ? '导入中...' : '导入数据'}
+            {isImporting ? '导入中...' : '导入交换文件'}
           </Button>
           <input ref={fileInputRef} type="file" accept=".json" onChange={handleImport} className="hidden" />
         </div>
@@ -695,13 +704,13 @@ const DatabaseBackupCard: React.FC = () => {
         {/* 导入结果 */}
         {importResult && (
           <div className="p-4 rounded-lg bg-surface-50 dark:bg-surface-800 border border-surface-200 dark:border-surface-700">
-            <h4 className="text-sm font-medium text-surface-900 dark:text-surface-100 mb-3">导入结果</h4>
+            <h4 className="text-sm font-medium text-surface-900 dark:text-surface-100 mb-3">数据交换结果</h4>
             <div className="space-y-1.5">
               {Object.entries(importResult.table_results).map(([table, result]) => (
                 <div key={table} className="flex items-center justify-between text-sm">
                   <span className="text-surface-600 dark:text-surface-400">{table}</span>
                   <span className="text-surface-500 dark:text-surface-400">
-                    导入 {result.imported} / 跳过 {result.skipped} / 失败 {result.failed}
+                    已写入 {result.imported} / 已跳过 {result.skipped} / 未写入 {result.failed}
                   </span>
                 </div>
               ))}

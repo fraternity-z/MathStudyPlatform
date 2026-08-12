@@ -27,6 +27,8 @@ const (
 	maxImportValueDepth   = 16
 	maxImportArrayItems   = 4096
 	maxExportJSONBytes    = 100 << 20
+
+	sanitizedDataExchangeKind = "sanitized_data_exchange"
 )
 
 var (
@@ -36,7 +38,6 @@ var (
 )
 
 var exportableTables = []ExportableTableItem{
-	{Name: "users", DisplayName: "用户"},
 	{Name: "student_profiles", DisplayName: "学生画像"},
 	{Name: "knowledge_nodes", DisplayName: "知识节点"},
 	{Name: "knowledge_relations", DisplayName: "知识关系"},
@@ -54,7 +55,6 @@ var exportableTables = []ExportableTableItem{
 }
 
 var importOrder = []string{
-	"users",
 	"student_profiles",
 	"knowledge_nodes",
 	"knowledge_relations",
@@ -90,7 +90,7 @@ type Repository interface {
 	GetSettings(context.Context, []string) (map[string]string, error)
 	UpsertSettings(context.Context, []SettingUpdate) error
 	ExportTable(context.Context, string, func(map[string]any) error) (int, error)
-	ImportRows(context.Context, string, []map[string]any) (TableImportResult, error)
+	ImportTables(context.Context, []ImportTable) (map[string]TableImportResult, error)
 	DatabaseOverview(context.Context) (DatabaseOverview, error)
 	TableStats(context.Context) ([]TableStats, error)
 }
@@ -114,6 +114,12 @@ type SettingUpdate struct {
 	Value       string
 	Description string
 	UpdatedAt   time.Time
+}
+
+// ImportTable stores one fully parsed and validated table for atomic import.
+type ImportTable struct {
+	Name string
+	Rows []map[string]any
 }
 
 // RegistrationSettingsResponse mirrors /admin/settings/registration.
@@ -319,7 +325,7 @@ func (s *Service) ExportableTables(context.Context) (ExportableTablesResponse, e
 	return ExportableTablesResponse{Tables: tables}, nil
 }
 
-// ExportData writes selected tables as JSON and returns response metadata.
+// ExportData writes selected tables as a sanitized JSON exchange and returns response metadata.
 func (s *Service) ExportData(ctx context.Context, tables []string, adminID string, destination io.Writer) (DataExportMetadata, error) {
 	if len(tables) == 0 {
 		return DataExportMetadata{}, badRequest("至少选择一张表")
@@ -335,7 +341,7 @@ func (s *Service) ExportData(ctx context.Context, tables []string, adminID strin
 
 	exportedAt := s.now()
 	metadata := DataExportMetadata{
-		Filename:    "backup_" + exportedAt.Format("20060102_150405") + ".json",
+		Filename:    "sanitized_data_" + exportedAt.Format("20060102_150405") + ".json",
 		ExportedAt:  exportedAt,
 		TableCounts: map[string]int{},
 	}
@@ -369,6 +375,9 @@ func (s *Service) writeExportPayload(
 	}
 	if err := writeJSONValue(writer, adminID); err != nil {
 		return fmt.Errorf("write export administrator: %w", err)
+	}
+	if _, err := io.WriteString(writer, `,"data_kind":"sanitized_data_exchange","sanitized":true,"complete_backup":false,"full_restore_supported":false,"excluded_data":["user_accounts","administrator_accounts","sensitive_fields","unlisted_business_tables"]`); err != nil {
+		return fmt.Errorf("write export scope: %w", err)
 	}
 	if _, err := io.WriteString(writer, `,"tables":{`); err != nil {
 		return fmt.Errorf("write export tables: %w", err)
@@ -436,39 +445,48 @@ func (w *exportLimitWriter) Write(data []byte) (int, error) {
 	return written, err
 }
 
-// ImportData imports a JSON backup file using ON CONFLICT DO NOTHING semantics.
+// ImportData imports a sanitized JSON data exchange atomically.
 func (s *Service) ImportData(ctx context.Context, content []byte, adminID string) (DataImportResponse, error) {
 	_ = adminID
 	var payload struct {
-		Tables map[string]json.RawMessage `json:"tables"`
+		DataKind             string                     `json:"data_kind"`
+		Sanitized            *bool                      `json:"sanitized"`
+		CompleteBackup       *bool                      `json:"complete_backup"`
+		FullRestoreSupported *bool                      `json:"full_restore_supported"`
+		Tables               map[string]json.RawMessage `json:"tables"`
 	}
 	if err := json.Unmarshal(content, &payload); err != nil {
 		return DataImportResponse{}, badRequest("JSON 文件解析失败: " + err.Error())
 	}
 	if payload.Tables == nil {
-		return DataImportResponse{}, badRequest("无效的备份文件格式")
+		return DataImportResponse{}, badRequest("无效的脱敏数据交换文件格式")
 	}
 	if len(payload.Tables) > maxImportTableCount {
 		return DataImportResponse{}, badRequest(fmt.Sprintf("导入表数量不能超过 %d", maxImportTableCount))
 	}
+	if payload.DataKind != "" && payload.DataKind != sanitizedDataExchangeKind {
+		return DataImportResponse{}, badRequest("此接口仅支持管理端脱敏数据交换 JSON；完整数据库恢复请使用 pg_dump/pg_restore")
+	}
+	if payload.CompleteBackup != nil && *payload.CompleteBackup {
+		return DataImportResponse{}, badRequest("此接口不接受完整数据库备份；完整数据库恢复请使用 pg_dump/pg_restore")
+	}
+	if payload.Sanitized != nil && !*payload.Sanitized {
+		return DataImportResponse{}, badRequest("此接口仅接受脱敏数据交换文件；完整数据库恢复请使用 pg_dump/pg_restore")
+	}
+	if payload.FullRestoreSupported != nil && *payload.FullRestoreSupported {
+		return DataImportResponse{}, badRequest("此接口不支持完整数据库恢复；请使用 pg_dump/pg_restore")
+	}
 
 	response := DataImportResponse{
-		Success:      true,
-		ImportedAt:   s.now(),
 		TableResults: map[string]TableImportResult{},
 		Errors:       []string{},
 	}
+	prepared := make([]ImportTable, 0, len(payload.Tables))
 	totalRows := 0
 	for _, table := range s.orderedImportTables(payload.Tables) {
-		if !s.isExportableTable(table) {
-			response.Errors = append(response.Errors, "跳过未知表: "+table)
-			continue
-		}
 		var rows []map[string]any
 		if err := json.Unmarshal(payload.Tables[table], &rows); err != nil {
-			response.Errors = append(response.Errors, table+": 数据格式无效")
-			response.TotalFailed++
-			continue
+			return DataImportResponse{}, badRequest(table + ": 数据格式无效")
 		}
 		totalRows += len(rows)
 		if totalRows > maxImportTotalRows {
@@ -477,16 +495,46 @@ func (s *Service) ImportData(ctx context.Context, content []byte, adminID string
 		if err := validateImportRows(table, rows); err != nil {
 			return DataImportResponse{}, err
 		}
-		result, err := s.repo.ImportRows(ctx, table, rows)
-		if err != nil {
-			return DataImportResponse{}, fmt.Errorf("import %s: %w", table, err)
+		if table == "users" {
+			if len(rows) > 0 {
+				return DataImportResponse{}, badRequest("脱敏数据交换不支持导入用户账号，也不能用于空库恢复；请先在目标库建立所需账号，完整恢复请使用 pg_dump/pg_restore")
+			}
+			continue
 		}
-		response.TableResults[table] = result
+		if !s.isExportableTable(table) {
+			response.Errors = append(response.Errors, "跳过未知表: "+table)
+			continue
+		}
+		prepared = append(prepared, ImportTable{Name: table, Rows: rows})
+	}
+	if err := ctx.Err(); err != nil {
+		return DataImportResponse{}, err
+	}
+
+	results := map[string]TableImportResult{}
+	if len(prepared) > 0 {
+		var err error
+		results, err = s.repo.ImportTables(ctx, prepared)
+		if err != nil {
+			return DataImportResponse{}, fmt.Errorf("import sanitized data exchange: %w", err)
+		}
+	}
+	for _, table := range prepared {
+		result := results[table.Name]
+		response.TableResults[table.Name] = result
 		response.TotalImported += result.Imported
 		response.TotalSkipped += result.Skipped
 		response.TotalFailed += result.Failed
+		if result.Failed > 0 {
+			response.Errors = append(response.Errors, fmt.Sprintf(
+				"%s: %d 条数据不符合目标库约束，已跳过；请确认目标库已有对应账号和关联数据",
+				table.Name,
+				result.Failed,
+			))
+		}
 	}
-	response.Success = response.TotalFailed == 0
+	response.ImportedAt = s.now()
+	response.Success = response.TotalFailed == 0 && len(response.Errors) == 0
 	return response, nil
 }
 

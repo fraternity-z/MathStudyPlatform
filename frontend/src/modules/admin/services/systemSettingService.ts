@@ -104,7 +104,7 @@ export interface ExportableTable {
   display_name: string;
 }
 
-/** 数据导出响应 */
+/** 脱敏数据导出响应 */
 export interface DataExportResponse {
   filename: string;
   content: string;
@@ -120,7 +120,7 @@ export interface TableImportResult {
   failed: number;
 }
 
-/** 数据导入响应 */
+/** 脱敏数据导入响应 */
 export interface DataImportResponse {
   success: boolean;
   imported_at: string;
@@ -271,7 +271,7 @@ export const systemSettingService = {
   },
 
   /**
-   * 导出数据（管理员接口）
+   * 导出脱敏交换数据（管理员接口）
    */
   async exportData(tables: string[]): Promise<DataExportResponse> {
     const response = await apiClient.post<DataExportResponse>(
@@ -282,7 +282,7 @@ export const systemSettingService = {
   },
 
   /**
-   * 导入数据（管理员接口）
+   * 导入脱敏交换数据（管理员接口）
    */
   async importData(file: File): Promise<DataImportResponse> {
     const formData = new FormData();

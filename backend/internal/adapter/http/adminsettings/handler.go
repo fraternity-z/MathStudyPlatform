@@ -162,9 +162,9 @@ func (h *Handler) exportDatabase(w http.ResponseWriter, r *http.Request) {
 	if !decodeRequest(w, r, &request) {
 		return
 	}
-	temporary, err := os.CreateTemp("", "msp-database-export-*.json")
+	temporary, err := os.CreateTemp("", "msp-sanitized-data-export-*.json")
 	if err != nil {
-		h.writeServiceError(w, err, "导出数据库数据失败")
+		h.writeServiceError(w, err, "导出脱敏数据失败")
 		return
 	}
 	temporaryPath := temporary.Name()
@@ -175,11 +175,11 @@ func (h *Handler) exportDatabase(w http.ResponseWriter, r *http.Request) {
 
 	response, err := h.service.ExportData(r.Context(), request.Tables, principal.UserID, temporary)
 	if err != nil {
-		h.writeServiceError(w, err, "导出数据库数据失败")
+		h.writeServiceError(w, err, "导出脱敏数据失败")
 		return
 	}
 	if _, err := temporary.Seek(0, io.SeekStart); err != nil {
-		h.writeServiceError(w, err, "导出数据库数据失败")
+		h.writeServiceError(w, err, "导出脱敏数据失败")
 		return
 	}
 	if err := writeDataExportResponse(w, temporary, response); err != nil {
@@ -245,12 +245,12 @@ func (h *Handler) importDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		writeAdminSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "请上传 JSON 格式的备份文件")
+		writeAdminSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "请上传 JSON 格式的脱敏数据交换文件")
 		return
 	}
 	defer file.Close()
 	if header == nil || !strings.HasSuffix(strings.ToLower(header.Filename), ".json") {
-		writeAdminSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "请上传 JSON 格式的备份文件")
+		writeAdminSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "请上传 JSON 格式的脱敏数据交换文件")
 		return
 	}
 	content, err := io.ReadAll(file)
@@ -264,7 +264,7 @@ func (h *Handler) importDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := h.service.ImportData(r.Context(), content, principal.UserID)
 	if err != nil {
-		h.writeServiceError(w, err, "导入数据库数据失败")
+		h.writeServiceError(w, err, "导入脱敏数据失败")
 		return
 	}
 	httpjson.Write(w, http.StatusOK, response)
