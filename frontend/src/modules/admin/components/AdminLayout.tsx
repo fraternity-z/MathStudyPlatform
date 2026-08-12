@@ -230,7 +230,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children, className = 
                     {user?.name || '管理员'}
                   </div>
                   <div className="text-xs text-surface-500 dark:text-surface-400 truncate">
-                    {user?.email || 'admin@example.com'}
+                    {user?.email || '未设置邮箱'}
                   </div>
                 </div>
               </div>

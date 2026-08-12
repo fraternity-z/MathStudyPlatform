@@ -13,7 +13,7 @@ import type { DashboardStats, TeacherAnalyticsData } from '@/modules/teacher/typ
 export type DashboardExportFormat = 'csv' | 'markdown';
 
 export interface DashboardExportSections {
-  /** 统计概览（6 张卡片数据） */
+  /** 统计概览 */
   overview: boolean;
   /** 知识点掌握度 */
   knowledgePoints: boolean;
@@ -73,7 +73,6 @@ export function buildDashboardCsvContent(
     lines.push(`平均完成率,${analytics.overview.avg_completion_rate}%`);
     lines.push(`平均成绩,${analytics.overview.avg_score}`);
     lines.push(`平均学习时长,${analytics.overview.avg_study_hours}h`);
-    lines.push(`待批改作业,${stats.pending_grading}`);
     lines.push('');
   }
 
@@ -132,7 +131,6 @@ function buildMarkdownContent(
     lines.push(`| 平均完成率 | ${analytics.overview.avg_completion_rate}% |`);
     lines.push(`| 平均成绩 | ${analytics.overview.avg_score} |`);
     lines.push(`| 平均学习时长 | ${analytics.overview.avg_study_hours}h |`);
-    lines.push(`| 待批改作业 | ${stats.pending_grading} |`);
     lines.push('');
   }
 

@@ -113,36 +113,60 @@ const AnalyticsPageInner: React.FC = () => {
   const [portraitLoading, setPortraitLoading] = useState(true);
   const [portraitError, setPortraitError] = useState<string | null>(null);
   const [portraitRequestKey, setPortraitRequestKey] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [statisticsLoading, setStatisticsLoading] = useState(true);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
+  const [statisticsError, setStatisticsError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
     const load = async () => {
-      setLoading(true);
-      setError(null);
+      setOverviewLoading(true);
+      setOverviewError(null);
       try {
         const signal = controller.signal;
-        const [overviewRes, statsRes, masteryRes, rankingRes] = await Promise.all([
+        const [overviewRes, masteryRes, rankingRes] = await Promise.all([
           apiClient.get<OverviewResponse>('/progress/overview', { signal }),
-          apiClient.get<StatisticsResponse>('/progress/statistics', { params: { range: timeRange }, signal }),
           apiClient.get<MasteryResponse>('/progress/mastery', { signal }),
           apiClient.get<ClassRankingResponse>('/progress/class-ranking', { signal }),
         ]);
         if (controller.signal.aborted) return;
         setOverview(overviewRes.data);
-        setStats(statsRes.data);
         setMasteryTopics(masteryRes.data?.topics ?? []);
         setClassRanking(rankingRes.data);
       } catch (err) {
         if (controller.signal.aborted) return;
-        setError(getApiErrorMessage(err, '加载学习统计失败'));
+        setOverviewError(getApiErrorMessage(err, '加载累计学习数据失败'));
       } finally {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted) setOverviewLoading(false);
       }
     };
-    load();
+    void load();
     return () => { controller.abort(); };
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const loadStatistics = async () => {
+      setStatisticsLoading(true);
+      setStatisticsError(null);
+      setStats(null);
+      try {
+        const response = await apiClient.get<StatisticsResponse>('/progress/statistics', {
+          params: { range: timeRange },
+          signal: controller.signal,
+        });
+        if (!controller.signal.aborted) setStats(response.data);
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setStatisticsError(getApiErrorMessage(err, '加载学习趋势失败'));
+        }
+      } finally {
+        if (!controller.signal.aborted) setStatisticsLoading(false);
+      }
+    };
+    void loadStatistics();
+    return () => controller.abort();
   }, [timeRange]);
 
   useEffect(() => {
@@ -371,9 +395,9 @@ const AnalyticsPageInner: React.FC = () => {
           <Select options={timeRangeOptions} value={timeRange} onChange={setTimeRange} className="w-32" />
         </div>
 
-        {error && (
+        {(overviewError || statisticsError) && (
           <div className="mb-6 p-4 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300">
-            {error}
+            {overviewError ?? statisticsError}
           </div>
         )}
 
@@ -386,7 +410,7 @@ const AnalyticsPageInner: React.FC = () => {
                 </div>
               </div>
               <div className="text-3xl font-bold text-surface-900 dark:text-surface-100 mb-1">
-                {loading ? '—' : totalStudyTimeFormatted}
+                {overviewLoading ? '—' : totalStudyTimeFormatted}
               </div>
               <div className="text-sm text-surface-500 dark:text-surface-400">累计学习时长</div>
             </CardContent>
@@ -397,7 +421,7 @@ const AnalyticsPageInner: React.FC = () => {
                 <BookOpen className="h-6 w-6 text-secondary-600 dark:text-secondary-400" />
               </div>
               <div className="text-3xl font-bold text-surface-900 dark:text-surface-100 mb-1">
-                {loading ? '—' : totalExercises}
+                {overviewLoading ? '—' : totalExercises}
               </div>
               <div className="text-sm text-surface-500 dark:text-surface-400">完成题目数</div>
             </CardContent>
@@ -408,7 +432,7 @@ const AnalyticsPageInner: React.FC = () => {
                 <Target className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />
               </div>
               <div className="text-3xl font-bold text-surface-900 dark:text-surface-100 mb-1">
-                {loading ? '—' : `${correctRate.toFixed(1)}%`}
+                {overviewLoading ? '—' : `${correctRate.toFixed(1)}%`}
               </div>
               <div className="text-sm text-surface-500 dark:text-surface-400">正确率</div>
             </CardContent>
@@ -419,7 +443,7 @@ const AnalyticsPageInner: React.FC = () => {
                 <Flame className="h-6 w-6 text-orange-600 dark:text-orange-400" />
               </div>
               <div className="text-3xl font-bold text-surface-900 dark:text-surface-100 mb-1">
-                {loading ? '—' : `${streak}天`}
+                {overviewLoading ? '—' : `${streak}天`}
               </div>
               <div className="text-sm text-surface-500 dark:text-surface-400">连续打卡</div>
             </CardContent>
@@ -437,7 +461,11 @@ const AnalyticsPageInner: React.FC = () => {
                 <CardDescription>{trendDescription}的学习时长</CardDescription>
               </CardHeader>
               <CardContent>
-                {trendChartOption ? (
+                {statisticsLoading ? (
+                  <div className="flex h-48 items-center justify-center text-sm text-surface-500 dark:text-surface-400">
+                    加载中…
+                  </div>
+                ) : trendChartOption ? (
                   <ReactEChartsCore
                     echarts={echarts}
                     option={trendChartOption}
@@ -462,7 +490,7 @@ const AnalyticsPageInner: React.FC = () => {
                 <CardDescription>各知识点的学习进度和掌握情况</CardDescription>
               </CardHeader>
               <CardContent>
-                {loading ? (
+                {overviewLoading ? (
                   <div className="text-surface-500 dark:text-surface-400 py-4">加载中…</div>
                 ) : masteryTopics.length === 0 ? (
                   <p className="text-sm text-surface-500 dark:text-surface-400 py-4">暂无知识点掌握数据，先去做几道题试试吧~</p>
@@ -528,7 +556,9 @@ const AnalyticsPageInner: React.FC = () => {
                 <CardTitle className="text-lg">{rangeGoal.label}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="text-center py-4">
+                {statisticsLoading ? (
+                  <div className="py-12 text-center text-sm text-surface-500 dark:text-surface-400">加载中…</div>
+                ) : <div className="text-center py-4">
                   <div className="relative inline-flex items-center justify-center">
                     <svg className="w-32 h-32 transform -rotate-90">
                       <circle cx="64" cy="64" r="56" stroke="currentColor" strokeWidth="8" fill="none" className="text-surface-200 dark:text-surface-700" />
@@ -542,8 +572,8 @@ const AnalyticsPageInner: React.FC = () => {
                       <span className="text-sm text-surface-500 dark:text-surface-400">{rangeGoal.unit}</span>
                     </div>
                   </div>
-                </div>
-                {timeRange === 'week' && (
+                </div>}
+                {!statisticsLoading && timeRange === 'week' && (
                   <div className="flex justify-center gap-1">
                     {(['一', '二', '三', '四', '五', '六', '日'] as const).map((label, i) => (
                       <div
@@ -566,7 +596,7 @@ const AnalyticsPageInner: React.FC = () => {
                 <CardDescription>按累计学习时长与做题数计算，不随上方时间范围变化</CardDescription>
               </CardHeader>
               <CardContent>
-                {loading ? (
+                {overviewLoading ? (
                   <div className="text-center py-4 text-surface-500 dark:text-surface-400">—</div>
                 ) : classRanking?.in_class && classRanking.available ? (
                   <>

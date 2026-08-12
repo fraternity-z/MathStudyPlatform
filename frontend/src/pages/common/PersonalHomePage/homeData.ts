@@ -298,10 +298,10 @@ function buildTeacherStats(
       tone: 'emerald',
     },
     {
-      key: 'grading',
-      label: '待批改',
-      value: dashboard ? `${Math.max(0, dashboard.pending_grading)}份` : '—',
-      detail: '及时跟进学习反馈',
+      key: 'study-time',
+      label: '人均学习时长',
+      value: analytics ? `${Math.max(0, analytics.overview.avg_study_hours).toFixed(1)}小时` : '—',
+      detail: '当前统计范围',
       tone: 'coral',
     },
   ];

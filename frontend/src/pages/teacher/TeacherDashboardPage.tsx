@@ -13,7 +13,6 @@ import {
   ChevronDown,
   Loader2,
   AlertCircle,
-  ClipboardList,
 } from 'lucide-react';
 import { cn } from '../../libs/utils/cn';
 import { teacherService } from '@/modules/teacher/services/teacherService';
@@ -149,11 +148,11 @@ export const TeacherDashboardPage: React.FC = () => {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <ClipboardList className="w-5 h-5 text-orange-600 dark:text-orange-400" />
-                作业状态
+                <Target className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                学习表现
               </CardTitle>
             </CardHeader>
-            <CardContent className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center">
                   <Target className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
@@ -173,17 +172,6 @@ export const TeacherDashboardPage: React.FC = () => {
                   <div className="text-xs text-surface-500 dark:text-surface-400">平均成绩</div>
                   <div className="text-lg font-semibold text-surface-900 dark:text-surface-100">
                     {analyticsLoading ? '...' : String(analyticsData?.overview.avg_score ?? 0)}
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-lg bg-orange-50 dark:bg-orange-900/30 flex items-center justify-center">
-                  <ClipboardList className="w-4 h-4 text-orange-600 dark:text-orange-400" />
-                </div>
-                <div>
-                  <div className="text-xs text-surface-500 dark:text-surface-400">待批改作业</div>
-                  <div className="text-lg font-semibold text-surface-900 dark:text-surface-100">
-                    {dashLoading ? '...' : String(dashboardStats?.pending_grading ?? 0)}
                   </div>
                 </div>
               </div>

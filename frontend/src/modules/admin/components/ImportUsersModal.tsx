@@ -46,7 +46,7 @@ export const ImportUsersModal: React.FC<ImportUsersModalProps> = ({
   };
 
   const handleDownloadTemplate = () => {
-    const csvContent = '用户名,邮箱,密码,角色,显示名称\nzhangsan,zhangsan@example.com,123456,student,张三\nlisi,lisi@example.com,123456,teacher,李四';
+    const csvContent = '用户名,邮箱,密码,角色,显示名称';
     const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8' });
     downloadBlob(blob, 'users_import_template.csv');
   };

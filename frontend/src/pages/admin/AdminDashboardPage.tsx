@@ -65,7 +65,8 @@ export const AdminDashboardPage: React.FC = () => {
 
   // 仅在 period 变化时获取用户增长数据
   useEffect(() => {
-    dispatch(fetchUserGrowth(userGrowthPeriod));
+    const request = dispatch(fetchUserGrowth(userGrowthPeriod));
+    return () => request.abort();
   }, [dispatch, userGrowthPeriod]);
 
   const pollSystemStatus = useCallback(async (signal: AbortSignal) => {
@@ -119,7 +120,6 @@ export const AdminDashboardPage: React.FC = () => {
   // 切换用户增长周期
   const handlePeriodChange = (period: UserGrowthPeriod) => {
     dispatch(setUserGrowthPeriod(period));
-    dispatch(fetchUserGrowth(period));
   };
 
   // 格式化数字显示

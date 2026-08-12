@@ -3,12 +3,14 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	adminsettingsapp "mathstudy/backend/internal/application/adminsettings"
 	adminstorageapp "mathstudy/backend/internal/application/adminstorage"
@@ -27,6 +29,11 @@ var sensitiveSystemSettingKeys = map[string]bool{
 	"storage_s3_access_key":    true,
 	"storage_s3_secret_key":    true,
 }
+
+const (
+	maxImportBatchRows       = 500
+	maxImportBatchParameters = 60000
+)
 
 // AdminSettingsRepository persists system settings and database management operations.
 type AdminSettingsRepository struct {
@@ -171,9 +178,38 @@ func (r AdminSettingsRepository) ImportRows(ctx context.Context, table string, r
 		return adminsettingsapp.TableImportResult{}, fmt.Errorf("unsafe table name %q", table)
 	}
 	var result adminsettingsapp.TableImportResult
+	var group importRowGroup
+	flushGroup := func() error {
+		if len(group.rows) == 0 {
+			return nil
+		}
+		if len(group.columns) > maxImportBatchParameters {
+			return fmt.Errorf(
+				"import row has %d columns, exceeding PostgreSQL parameter limit %d",
+				len(group.columns),
+				maxImportBatchParameters,
+			)
+		}
+		batchSize := min(maxImportBatchRows, maxImportBatchParameters/len(group.columns))
+		for start := 0; start < len(group.rows); start += batchSize {
+			end := min(start+batchSize, len(group.rows))
+			batchResult, err := r.importRowBatch(ctx, table, group.columns, group.rows[start:end])
+			result.Imported += batchResult.Imported
+			result.Skipped += batchResult.Skipped
+			result.Failed += batchResult.Failed
+			if err != nil {
+				return err
+			}
+		}
+		group = importRowGroup{}
+		return nil
+	}
 	for _, row := range rows {
 		filtered := filterImportRow(table, row)
 		if len(filtered) == 0 {
+			if err := flushGroup(); err != nil {
+				return result, err
+			}
 			result.Skipped++
 			continue
 		}
@@ -182,29 +218,112 @@ func (r AdminSettingsRepository) ImportRows(ctx context.Context, table string, r
 			columns = append(columns, column)
 		}
 		sort.Strings(columns)
-		identifiers := make([]string, 0, len(columns))
-		placeholders := make([]string, 0, len(columns))
-		args := make([]any, 0, len(columns))
-		for index, column := range columns {
-			identifiers = append(identifiers, pgx.Identifier{column}.Sanitize())
-			placeholders = append(placeholders, fmt.Sprintf("$%d", index+1))
-			args = append(args, normalizeImportValue(filtered[column]))
+		key := strings.Join(columns, "\x00")
+		if group.key != "" && group.key != key {
+			if err := flushGroup(); err != nil {
+				return result, err
+			}
 		}
-		sql := "INSERT INTO " + pgx.Identifier{"public", table}.Sanitize() +
-			" (" + strings.Join(identifiers, ", ") + ") VALUES (" +
-			strings.Join(placeholders, ", ") + ") ON CONFLICT DO NOTHING"
-		tag, err := r.DB().Exec(ctx, sql, args...)
-		if err != nil {
+		if group.key == "" {
+			group.key = key
+			group.columns = columns
+		}
+		values := make([]any, 0, len(columns))
+		for _, column := range columns {
+			values = append(values, normalizeImportValue(filtered[column]))
+		}
+		group.rows = append(group.rows, values)
+	}
+	if err := flushGroup(); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+type importRowGroup struct {
+	key     string
+	columns []string
+	rows    [][]any
+}
+
+func (r AdminSettingsRepository) importRowBatch(
+	ctx context.Context,
+	table string,
+	columns []string,
+	rows [][]any,
+) (adminsettingsapp.TableImportResult, error) {
+	sql := importRowsSQL(table, columns, len(rows))
+	args := make([]any, 0, len(columns)*len(rows))
+	for _, row := range rows {
+		args = append(args, row...)
+	}
+	tag, err := r.DB().Exec(ctx, sql, args...)
+	if err == nil {
+		imported := int(tag.RowsAffected())
+		return adminsettingsapp.TableImportResult{
+			Imported: imported,
+			Skipped:  len(rows) - imported,
+		}, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return adminsettingsapp.TableImportResult{}, ctxErr
+	}
+	if !isImportRowDataError(err) {
+		return adminsettingsapp.TableImportResult{}, err
+	}
+
+	result := adminsettingsapp.TableImportResult{}
+	singleRowSQL := importRowsSQL(table, columns, 1)
+	for _, row := range rows {
+		tag, rowErr := r.DB().Exec(ctx, singleRowSQL, row...)
+		if rowErr != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return result, ctxErr
+			}
+			if !isImportRowDataError(rowErr) {
+				return result, rowErr
+			}
 			result.Failed++
-			continue
-		}
-		if tag.RowsAffected() > 0 {
+		} else if tag.RowsAffected() > 0 {
 			result.Imported++
 		} else {
 			result.Skipped++
 		}
 	}
 	return result, nil
+}
+
+func isImportRowDataError(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || len(pgErr.Code) < 2 {
+		return false
+	}
+	switch pgErr.Code[:2] {
+	case "22", "23":
+		return true
+	default:
+		return false
+	}
+}
+
+func importRowsSQL(table string, columns []string, rowCount int) string {
+	identifiers := make([]string, 0, len(columns))
+	for _, column := range columns {
+		identifiers = append(identifiers, pgx.Identifier{column}.Sanitize())
+	}
+	valueGroups := make([]string, 0, rowCount)
+	parameter := 1
+	for range rowCount {
+		placeholders := make([]string, 0, len(columns))
+		for range columns {
+			placeholders = append(placeholders, fmt.Sprintf("$%d", parameter))
+			parameter++
+		}
+		valueGroups = append(valueGroups, "("+strings.Join(placeholders, ", ")+")")
+	}
+	return "INSERT INTO " + pgx.Identifier{"public", table}.Sanitize() +
+		" (" + strings.Join(identifiers, ", ") + ") VALUES " +
+		strings.Join(valueGroups, ", ") + " ON CONFLICT DO NOTHING"
 }
 
 // DatabaseOverview returns PostgreSQL overview data.

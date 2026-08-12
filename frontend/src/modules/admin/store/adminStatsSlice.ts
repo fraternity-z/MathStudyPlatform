@@ -31,6 +31,7 @@ interface AdminStatsState {
   userGrowthLoading: LoadingState;
   userGrowthError: string | null;
   userGrowthPeriod: UserGrowthPeriod;
+  userGrowthRequestId: string | null;
 
   // 最近活动
   recentActivities: ActivityItem[];
@@ -58,6 +59,7 @@ const initialState: AdminStatsState = {
   userGrowthLoading: 'idle',
   userGrowthError: null,
   userGrowthPeriod: '30d',
+  userGrowthRequestId: null,
 
   recentActivities: [],
   activitiesLoading: 'idle',
@@ -95,10 +97,11 @@ export const fetchOverviewStats = createAsyncThunk(
  */
 export const fetchUserGrowth = createAsyncThunk(
   'adminStats/fetchUserGrowth',
-  async (period: UserGrowthPeriod, { rejectWithValue }) => {
+  async (period: UserGrowthPeriod, { rejectWithValue, signal }) => {
     try {
-      return await adminStatsService.getUserGrowth(period);
+      return await adminStatsService.getUserGrowth(period, signal);
     } catch (error) {
+      if (signal.aborted) throw error;
       return rejectWithValue(
         error instanceof Error ? error.message : '获取用户增长数据失败'
       );
@@ -196,18 +199,30 @@ const adminStatsSlice = createSlice({
 
     // 用户增长
     builder
-      .addCase(fetchUserGrowth.pending, (state) => {
+      .addCase(fetchUserGrowth.pending, (state, action) => {
         state.userGrowthLoading = 'loading';
         state.userGrowthError = null;
+        state.userGrowthRequestId = action.meta.requestId;
       })
       .addCase(fetchUserGrowth.fulfilled, (state, action) => {
+        if (
+          state.userGrowthRequestId !== action.meta.requestId ||
+          action.meta.arg !== state.userGrowthPeriod
+        ) return;
         state.userGrowthLoading = 'success';
         state.userGrowth = action.payload;
-        state.userGrowthPeriod = action.payload.period as UserGrowthPeriod;
+        state.userGrowthRequestId = null;
       })
       .addCase(fetchUserGrowth.rejected, (state, action) => {
+        if (state.userGrowthRequestId !== action.meta.requestId) return;
+        state.userGrowthRequestId = null;
+        if (action.meta.arg !== state.userGrowthPeriod) return;
+        if (action.meta.aborted) {
+          state.userGrowthLoading = state.userGrowth ? 'success' : 'idle';
+          return;
+        }
         state.userGrowthLoading = 'error';
-        state.userGrowthError = action.payload as string;
+        state.userGrowthError = (action.payload as string | undefined) ?? action.error.message ?? '获取用户增长数据失败';
       });
 
     // 最近活动

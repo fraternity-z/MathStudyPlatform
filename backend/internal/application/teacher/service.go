@@ -39,13 +39,7 @@ type Repository interface {
 	ListTeacherStudents(context.Context, string, StudentListFilter) ([]StudentListItem, int, error)
 	CountActiveSessionsSince(context.Context, []string, time.Time) (int, error)
 	AverageAttemptScore(context.Context, string, []string, *time.Time) (float64, bool, error)
-	SumAttemptSeconds(context.Context, string, []string, *time.Time) (int, error)
-	CountDistinctAttemptStudentsSince(context.Context, string, []string, time.Time) (int, error)
-	ListProfiles(context.Context, []string) ([]StudentProfile, error)
 	KnowledgeNames(context.Context, []string) (map[string]string, error)
-	WeeklySessionActivity(context.Context, []string, time.Time) (map[string]int, error)
-	TopStudentsByAverageScore(context.Context, string, []string, int) ([]StudentScore, error)
-	UserDisplayNames(context.Context, []string) (map[string]string, error)
 	ClassOwnedByTeacher(context.Context, string, string) (bool, error)
 	CommonErrors(context.Context, string, []string, int) ([]CommonErrorAggregate, error)
 	LowScoreStudents(context.Context, string, []string, float64) (map[string]float64, error)
@@ -134,10 +128,10 @@ type RecentSession struct {
 
 // DashboardStats is returned by /teacher/dashboard/stats.
 type DashboardStats struct {
-	TotalStudents     int     `json:"total_students"`
-	ActiveToday       float64 `json:"active_today"`
-	AvgCompletionRate float64 `json:"avg_completion_rate"`
-	PendingGrading    int     `json:"pending_grading"`
+	TotalStudents     int      `json:"total_students"`
+	ActiveToday       float64  `json:"active_today"`
+	AvgCompletionRate *float64 `json:"avg_completion_rate"`
+	PendingGrading    *int     `json:"pending_grading"`
 }
 
 // StudentsStats is returned by /teacher/students/stats.
@@ -350,10 +344,8 @@ func (s *Service) GetDashboardStats(ctx context.Context, teacherID string) (Dash
 		return DashboardStats{}, err
 	}
 	return DashboardStats{
-		TotalStudents:     total,
-		ActiveToday:       numutil.RoundPlaces(float64(active)/float64(total)*100, 1),
-		AvgCompletionRate: 0,
-		PendingGrading:    0,
+		TotalStudents: total,
+		ActiveToday:   numutil.RoundPlaces(float64(active)/float64(total)*100, 1),
 	}, nil
 }
 
@@ -839,54 +831,6 @@ func (s *Service) classAlertsFromAnalyticsStudents(students []AnalyticsStudentRe
 	return alerts, nil
 }
 
-func (s *Service) weeklyActivity(ctx context.Context, studentIDs []string, total int) ([]WeeklyActivityItem, error) {
-	rows, err := s.repo.WeeklySessionActivity(ctx, studentIDs, s.now().AddDate(0, 0, -7))
-	if err != nil {
-		return nil, err
-	}
-	today := timefmt.StartOfDay(s.now())
-	items := make([]WeeklyActivityItem, 0, 7)
-	for offset := 6; offset >= 0; offset-- {
-		day := today.AddDate(0, 0, -offset)
-		count := rows[timefmt.Date(day)]
-		rate := 0.0
-		if total > 0 {
-			rate = numutil.RoundPlaces(numutil.Percent(total, count), 1)
-		}
-		items = append(items, WeeklyActivityItem{
-			Date:       timefmt.Date(day),
-			DayLabel:   dayLabels[int(day.Weekday())],
-			ActiveRate: rate,
-		})
-	}
-	return items, nil
-}
-
-func (s *Service) topStudents(ctx context.Context, teacherID string, studentIDs []string, limit int) ([]TopStudentItem, error) {
-	rows, err := s.repo.TopStudentsByAverageScore(ctx, teacherID, studentIDs, limit)
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(rows))
-	for _, row := range rows {
-		ids = append(ids, row.StudentID)
-	}
-	names, err := s.repo.UserDisplayNames(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	items := make([]TopStudentItem, 0, len(rows))
-	for index, row := range rows {
-		items = append(items, TopStudentItem{
-			Rank:      index + 1,
-			StudentID: row.StudentID,
-			Name:      stringutil.NonBlankOr(names[row.StudentID], "未知"),
-			AvgScore:  numutil.RoundPlaces(row.AvgScore, 1),
-		})
-	}
-	return items, nil
-}
-
 func (s *Service) commonErrors(ctx context.Context, teacherID string, studentIDs []string) ([]ClassCommonError, error) {
 	rows, err := s.repo.CommonErrors(ctx, teacherID, studentIDs, 10)
 	if err != nil {
@@ -904,91 +848,6 @@ func (s *Service) commonErrors(ctx context.Context, teacherID string, studentIDs
 			Count:     row.Count,
 			Topic:     row.Topic,
 			ErrorType: row.ErrorType,
-		})
-	}
-	return items, nil
-}
-
-func (s *Service) classAlerts(ctx context.Context, teacherID string, studentIDs []string, weekStart time.Time) ([]ClassAlert, error) {
-	lowScoreStudents, err := s.repo.LowScoreStudents(ctx, teacherID, studentIDs, 60)
-	if err != nil {
-		return nil, err
-	}
-	activeStudents, err := s.repo.ActiveStudentIDsSince(ctx, studentIDs, weekStart)
-	if err != nil {
-		return nil, err
-	}
-	alertIDs := make([]string, 0, len(lowScoreStudents)+len(studentIDs))
-	for id := range lowScoreStudents {
-		alertIDs = append(alertIDs, id)
-	}
-	for _, id := range studentIDs {
-		if _, ok := activeStudents[id]; !ok {
-			alertIDs = append(alertIDs, id)
-		}
-	}
-	names, err := s.repo.UserDisplayNames(ctx, sliceutil.AppendUniqueNonEmptyStrings(alertIDs))
-	if err != nil {
-		return nil, err
-	}
-	alerts := []ClassAlert{}
-	lowIDs := maputil.SortedFloatKeys(lowScoreStudents)
-	for _, id := range lowIDs {
-		alertID, err := s.idFactory()
-		if err != nil {
-			return nil, err
-		}
-		alerts = append(alerts, ClassAlert{
-			ID:          alertID,
-			StudentID:   id,
-			StudentName: stringutil.NonBlankOr(names[id], "未知"),
-			Type:        "low_score",
-			Message:     "平均成绩 " + formatScore(lowScoreStudents[id]) + " 分，低于及格线",
-			Severity:    "high",
-		})
-	}
-	for _, id := range studentIDs {
-		if _, low := lowScoreStudents[id]; low {
-			continue
-		}
-		if _, active := activeStudents[id]; active {
-			continue
-		}
-		alertID, err := s.idFactory()
-		if err != nil {
-			return nil, err
-		}
-		alerts = append(alerts, ClassAlert{
-			ID:          alertID,
-			StudentID:   id,
-			StudentName: stringutil.NonBlankOr(names[id], "未知"),
-			Type:        "inactive",
-			Message:     "超过 7 天未学习",
-			Severity:    "medium",
-		})
-	}
-	return alerts, nil
-}
-
-func (s *Service) classRankings(ctx context.Context, teacherID string, studentIDs []string, limit int) ([]ClassStudentRank, error) {
-	rows, err := s.repo.TopStudentsByAverageScore(ctx, teacherID, studentIDs, limit)
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(rows))
-	for _, row := range rows {
-		ids = append(ids, row.StudentID)
-	}
-	names, err := s.repo.UserDisplayNames(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	items := make([]ClassStudentRank, 0, len(rows))
-	for _, row := range rows {
-		items = append(items, ClassStudentRank{
-			StudentID: row.StudentID,
-			Name:      stringutil.NonBlankOr(names[row.StudentID], "未知"),
-			AvgScore:  numutil.RoundPlaces(row.AvgScore, 1),
 		})
 	}
 	return items, nil

@@ -10,10 +10,10 @@ export interface DashboardStats {
   total_students: number;
   /** 今日活跃率（百分比） */
   active_today: number;
-  /** 平均作业完成率（百分比） */
-  avg_completion_rate: number;
-  /** 待批改作业数 */
-  pending_grading: number;
+  /** 保留的兼容字段；当前没有独立的工作台完成率口径 */
+  avg_completion_rate: number | null;
+  /** 保留的兼容字段；平台当前没有人工批改队列 */
+  pending_grading: number | null;
 }
 
 /**

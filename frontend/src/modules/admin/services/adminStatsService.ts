@@ -45,11 +45,11 @@ export const adminStatsService = {
    * 获取用户增长趋势数据
    * @param period 统计周期 (7d/30d/90d)
    */
-  async getUserGrowth(period: UserGrowthPeriod = '30d'): Promise<UserGrowthResponse> {
+  async getUserGrowth(period: UserGrowthPeriod = '30d', signal?: AbortSignal): Promise<UserGrowthResponse> {
     try {
       const response = await apiClient.get<UserGrowthResponse>(
         `${BASE_PATH}/user-growth`,
-        { params: { period } }
+        { params: { period }, signal }
       );
       statsLogger.debug('获取用户增长数据成功', {
         period,
@@ -57,7 +57,9 @@ export const adminStatsService = {
       });
       return response.data;
     } catch (error) {
-      statsLogger.error('获取用户增长数据失败', { period, error });
+      if (!signal?.aborted) {
+        statsLogger.error('获取用户增长数据失败', { period, error });
+      }
       throw error;
     }
   },
