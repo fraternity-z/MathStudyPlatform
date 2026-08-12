@@ -11,38 +11,15 @@ import { authTokenStorage } from '../auth/tokenStorage';
 
 const refreshLogger = logger.createContextLogger('TokenRefresh');
 
-// 刷新状态
-let isRefreshing = false;
-let refreshSubscribers: Array<(token: string) => void> = [];
-
-/**
- * 订阅 token 刷新完成事件
- */
-function subscribeTokenRefresh(callback: (token: string) => void): void {
-  refreshSubscribers.push(callback);
-}
-
-/**
- * 通知所有订阅者刷新完成
- */
-function onTokenRefreshed(token: string): void {
-  refreshSubscribers.forEach((callback) => callback(token));
-  refreshSubscribers = [];
-}
-
-/**
- * 通知所有订阅者刷新失败
- */
-function onRefreshFailed(): void {
-  refreshSubscribers = [];
-}
+// 所有并发调用共享同一个刷新请求
+let refreshRequest: Promise<string | null> | null = null;
 
 /**
  * 刷新 access token
  *
  * @returns 新的 access token，如果刷新失败返回 null
  */
-export async function refreshAccessToken(): Promise<string | null> {
+async function requestAccessToken(): Promise<string | null> {
   try {
     // 使用独立的 axios 实例避免触发拦截器循环
     const response = await axios.post<{ access_token: string }>(
@@ -63,6 +40,24 @@ export async function refreshAccessToken(): Promise<string | null> {
   }
 }
 
+export function refreshAccessToken(): Promise<string | null> {
+  if (refreshRequest) {
+    return refreshRequest;
+  }
+
+  const request = requestAccessToken();
+  refreshRequest = request;
+
+  void request.finally(() => {
+    // 只清理当前请求，避免旧请求清除后续刷新状态
+    if (refreshRequest === request) {
+      refreshRequest = null;
+    }
+  });
+
+  return request;
+}
+
 /**
  * 处理 401 错误，尝试刷新 token
  *
@@ -72,43 +67,21 @@ export async function refreshAccessToken(): Promise<string | null> {
 export async function handle401Error<T>(
   retryRequest: (newToken: string) => Promise<T>
 ): Promise<{ success: boolean; data?: T }> {
-  // 如果已经在刷新中，等待刷新完成
-  if (isRefreshing) {
-    return new Promise((resolve) => {
-      subscribeTokenRefresh(async (newToken) => {
-        try {
-          const data = await retryRequest(newToken);
-          resolve({ success: true, data });
-        } catch {
-          resolve({ success: false });
-        }
-      });
-    });
+  const newToken = await refreshAccessToken();
+
+  if (!newToken) {
+    return { success: false };
   }
 
-  // 开始刷新
-  isRefreshing = true;
+  // 更新本地存储
+  authTokenStorage.set(newToken);
 
   try {
-    const newToken = await refreshAccessToken();
-
-    if (newToken) {
-      // 更新本地存储
-      authTokenStorage.set(newToken);
-
-      // 通知所有等待的请求
-      onTokenRefreshed(newToken);
-
-      // 重试原始请求
-      const data = await retryRequest(newToken);
-      return { success: true, data };
-    } else {
-      // 刷新失败
-      onRefreshFailed();
-      return { success: false };
-    }
-  } finally {
-    isRefreshing = false;
+    // 重试原始请求
+    const data = await retryRequest(newToken);
+    return { success: true, data };
+  } catch {
+    return { success: false };
   }
 }
 
@@ -116,5 +89,5 @@ export async function handle401Error<T>(
  * 检查是否正在刷新 token
  */
 export function isTokenRefreshing(): boolean {
-  return isRefreshing;
+  return refreshRequest !== null;
 }

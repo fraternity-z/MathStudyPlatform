@@ -762,6 +762,7 @@ func main() {
 		ArchiveAfterDays: cfg.LogArchiveAfterDays,
 		DeleteAfterDays:  cfg.LogDeleteAfterDays,
 		BatchSize:        cfg.LogCleanupBatchSize,
+		MaxBatches:       cfg.LogCleanupMaxBatches,
 		MaxLogCount:      cfg.LogMaxCount,
 	})
 	if err != nil {
@@ -771,6 +772,18 @@ func main() {
 	securityLogHandler, err := securityloghttp.NewHandler(logger, securityLogService, authService)
 	if err != nil {
 		logger.Error("configure security log handler", "error", err)
+		os.Exit(1)
+	}
+	securityLogCleanupWorker, err := securitylogapp.NewCleanupWorker(
+		securityLogService,
+		logger,
+		securitylogapp.CleanupWorkerConfig{
+			Interval: cfg.LogCleanupInterval,
+			Timeout:  cfg.LogCleanupTimeout,
+		},
+	)
+	if err != nil {
+		logger.Error("configure security log cleanup worker", "error", err)
 		os.Exit(1)
 	}
 	uploadService, err := uploadapp.NewService(uploadStorage)
@@ -971,6 +984,12 @@ func main() {
 	signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(stopCh)
 
+	stopSecurityLogCleanupWorker := startSecurityLogCleanupWorker(
+		securityLogCleanupWorker,
+		cfg.LogCleanupEnabled,
+		cfg.ShutdownTimeout,
+		logger,
+	)
 	stopWechatReminderWorker := startWechatReminderWorker(
 		wechatReminderWorker,
 		cfg.WechatMessageRemindersEnabled,
@@ -991,6 +1010,7 @@ func main() {
 	)
 	logger.Info("Go API listening", "addr", cfg.HTTPAddr(), "environment", cfg.Environment)
 	serveErr := serveHTTP(server, stopCh, cfg.ShutdownTimeout, logger)
+	stopSecurityLogCleanupWorker()
 	stopDailyQuestionReminderWorker()
 	stopDailyQuestionWorker()
 	stopWechatReminderWorker()
