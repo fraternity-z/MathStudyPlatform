@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -83,25 +84,43 @@ func (r ResourceRepository) ListResources(ctx context.Context, userID string, fi
 
 // GetResourceByID returns one published resource and increments its view counter.
 func (r ResourceRepository) GetResourceByID(ctx context.Context, resourceID string, userID string) (resourceapp.Resource, bool, error) {
-	resource, ok, meta, err := r.getResource(ctx, resourceID, userID, true)
+	resource, ok, _, err := r.getResource(ctx, resourceID, userID, true)
 	if err != nil || !ok {
 		return resourceapp.Resource{}, ok, err
 	}
-	resource.Views = metautil.Int(meta, "views") + 1
-	meta["views"] = resource.Views
-	raw, err := json.Marshal(meta)
-	if err != nil {
-		return resourceapp.Resource{}, false, err
-	}
-	if _, err := r.DB().Exec(ctx, `
+	var metaRaw []byte
+	if err := r.DB().QueryRow(ctx, `
 		UPDATE public.contents
-		SET meta = $2::json
-		WHERE id = $1`,
+		SET meta = jsonb_set(
+			CASE
+				WHEN jsonb_typeof(meta::jsonb) = 'object' THEN meta::jsonb
+				ELSE '{}'::jsonb
+			END,
+			'{views}',
+			CASE
+				WHEN jsonb_typeof(meta::jsonb -> 'views') = 'number'
+					THEN to_jsonb(trunc((meta ->> 'views')::numeric) + 1)
+				ELSE '1'::jsonb
+			END,
+			true
+		)::json
+		WHERE id = $1
+			AND status = 'PUBLISHED'
+			AND deleted_at IS NULL
+			AND type IN ('VIDEO', 'ARTICLE')
+		RETURNING meta`,
 		resourceID,
-		string(raw),
-	); err != nil {
+	).Scan(&metaRaw); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return resourceapp.Resource{}, false, nil
+		}
 		return resourceapp.Resource{}, false, err
 	}
+	meta, err := decodeObjectMap(metaRaw)
+	if err != nil {
+		return resourceapp.Resource{}, false, fmt.Errorf("decode incremented resource meta: %w", err)
+	}
+	resource.Views = metautil.Int(meta, "views")
 	return resource, true, nil
 }
 
@@ -155,7 +174,8 @@ func (r ResourceRepository) updateResource(ctx context.Context, resourceID strin
 		SELECT type::text, title, body, difficulty, tags, meta
 		FROM public.contents c
 		WHERE c.id = $1 AND c.owner_teacher_id = $2 AND c.deleted_at IS NULL
-			AND `+resourceContentTypeCondition,
+			AND `+resourceContentTypeCondition+`
+		FOR UPDATE`,
 		resourceID,
 		ownerID,
 	).Scan(&currentType, &title, &body, &difficulty, &tagsRaw, &metaRaw)

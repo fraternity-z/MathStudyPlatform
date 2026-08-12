@@ -34,7 +34,11 @@ const (
 	maxImportBatchRows       = 500
 	maxImportBatchParameters = 60000
 	importRollbackTimeout    = 5 * time.Second
+	maxImportInsertBatchRows = 100
+	importAttemptSavepoint   = "msp_admin_import_attempt"
 )
+
+var errImportSavepoint = errors.New("database import savepoint failure")
 
 // AdminSettingsRepository persists system settings and database management operations.
 type AdminSettingsRepository struct {
@@ -76,24 +80,27 @@ func (r AdminSettingsRepository) GetSettings(ctx context.Context, keys []string)
 
 // UpsertSettings applies system setting changes.
 func (r AdminSettingsRepository) UpsertSettings(ctx context.Context, updates []adminsettingsapp.SettingUpdate) error {
-	for _, update := range updates {
-		_, err := r.DB().Exec(ctx, `
-			INSERT INTO public.system_settings (key, value, description, updated_at)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (key) DO UPDATE
-			SET value = EXCLUDED.value,
-				description = EXCLUDED.description,
-				updated_at = EXCLUDED.updated_at`,
-			update.Key,
-			update.Value,
-			update.Description,
-			update.UpdatedAt,
-		)
-		if err != nil {
-			return err
+	return withRepositoryTx(ctx, "admin settings", r.Repository, func(base Repository) AdminSettingsRepository {
+		return AdminSettingsRepository{Repository: base}
+	}, func(current AdminSettingsRepository) error {
+		for _, update := range updates {
+			if _, err := current.DB().Exec(ctx, `
+				INSERT INTO public.system_settings (key, value, description, updated_at)
+				VALUES ($1, $2, $3, $4)
+				ON CONFLICT (key) DO UPDATE
+				SET value = EXCLUDED.value,
+					description = EXCLUDED.description,
+					updated_at = EXCLUDED.updated_at`,
+				update.Key,
+				update.Value,
+				update.Description,
+				update.UpdatedAt,
+			); err != nil {
+				return err
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // SaveStorageSettings atomically replaces the administrator-managed storage snapshot.
@@ -197,9 +204,8 @@ func (r AdminSettingsRepository) ImportTables(
 	}
 	txRepository := AdminSettingsRepository{Repository: txBase}
 	results := make(map[string]adminsettingsapp.TableImportResult, len(tables))
-	var savepoints importSavepointSequence
 	for _, table := range tables {
-		result, importErr := txRepository.importRows(ctx, table.Name, table.Rows, &savepoints)
+		result, importErr := txRepository.importRows(ctx, table.Name, table.Rows)
 		if importErr != nil {
 			return nil, rollbackImportTransaction(ctx, tx, fmt.Errorf("import %s: %w", table.Name, importErr))
 		}
@@ -224,42 +230,48 @@ func (r AdminSettingsRepository) importRows(
 	ctx context.Context,
 	table string,
 	rows []map[string]any,
-	savepoints *importSavepointSequence,
 ) (adminsettingsapp.TableImportResult, error) {
 	if !safeTableName(table) {
 		return adminsettingsapp.TableImportResult{}, fmt.Errorf("unsafe table name %q", table)
 	}
-	var result adminsettingsapp.TableImportResult
-	var group importRowGroup
-	flushGroup := func() error {
-		if len(group.rows) == 0 {
+	result := adminsettingsapp.TableImportResult{}
+	var batchColumns []string
+	var batchRows [][]any
+	batchKey := ""
+	flush := func() error {
+		if len(batchRows) == 0 {
 			return nil
 		}
-		if len(group.columns) > maxImportBatchParameters {
+		if len(batchColumns) > maxImportBatchParameters {
 			return fmt.Errorf(
 				"import row has %d columns, exceeding PostgreSQL parameter limit %d",
-				len(group.columns),
+				len(batchColumns),
 				maxImportBatchParameters,
 			)
 		}
-		batchSize := min(maxImportBatchRows, maxImportBatchParameters/len(group.columns))
-		for start := 0; start < len(group.rows); start += batchSize {
-			end := min(start+batchSize, len(group.rows))
-			batchResult, err := r.importRowBatch(ctx, table, group.columns, group.rows[start:end], savepoints)
-			result.Imported += batchResult.Imported
-			result.Skipped += batchResult.Skipped
-			result.Failed += batchResult.Failed
+		batchSize := min(maxImportInsertBatchRows, maxImportBatchRows, maxImportBatchParameters/len(batchColumns))
+		for start := 0; start < len(batchRows); start += batchSize {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			end := min(start+batchSize, len(batchRows))
+			batchResult, err := r.importRowBatch(ctx, table, batchColumns, batchRows[start:end])
+			mergeImportResult(&result, batchResult)
 			if err != nil {
 				return err
 			}
 		}
-		group = importRowGroup{}
+		batchRows = nil
 		return nil
 	}
+
 	for _, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		filtered := filterImportRow(table, row)
 		if len(filtered) == 0 {
-			if err := flushGroup(); err != nil {
+			if err := flush(); err != nil {
 				return result, err
 			}
 			result.Skipped++
@@ -271,38 +283,30 @@ func (r AdminSettingsRepository) importRows(
 		}
 		sort.Strings(columns)
 		key := strings.Join(columns, "\x00")
-		if group.key != "" && group.key != key {
-			if err := flushGroup(); err != nil {
+		if len(batchRows) > 0 && key != batchKey {
+			if err := flush(); err != nil {
 				return result, err
 			}
 		}
-		if group.key == "" {
-			group.key = key
-			group.columns = columns
+		if len(batchRows) == 0 {
+			batchColumns = columns
+			batchKey = key
 		}
 		values := make([]any, 0, len(columns))
 		for _, column := range columns {
 			values = append(values, normalizeImportValue(filtered[column]))
 		}
-		group.rows = append(group.rows, values)
+		batchRows = append(batchRows, values)
+		if len(batchRows) == maxImportInsertBatchRows {
+			if err := flush(); err != nil {
+				return result, err
+			}
+		}
 	}
-	if err := flushGroup(); err != nil {
+	if err := flush(); err != nil {
 		return result, err
 	}
 	return result, nil
-}
-
-type importRowGroup struct {
-	key     string
-	columns []string
-	rows    [][]any
-}
-
-type importSavepointSequence int
-
-func (s *importSavepointSequence) next() string {
-	*s = *s + 1
-	return fmt.Sprintf("admin_data_import_%d", *s)
 }
 
 func (r AdminSettingsRepository) importRowBatch(
@@ -310,22 +314,12 @@ func (r AdminSettingsRepository) importRowBatch(
 	table string,
 	columns []string,
 	rows [][]any,
-	savepoints *importSavepointSequence,
 ) (adminsettingsapp.TableImportResult, error) {
-	batchSavepoint, err := r.createImportSavepoint(ctx, savepoints)
-	if err != nil {
-		return adminsettingsapp.TableImportResult{}, err
+	if len(rows) == 0 {
+		return adminsettingsapp.TableImportResult{}, nil
 	}
-	sql := importRowsSQL(table, columns, len(rows))
-	args := make([]any, 0, len(columns)*len(rows))
-	for _, row := range rows {
-		args = append(args, row...)
-	}
-	tag, err := r.DB().Exec(ctx, sql, args...)
+	tag, err := r.execImportRows(ctx, table, columns, rows)
 	if err == nil {
-		if err := r.releaseImportSavepoint(ctx, batchSavepoint); err != nil {
-			return adminsettingsapp.TableImportResult{}, err
-		}
 		imported := int(tag.RowsAffected())
 		return adminsettingsapp.TableImportResult{
 			Imported: imported,
@@ -335,75 +329,40 @@ func (r AdminSettingsRepository) importRowBatch(
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return adminsettingsapp.TableImportResult{}, ctxErr
 	}
+	if errors.Is(err, errImportSavepoint) {
+		return adminsettingsapp.TableImportResult{}, err
+	}
 	if !isImportRowDataError(err) {
 		return adminsettingsapp.TableImportResult{}, err
 	}
-	if err := r.rollbackImportSavepoint(ctx, batchSavepoint); err != nil {
-		return adminsettingsapp.TableImportResult{}, err
-	}
-	if err := r.releaseImportSavepoint(ctx, batchSavepoint); err != nil {
-		return adminsettingsapp.TableImportResult{}, err
+	if len(rows) == 1 {
+		return adminsettingsapp.TableImportResult{Failed: 1}, nil
 	}
 
 	result := adminsettingsapp.TableImportResult{}
-	singleRowSQL := importRowsSQL(table, columns, 1)
 	for _, row := range rows {
-		rowSavepoint, savepointErr := r.createImportSavepoint(ctx, savepoints)
-		if savepointErr != nil {
-			return result, savepointErr
+		if err := ctx.Err(); err != nil {
+			return result, err
 		}
-		tag, rowErr := r.DB().Exec(ctx, singleRowSQL, row...)
-		if rowErr != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return result, ctxErr
-			}
-			if !isImportRowDataError(rowErr) {
-				return result, rowErr
-			}
-			if err := r.rollbackImportSavepoint(ctx, rowSavepoint); err != nil {
-				return result, err
-			}
-			if err := r.releaseImportSavepoint(ctx, rowSavepoint); err != nil {
-				return result, err
-			}
+		tag, rowErr := r.execImportRows(ctx, table, columns, [][]any{row})
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return result, ctxErr
+		}
+		if errors.Is(rowErr, errImportSavepoint) {
+			return result, rowErr
+		}
+		switch {
+		case rowErr != nil && !isImportRowDataError(rowErr):
+			return result, rowErr
+		case rowErr != nil:
 			result.Failed++
-		} else {
-			if err := r.releaseImportSavepoint(ctx, rowSavepoint); err != nil {
-				return result, err
-			}
-			if tag.RowsAffected() > 0 {
-				result.Imported++
-			} else {
-				result.Skipped++
-			}
+		case tag.RowsAffected() > 0:
+			result.Imported++
+		default:
+			result.Skipped++
 		}
 	}
 	return result, nil
-}
-
-func (r AdminSettingsRepository) createImportSavepoint(
-	ctx context.Context,
-	sequence *importSavepointSequence,
-) (string, error) {
-	name := sequence.next()
-	if _, err := r.DB().Exec(ctx, "SAVEPOINT "+pgx.Identifier{name}.Sanitize()); err != nil {
-		return "", fmt.Errorf("create import savepoint: %w", err)
-	}
-	return name, nil
-}
-
-func (r AdminSettingsRepository) rollbackImportSavepoint(ctx context.Context, name string) error {
-	if _, err := r.DB().Exec(ctx, "ROLLBACK TO SAVEPOINT "+pgx.Identifier{name}.Sanitize()); err != nil {
-		return fmt.Errorf("rollback import savepoint: %w", err)
-	}
-	return nil
-}
-
-func (r AdminSettingsRepository) releaseImportSavepoint(ctx context.Context, name string) error {
-	if _, err := r.DB().Exec(ctx, "RELEASE SAVEPOINT "+pgx.Identifier{name}.Sanitize()); err != nil {
-		return fmt.Errorf("release import savepoint: %w", err)
-	}
-	return nil
 }
 
 func isImportRowDataError(err error) bool {
@@ -419,24 +378,66 @@ func isImportRowDataError(err error) bool {
 	}
 }
 
-func importRowsSQL(table string, columns []string, rowCount int) string {
+func (r AdminSettingsRepository) execImportRows(
+	ctx context.Context,
+	table string,
+	columns []string,
+	rows [][]any,
+) (pgconn.CommandTag, error) {
+	if tx, ok := r.DB().(pgx.Tx); ok {
+		savepoint := pgx.Identifier{importAttemptSavepoint}.Sanitize()
+		if _, err := tx.Exec(ctx, "SAVEPOINT "+savepoint); err != nil {
+			return pgconn.CommandTag{}, fmt.Errorf("%w: begin: %w", errImportSavepoint, err)
+		}
+		tag, execErr := execImportRows(ctx, tx, table, columns, rows)
+		if execErr != nil {
+			if _, rollbackErr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT "+savepoint); rollbackErr != nil {
+				return tag, errors.Join(execErr, fmt.Errorf("%w: rollback: %w", errImportSavepoint, rollbackErr))
+			}
+			if _, releaseErr := tx.Exec(ctx, "RELEASE SAVEPOINT "+savepoint); releaseErr != nil {
+				return tag, errors.Join(execErr, fmt.Errorf("%w: release after rollback: %w", errImportSavepoint, releaseErr))
+			}
+			return tag, execErr
+		}
+		if _, err := tx.Exec(ctx, "RELEASE SAVEPOINT "+savepoint); err != nil {
+			return tag, fmt.Errorf("%w: release: %w", errImportSavepoint, err)
+		}
+		return tag, nil
+	}
+	return execImportRows(ctx, r.DB(), table, columns, rows)
+}
+
+func execImportRows(
+	ctx context.Context,
+	db Querier,
+	table string,
+	columns []string,
+	rows [][]any,
+) (pgconn.CommandTag, error) {
 	identifiers := make([]string, 0, len(columns))
 	for _, column := range columns {
 		identifiers = append(identifiers, pgx.Identifier{column}.Sanitize())
 	}
-	valueGroups := make([]string, 0, rowCount)
-	parameter := 1
-	for range rowCount {
-		placeholders := make([]string, 0, len(columns))
-		for range columns {
-			placeholders = append(placeholders, fmt.Sprintf("$%d", parameter))
-			parameter++
+	valueGroups := make([]string, 0, len(rows))
+	args := make([]any, 0, len(rows)*len(columns))
+	for _, row := range rows {
+		placeholders := make([]string, 0, len(row))
+		for _, value := range row {
+			args = append(args, value)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
 		}
 		valueGroups = append(valueGroups, "("+strings.Join(placeholders, ", ")+")")
 	}
-	return "INSERT INTO " + pgx.Identifier{"public", table}.Sanitize() +
+	sql := "INSERT INTO " + pgx.Identifier{"public", table}.Sanitize() +
 		" (" + strings.Join(identifiers, ", ") + ") VALUES " +
 		strings.Join(valueGroups, ", ") + " ON CONFLICT DO NOTHING"
+	return db.Exec(ctx, sql, args...)
+}
+
+func mergeImportResult(target *adminsettingsapp.TableImportResult, addition adminsettingsapp.TableImportResult) {
+	target.Imported += addition.Imported
+	target.Skipped += addition.Skipped
+	target.Failed += addition.Failed
 }
 
 // DatabaseOverview returns PostgreSQL overview data.

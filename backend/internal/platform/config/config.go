@@ -93,10 +93,14 @@ type Config struct {
 	LoginCaptchaIssueLimit  int
 	LoginCaptchaIssueWindow time.Duration
 
-	LogArchiveAfterDays int
-	LogDeleteAfterDays  int
-	LogCleanupBatchSize int
-	LogMaxCount         int
+	LogArchiveAfterDays  int
+	LogDeleteAfterDays   int
+	LogCleanupEnabled    bool
+	LogCleanupInterval   time.Duration
+	LogCleanupTimeout    time.Duration
+	LogCleanupBatchSize  int
+	LogCleanupMaxBatches int
+	LogMaxCount          int
 
 	FernetSecretKey string
 
@@ -206,7 +210,11 @@ func Load() (Config, error) {
 		LoginCaptchaIssueWindow:   envSeconds("LOGIN_CAPTCHA_ISSUE_WINDOW_SECONDS", time.Minute),
 		LogArchiveAfterDays:       envInt("LOG_ARCHIVE_AFTER_DAYS", 30),
 		LogDeleteAfterDays:        envInt("LOG_DELETE_AFTER_DAYS", 90),
+		LogCleanupEnabled:         envBool("LOG_CLEANUP_ENABLED", true),
+		LogCleanupInterval:        envSeconds("LOG_CLEANUP_INTERVAL_SECONDS", time.Hour),
+		LogCleanupTimeout:         envSeconds("LOG_CLEANUP_TIMEOUT_SECONDS", 30*time.Second),
 		LogCleanupBatchSize:       envInt("LOG_CLEANUP_BATCH_SIZE", 500),
+		LogCleanupMaxBatches:      envInt("LOG_CLEANUP_MAX_BATCHES", 10),
 		LogMaxCount:               envInt("LOG_MAX_COUNT", 100000),
 		FernetSecretKey:           envString("FERNET_SECRET_KEY", ""),
 		XidianIDsBase:             envString("XIDIAN_IDS_BASE", "https://ids.xidian.edu.cn"),
@@ -332,8 +340,20 @@ func Load() (Config, error) {
 	if cfg.LogDeleteAfterDays <= 0 {
 		return Config{}, errors.New("LOG_DELETE_AFTER_DAYS must be greater than 0")
 	}
+	if cfg.LogDeleteAfterDays < cfg.LogArchiveAfterDays {
+		return Config{}, errors.New("LOG_DELETE_AFTER_DAYS must be greater than or equal to LOG_ARCHIVE_AFTER_DAYS")
+	}
+	if cfg.LogCleanupInterval <= 0 {
+		return Config{}, errors.New("LOG_CLEANUP_INTERVAL_SECONDS must be greater than 0")
+	}
+	if cfg.LogCleanupTimeout <= 0 {
+		return Config{}, errors.New("LOG_CLEANUP_TIMEOUT_SECONDS must be greater than 0")
+	}
 	if cfg.LogCleanupBatchSize <= 0 {
 		return Config{}, errors.New("LOG_CLEANUP_BATCH_SIZE must be greater than 0")
+	}
+	if cfg.LogCleanupMaxBatches <= 0 {
+		return Config{}, errors.New("LOG_CLEANUP_MAX_BATCHES must be greater than 0")
 	}
 	if cfg.LogMaxCount <= 0 {
 		return Config{}, errors.New("LOG_MAX_COUNT must be greater than 0")

@@ -89,6 +89,7 @@ type CleanupConfig struct {
 	ArchiveAfterDays int
 	DeleteAfterDays  int
 	BatchSize        int
+	MaxBatches       int
 	MaxLogCount      int
 }
 
@@ -340,11 +341,25 @@ func (s *Service) GenerateDailyReport(ctx context.Context) (DailyReportResponse,
 // Cleanup runs archive, delete, and volume checks.
 func (s *Service) Cleanup(ctx context.Context) (CleanupResponse, error) {
 	now := s.now()
-	archived, err := s.repo.AutoArchive(ctx, now.AddDate(0, 0, -s.config.ArchiveAfterDays), s.config.BatchSize)
+	archived, err := runCleanupBatches(
+		ctx,
+		s.config.BatchSize,
+		s.config.MaxBatches,
+		func(ctx context.Context) (int, error) {
+			return s.repo.AutoArchive(ctx, now.AddDate(0, 0, -s.config.ArchiveAfterDays), s.config.BatchSize)
+		},
+	)
 	if err != nil {
 		return CleanupResponse{}, err
 	}
-	deleted, err := s.repo.AutoDelete(ctx, now.AddDate(0, 0, -s.config.DeleteAfterDays), s.config.BatchSize)
+	deleted, err := runCleanupBatches(
+		ctx,
+		s.config.BatchSize,
+		s.config.MaxBatches,
+		func(ctx context.Context) (int, error) {
+			return s.repo.AutoDelete(ctx, now.AddDate(0, 0, -s.config.DeleteAfterDays), s.config.BatchSize)
+		},
+	)
 	if err != nil {
 		return CleanupResponse{}, err
 	}
@@ -358,6 +373,29 @@ func (s *Service) Cleanup(ctx context.Context) (CleanupResponse, error) {
 		Volume:        volume,
 		CleanupAt:     now.Format(time.RFC3339),
 	}, nil
+}
+
+func runCleanupBatches(
+	ctx context.Context,
+	batchSize int,
+	maxBatches int,
+	run func(context.Context) (int, error),
+) (int, error) {
+	total := 0
+	for batch := 0; batch < maxBatches && ctx.Err() == nil; batch++ {
+		count, err := run(ctx)
+		total += count
+		if err != nil {
+			return total, err
+		}
+		if count < batchSize {
+			return total, nil
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return total, err
+	}
+	return total, nil
 }
 
 // Volume returns active/archive security log counts.
@@ -440,8 +478,14 @@ func normalizeCleanupConfig(config CleanupConfig) CleanupConfig {
 	if config.DeleteAfterDays <= 0 {
 		config.DeleteAfterDays = 90
 	}
+	if config.DeleteAfterDays < config.ArchiveAfterDays {
+		config.DeleteAfterDays = config.ArchiveAfterDays
+	}
 	if config.BatchSize <= 0 {
 		config.BatchSize = 500
+	}
+	if config.MaxBatches <= 0 {
+		config.MaxBatches = 10
 	}
 	if config.MaxLogCount <= 0 {
 		config.MaxLogCount = 100000

@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +29,7 @@ const (
 	maxImportStringBytes  = 1 << 20
 	maxImportValueDepth   = 16
 	maxImportArrayItems   = 4096
+	maxImportSpoolBytes   = 100 << 20
 	maxExportJSONBytes    = 100 << 20
 
 	sanitizedDataExchangeKind = "sanitized_data_exchange"
@@ -33,8 +37,10 @@ const (
 
 var (
 	// ErrBadRequest is returned when input cannot be applied.
-	ErrBadRequest     = errors.New("bad admin settings request")
-	errExportTooLarge = errors.New("database export exceeds size limit")
+	ErrBadRequest          = errors.New("bad admin settings request")
+	errExportTooLarge      = errors.New("database export exceeds size limit")
+	errImportSpool         = errors.New("database import spool failure")
+	errImportSpoolTooLarge = errors.New("database import spool exceeds size limit")
 )
 
 var exportableTables = []ExportableTableItem{
@@ -445,65 +451,119 @@ func (w *exportLimitWriter) Write(data []byte) (int, error) {
 	return written, err
 }
 
-// ImportData imports a sanitized JSON data exchange atomically.
-func (s *Service) ImportData(ctx context.Context, content []byte, adminID string) (DataImportResponse, error) {
-	_ = adminID
-	var payload struct {
-		DataKind             string                     `json:"data_kind"`
-		Sanitized            *bool                      `json:"sanitized"`
-		CompleteBackup       *bool                      `json:"complete_backup"`
-		FullRestoreSupported *bool                      `json:"full_restore_supported"`
-		Tables               map[string]json.RawMessage `json:"tables"`
+type importPayloadSpool struct {
+	directory            string
+	dataKind             string
+	sanitized            *bool
+	completeBackup       *bool
+	fullRestoreSupported *bool
+	tables               map[string]*spooledImportTable
+	tablesFound          bool
+	budget               importSpoolBudget
+}
+
+type spooledImportTable struct {
+	path             string
+	rows             int
+	known            bool
+	formatInvalid    bool
+	rowValidationErr error
+}
+
+type importSpoolBudget struct {
+	written int64
+	limit   int64
+}
+
+type importSpoolWriter struct {
+	writer io.Writer
+	budget *importSpoolBudget
+}
+
+func (w *importSpoolWriter) Write(data []byte) (int, error) {
+	if int64(len(data)) > w.budget.limit-w.budget.written {
+		return 0, errImportSpoolTooLarge
 	}
-	if err := json.Unmarshal(content, &payload); err != nil {
+	written, err := w.writer.Write(data)
+	w.budget.written += int64(written)
+	return written, err
+}
+
+// ImportData imports a sanitized JSON data exchange atomically.
+func (s *Service) ImportData(ctx context.Context, source io.Reader, adminID string) (DataImportResponse, error) {
+	_ = adminID
+	if source == nil {
+		return DataImportResponse{}, errors.New("database import source is nil")
+	}
+	directory, err := os.MkdirTemp("", "msp-sanitized-data-import-*")
+	if err != nil {
+		return DataImportResponse{}, fmt.Errorf("create database import spool: %w", err)
+	}
+	defer os.RemoveAll(directory)
+
+	payload := importPayloadSpool{
+		directory: directory,
+		tables:    map[string]*spooledImportTable{},
+		budget:    importSpoolBudget{limit: maxImportSpoolBytes},
+	}
+	limitedSource := &io.LimitedReader{R: source, N: maxImportSpoolBytes + 1}
+	decodeErr := s.decodeImportPayload(ctx, limitedSource, &payload)
+	if limitedSource.N == 0 {
+		return DataImportResponse{}, badRequest(fmt.Sprintf("导入 JSON 文件不能超过 %d MB", maxImportSpoolBytes>>20))
+	}
+	if decodeErr != nil {
+		err := decodeErr
+		if errors.Is(err, errImportSpoolTooLarge) {
+			return DataImportResponse{}, badRequest(fmt.Sprintf("导入临时数据不能超过 %d MB", maxImportSpoolBytes>>20))
+		}
+		if errors.Is(err, errImportSpool) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return DataImportResponse{}, err
+		}
 		return DataImportResponse{}, badRequest("JSON 文件解析失败: " + err.Error())
 	}
-	if payload.Tables == nil {
+	if !payload.tablesFound {
 		return DataImportResponse{}, badRequest("无效的脱敏数据交换文件格式")
 	}
-	if len(payload.Tables) > maxImportTableCount {
+	if len(payload.tables) > maxImportTableCount {
 		return DataImportResponse{}, badRequest(fmt.Sprintf("导入表数量不能超过 %d", maxImportTableCount))
 	}
-	if payload.DataKind != "" && payload.DataKind != sanitizedDataExchangeKind {
+	if payload.dataKind != "" && payload.dataKind != sanitizedDataExchangeKind {
 		return DataImportResponse{}, badRequest("此接口仅支持管理端脱敏数据交换 JSON；完整数据库恢复请使用 pg_dump/pg_restore")
 	}
-	if payload.CompleteBackup != nil && *payload.CompleteBackup {
+	if payload.completeBackup != nil && *payload.completeBackup {
 		return DataImportResponse{}, badRequest("此接口不接受完整数据库备份；完整数据库恢复请使用 pg_dump/pg_restore")
 	}
-	if payload.Sanitized != nil && !*payload.Sanitized {
+	if payload.sanitized != nil && !*payload.sanitized {
 		return DataImportResponse{}, badRequest("此接口仅接受脱敏数据交换文件；完整数据库恢复请使用 pg_dump/pg_restore")
 	}
-	if payload.FullRestoreSupported != nil && *payload.FullRestoreSupported {
+	if payload.fullRestoreSupported != nil && *payload.fullRestoreSupported {
 		return DataImportResponse{}, badRequest("此接口不支持完整数据库恢复；请使用 pg_dump/pg_restore")
+	}
+	orderedTables := s.orderedImportTables(payload.tables)
+	if users, ok := payload.tables["users"]; ok && (users.rows > 0 || users.formatInvalid) {
+		return DataImportResponse{}, badRequest("脱敏数据交换不支持导入用户账号，也不能用于空库恢复；请先在目标库建立所需账号，完整恢复请使用 pg_dump/pg_restore")
+	}
+	if err := validateImportSpool(orderedTables, payload.tables); err != nil {
+		return DataImportResponse{}, err
 	}
 
 	response := DataImportResponse{
 		TableResults: map[string]TableImportResult{},
 		Errors:       []string{},
 	}
-	prepared := make([]ImportTable, 0, len(payload.Tables))
-	totalRows := 0
-	for _, table := range s.orderedImportTables(payload.Tables) {
-		var rows []map[string]any
-		if err := json.Unmarshal(payload.Tables[table], &rows); err != nil {
-			return DataImportResponse{}, badRequest(table + ": 数据格式无效")
-		}
-		totalRows += len(rows)
-		if totalRows > maxImportTotalRows {
-			return DataImportResponse{}, badRequest(fmt.Sprintf("导入总行数不能超过 %d", maxImportTotalRows))
-		}
-		if err := validateImportRows(table, rows); err != nil {
-			return DataImportResponse{}, err
-		}
+	prepared := make([]ImportTable, 0, len(payload.tables))
+	for _, table := range orderedTables {
+		spooled := payload.tables[table]
 		if table == "users" {
-			if len(rows) > 0 {
-				return DataImportResponse{}, badRequest("脱敏数据交换不支持导入用户账号，也不能用于空库恢复；请先在目标库建立所需账号，完整恢复请使用 pg_dump/pg_restore")
-			}
 			continue
 		}
-		if !s.isExportableTable(table) {
+		if !spooled.known {
 			response.Errors = append(response.Errors, "跳过未知表: "+table)
 			continue
+		}
+		rows, err := readImportSpool(ctx, table, spooled)
+		if err != nil {
+			return DataImportResponse{}, err
 		}
 		prepared = append(prepared, ImportTable{Name: table, Rows: rows})
 	}
@@ -538,21 +598,386 @@ func (s *Service) ImportData(ctx context.Context, content []byte, adminID string
 	return response, nil
 }
 
-func validateImportRows(table string, rows []map[string]any) error {
-	if len(rows) > maxImportRowsPerTable {
-		return badRequest(fmt.Sprintf("%s: 单表导入行数不能超过 %d", table, maxImportRowsPerTable))
+func (s *Service) decodeImportPayload(ctx context.Context, source io.Reader, payload *importPayloadSpool) error {
+	if payload.budget.limit == 0 {
+		payload.budget.limit = maxImportSpoolBytes
 	}
-	for rowIndex, row := range rows {
-		if len(row) > maxImportFieldsPerRow {
-			return badRequest(fmt.Sprintf("%s: 第 %d 行字段数量不能超过 %d", table, rowIndex+1, maxImportFieldsPerRow))
+	decoder := json.NewDecoder(&contextReader{ctx: ctx, reader: source})
+	decoder.UseNumber()
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token == nil {
+		return ensureJSONEOF(decoder)
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok || delimiter != '{' {
+		return errors.New("脱敏数据交换文件顶层必须是 JSON 对象")
+	}
+	for decoder.More() {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		for column, value := range row {
-			if len(column) > maxImportKeyBytes {
-				return badRequest(fmt.Sprintf("%s: 第 %d 行字段名长度不能超过 %d 字节", table, rowIndex+1, maxImportKeyBytes))
+		nameToken, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		name, ok := nameToken.(string)
+		if !ok {
+			return errors.New("脱敏数据交换文件字段名无效")
+		}
+		switch strings.ToLower(name) {
+		case "tables":
+			if err := s.decodeImportTables(ctx, decoder, payload); err != nil {
+				return err
 			}
-			if err := validateImportValue(value, 0); err != nil {
-				return badRequest(fmt.Sprintf("%s: 第 %d 行字段 %q %s", table, rowIndex+1, column, err.Error()))
+		case "data_kind":
+			if err := decoder.Decode(&payload.dataKind); err != nil {
+				return err
 			}
+		case "sanitized":
+			if err := decoder.Decode(&payload.sanitized); err != nil {
+				return err
+			}
+		case "complete_backup":
+			if err := decoder.Decode(&payload.completeBackup); err != nil {
+				return err
+			}
+		case "full_restore_supported":
+			if err := decoder.Decode(&payload.fullRestoreSupported); err != nil {
+				return err
+			}
+		default:
+			if err := skipJSONValue(ctx, decoder); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return err
+	}
+	return ensureJSONEOF(decoder)
+}
+
+func (s *Service) decodeImportTables(ctx context.Context, decoder *json.Decoder, payload *importPayloadSpool) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token == nil {
+		payload.tables = map[string]*spooledImportTable{}
+		payload.tablesFound = false
+		return nil
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok || delimiter != '{' {
+		if err := skipJSONAfterToken(ctx, decoder, token); err != nil {
+			return err
+		}
+		return errors.New("tables 字段必须是 JSON 对象")
+	}
+	if payload.tables == nil {
+		payload.tables = map[string]*spooledImportTable{}
+	}
+	payload.tablesFound = true
+	for decoder.More() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		nameToken, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		table, ok := nameToken.(string)
+		if !ok {
+			return errors.New("导入表名无效")
+		}
+		if !s.isExportableTable(table) && table != "users" {
+			if err := skipJSONValue(ctx, decoder); err != nil {
+				return err
+			}
+			payload.tables[table] = &spooledImportTable{}
+			continue
+		}
+		spooled, err := s.decodeImportTable(ctx, decoder, payload.directory, table, &payload.budget)
+		if err != nil {
+			return err
+		}
+		if table == "users" {
+			spooled.known = false
+		}
+		payload.tables[table] = spooled
+	}
+	_, err = decoder.Token()
+	return err
+}
+
+func (s *Service) decodeImportTable(
+	ctx context.Context,
+	decoder *json.Decoder,
+	directory string,
+	table string,
+	budget *importSpoolBudget,
+) (*spooledImportTable, error) {
+	spooled := &spooledImportTable{known: true}
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if token == nil {
+		return spooled, nil
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok || delimiter != '[' {
+		if err := skipJSONAfterToken(ctx, decoder, token); err != nil {
+			return nil, err
+		}
+		spooled.formatInvalid = true
+		return spooled, nil
+	}
+
+	spooled.path = filepath.Join(directory, table+".jsonl")
+	file, err := os.OpenFile(spooled.path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("%w: create %s import spool: %w", errImportSpool, table, err)
+	}
+	defer file.Close()
+	encoder := json.NewEncoder(&importSpoolWriter{writer: file, budget: budget})
+	encoder.SetEscapeHTML(false)
+	for decoder.More() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var row map[string]any
+		if err := decoder.Decode(&row); err != nil {
+			var typeErr *json.UnmarshalTypeError
+			if errors.As(err, &typeErr) {
+				spooled.formatInvalid = true
+				continue
+			}
+			return nil, err
+		}
+		if row == nil {
+			spooled.formatInvalid = true
+			continue
+		}
+		normalized, err := normalizeImportJSONNumbers(row)
+		if err != nil {
+			var typeErr *json.UnmarshalTypeError
+			if errors.As(err, &typeErr) {
+				spooled.formatInvalid = true
+				continue
+			}
+			return nil, err
+		}
+		row = normalized.(map[string]any)
+		spooled.rows++
+		if spooled.rowValidationErr == nil {
+			spooled.rowValidationErr = validateImportRow(table, spooled.rows, row)
+		}
+		if err := encoder.Encode(row); err != nil {
+			return nil, fmt.Errorf("%w: write %s import spool: %w", errImportSpool, table, err)
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, err
+	}
+	if err := file.Close(); err != nil {
+		return nil, fmt.Errorf("%w: close %s import spool: %w", errImportSpool, table, err)
+	}
+	if spooled.formatInvalid {
+		if err := os.Remove(spooled.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: remove invalid %s import spool: %w", errImportSpool, table, err)
+		}
+		spooled.path = ""
+	}
+	return spooled, nil
+}
+
+func validateImportSpool(orderedTables []string, tables map[string]*spooledImportTable) error {
+	totalRows := 0
+	for _, table := range orderedTables {
+		spooled := tables[table]
+		if !spooled.known && table != "users" {
+			continue
+		}
+		if spooled.formatInvalid {
+			return badRequest(table + ": 数据格式无效")
+		}
+		totalRows += spooled.rows
+		if totalRows > maxImportTotalRows {
+			return badRequest(fmt.Sprintf("导入总行数不能超过 %d", maxImportTotalRows))
+		}
+		if spooled.rows > maxImportRowsPerTable {
+			return badRequest(fmt.Sprintf("%s: 单表导入行数不能超过 %d", table, maxImportRowsPerTable))
+		}
+		if spooled.rowValidationErr != nil {
+			return spooled.rowValidationErr
+		}
+	}
+	return nil
+}
+
+func readImportSpool(
+	ctx context.Context,
+	table string,
+	spooled *spooledImportTable,
+) ([]map[string]any, error) {
+	if spooled.rows == 0 {
+		return []map[string]any{}, nil
+	}
+	file, err := os.Open(spooled.path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: open %s import spool: %w", errImportSpool, table, err)
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(&contextReader{ctx: ctx, reader: file})
+	rows := make([]map[string]any, 0, spooled.rows)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var row map[string]any
+		err := decoder.Decode(&row)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%w: read %s import spool: %w", errImportSpool, table, err)
+		}
+		rows = append(rows, row)
+	}
+	if len(rows) != spooled.rows {
+		return nil, fmt.Errorf(
+			"%w: %s import spool row count mismatch: got %d, want %d",
+			errImportSpool,
+			table,
+			len(rows),
+			spooled.rows,
+		)
+	}
+	return rows, nil
+}
+
+func ensureJSONEOF(decoder *json.Decoder) error {
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("JSON 文件包含多余数据")
+		}
+		return err
+	}
+	return nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *contextReader) Read(buffer []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := r.reader.Read(buffer)
+	if ctxErr := r.ctx.Err(); ctxErr != nil {
+		return n, ctxErr
+	}
+	return n, err
+}
+
+func normalizeImportJSONNumbers(value any) (any, error) {
+	switch typed := value.(type) {
+	case json.Number:
+		number, err := typed.Float64()
+		if err != nil {
+			return nil, &json.UnmarshalTypeError{
+				Value: "number " + typed.String(),
+				Type:  reflect.TypeOf(float64(0)),
+			}
+		}
+		return number, nil
+	case []any:
+		for index, nested := range typed {
+			normalized, err := normalizeImportJSONNumbers(nested)
+			if err != nil {
+				return nil, err
+			}
+			typed[index] = normalized
+		}
+	case map[string]any:
+		for key, nested := range typed {
+			normalized, err := normalizeImportJSONNumbers(nested)
+			if err != nil {
+				return nil, err
+			}
+			typed[key] = normalized
+		}
+	}
+	return value, nil
+}
+
+func skipJSONValue(ctx context.Context, decoder *json.Decoder) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	return skipJSONAfterToken(ctx, decoder, token)
+}
+
+func skipJSONAfterToken(ctx context.Context, decoder *json.Decoder, token json.Token) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		for decoder.More() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if _, err := decoder.Token(); err != nil {
+				return err
+			}
+			if err := skipJSONValue(ctx, decoder); err != nil {
+				return err
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	case '[':
+		for decoder.More() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := skipJSONValue(ctx, decoder); err != nil {
+				return err
+			}
+		}
+		_, err := decoder.Token()
+		return err
+	default:
+		return errors.New("JSON 分隔符无效")
+	}
+}
+
+func validateImportRow(table string, rowIndex int, row map[string]any) error {
+	if len(row) > maxImportFieldsPerRow {
+		return badRequest(fmt.Sprintf("%s: 第 %d 行字段数量不能超过 %d", table, rowIndex, maxImportFieldsPerRow))
+	}
+	for column, value := range row {
+		if len(column) > maxImportKeyBytes {
+			return badRequest(fmt.Sprintf("%s: 第 %d 行字段名长度不能超过 %d 字节", table, rowIndex, maxImportKeyBytes))
+		}
+		if err := validateImportValue(value, 0); err != nil {
+			return badRequest(fmt.Sprintf("%s: 第 %d 行字段 %q %s", table, rowIndex, column, err.Error()))
 		}
 	}
 	return nil
@@ -622,7 +1047,7 @@ func (s *Service) DatabaseMonitor(ctx context.Context) (DatabaseMonitorResponse,
 	}, nil
 }
 
-func (s *Service) orderedImportTables(tables map[string]json.RawMessage) []string {
+func (s *Service) orderedImportTables(tables map[string]*spooledImportTable) []string {
 	seen := map[string]bool{}
 	ordered := make([]string, 0, len(tables))
 	for _, table := range importOrder {
