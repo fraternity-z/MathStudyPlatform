@@ -133,13 +133,15 @@ ORDER BY version;
 | 普通 Go API 总请求预算 | 30 秒 |
 | 练习、每日题准备和画像 AI 接口总请求预算 | 55 秒 |
 | AI 学习会话聊天总请求预算 | 130 秒 |
+| OpenAI Responses 请求总预算 | 130 秒 |
 | 前端生成请求 Axios 超时 | 60 秒 |
 | Nginx `/api/` 上游响应读取超时 | 300 秒 |
 | Go HTTP `WriteTimeout` | 310 秒 |
 
-`EXERCISE_GENERATION_REQUEST_TIMEOUT_SECONDS` 只用于 `/exercise/generate`、`/daily-question/today/prepare` 和 `/portrait/generate`，默认 55 秒。`SESSION_CHAT_REQUEST_TIMEOUT_SECONDS` 独立用于精确的 `POST /session/start-chat` 和 `POST /session/{session_id}/chat`，默认 130 秒；该预算覆盖最长 60 秒内容审核、最长 60 秒导师调用，并为降级回复和消息保存保留余量。会话聊天使用端到端模型分片 SSE，不受前端生成请求的 60 秒 Axios 超时约束；已有更短的父级 context 仍会优先结束请求。每个分片都会刷新响应，因此所有代理层都必须禁用响应缓冲和压缩聚合，不能只延长读取超时。若将任一后端预算配置到 300 秒以上，必须同步调整所有边缘代理和 Go HTTP 写入超时。Nginx 的 300 秒仅是代理安全上限，不代表业务请求应持续运行 300 秒。
+`EXERCISE_GENERATION_REQUEST_TIMEOUT_SECONDS` 只用于 `/exercise/generate`、`/daily-question/today/prepare` 和 `/portrait/generate`，默认 55 秒。`SESSION_CHAT_REQUEST_TIMEOUT_SECONDS` 独立用于精确的 `POST /session/start-chat`、`POST /session/{session_id}/chat` 和 `POST /v1/responses`，默认 130 秒；该预算覆盖最长 60 秒内容审核、最长 60 秒模型调用，并为降级回复或收尾处理保留余量。会话聊天和 Responses 流都使用端到端 SSE，不受前端生成请求的 60 秒 Axios 超时约束；已有更短的父级 context 仍会优先结束请求。每个分片都会刷新响应，因此所有代理层都必须禁用响应缓冲和压缩聚合，不能只延长读取超时。若将任一后端预算配置到 300 秒以上，必须同步调整所有边缘代理和 Go HTTP 写入超时。Nginx 的 300 秒仅是代理安全上限，不代表业务请求应持续运行 300 秒。
 
 - `/api/` 指向 Go API；
+- `/v1/` 指向 Go API，至少开放 `POST /v1/responses`；必须原样保留 `Authorization`，并关闭响应缓冲、请求缓冲和 gzip，以支持 Responses SSE；
 - `/uploads/` 指向 Go API，并保留浏览器 Cookie；该入口承载受认证的本地上传读取，不能由边缘代理或 CDN 绕过后端直接暴露宿主机 `uploads/` 目录；
 - 微信回调 `GET/POST /api/v1/integrations/wechat/official-account/callback` 必须通过公网 HTTPS 原样转发到 Go API，不能要求站内 JWT；该路由使用微信签名和时间戳校验请求；
 - SSE 路径关闭代理缓冲和压缩聚合、允许逐分片 flush，并保留足够超时；
@@ -166,6 +168,8 @@ sudo systemctl reload nginx
 - `msp_http_server_request_duration_seconds`：使用相同低基数标签的请求时延直方图。
 - `msp_postgres_pool_*`：pgx 连接上限、当前 total/acquired/idle/constructing、获取次数、等待和取消。
 - `msp_redis_pool_*`：go-redis 当前连接、连接复用命中/未命中、等待、超时和不可用连接。
+- `msp_openai_responses_input_tokens_total`：Responses 终态中 provider 报告的输入 token 累计值。
+- `msp_openai_responses_output_tokens_total`：Responses 终态中 provider 报告的输出 token 累计值。
 
 `route` 只使用注册路由模板；未匹配请求和 CORS preflight 使用固定占位符。不要把原始 URL、用户 ID、request ID 或错误文本加入 label。常用查询示例：
 
@@ -206,6 +210,7 @@ docker compose logs --tail 200 backend
 9. 分别提交真实 PNG、JPEG 图片和空白/低对比图片，确认成功路径只产生一次 attempt，并各执行一次 session、DKT 和 profile 更新；OCR/数学不确定或失败路径的这些写入均为零。图片 OCR 当前只接受 PNG、JPEG 和 GIF。
 10. 验证通用数学判定的 `correct`、`incorrect`、`indeterminate` 响应，以及解析生成不可用、超时、取消、无效输出和验证失败的 `failure.stage`、`failure.code`、`retryable` 契约。
 11. 对两条学习会话聊天接口各发起一次真实 Tutor 请求，确认 `task_info` 后能在模型完成前收到至少两个 `message` chunk，最终只收到一次 done 且历史记录内容与分片拼接一致；并发请求应复用上游连接，流已经输出后发生 provider 错误时不得切换候选模型拼接第二份回复。
+12. 使用平台学生 access token 对 `/v1/responses` 分别发送非流式和 `stream=true` 请求，确认逻辑模型映射、响应 ID/模型/usage、具名 SSE 文本和函数调用事件、终态事件、请求取消释放、学生日额度及流开始后不跨渠道重试；再以 `store=true`、不支持的工具和不存在模型确认稳定 OpenAI 错误结构。
 
 公众号 live 验收必须记录实际账号类型、认证状态、接口权限、IP 白名单、模板字段和微信返回码。管理员固定测试消息仍走客服消息接口并受用户最近交互窗口约束；三类业务提醒走模板消息接口，必须单独验收目标账号的模板权限、模板 ID 和字段结构。测试号链路通过只能证明代码与测试环境可用，不能替代正式公众号的权限验收，也不能保证可以任意主动群发。
 

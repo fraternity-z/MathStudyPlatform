@@ -119,7 +119,7 @@ func CORS(origins, methods, headers []string) func(http.Handler) http.Handler {
 // Gzip compresses responses when the client supports gzip.
 func Gzip(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		if r.URL.Path == "/v1/responses" || !acceptsGzip(r.Header.Get("Accept-Encoding")) {
 			next.ServeHTTP(w, r)
 			return
 		}

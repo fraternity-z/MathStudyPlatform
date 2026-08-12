@@ -95,6 +95,9 @@ func NewHandler(cfg config.Config, logger *slog.Logger, checker health.Checker, 
 }
 
 func requestTimeout(cfg config.Config, r *http.Request) time.Duration {
+	if r.Method == http.MethodPost && r.URL.Path == "/v1/responses" {
+		return sessionChatTimeout(cfg)
+	}
 	if isSessionChatRequest(r, cfg.APIV1Prefix) {
 		return sessionChatTimeout(cfg)
 	}

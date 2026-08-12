@@ -2,7 +2,7 @@
 
 本文是仓库唯一的当前待办清单。技术文档和历史记录只引用这里，不再维护独立路线图。
 
-**更新时间**：2026-08-11
+**更新时间**：2026-08-12
 
 ## 优先级说明
 
@@ -19,6 +19,7 @@
 - [x] 实现图片答案 OCR；保持解析成功前不创建 attempt、diagnosis、learning session 或 DKT 更新，并补应用层、HTTP、前端和真实图片验收。
 - [x] 完善通用数学求解能力，覆盖超出当前本地模板和基础答案比较范围的题型，并定义可解释的失败与降级契约。
 - [x] 2026-08-11 将 Tutor 从“完整生成后单次 SSE”升级为 provider 分片级端到端流式；`task_info`、多次 chunk 和持久化后的 done 逐事件刷新，断连/取消会停止生成且不发送 done，provider 部分失败会追加中断提示并保持已完成回复的分片与历史一致，流开始后不跨候选模型拼接回复。默认模型客户端复用安全 HTTP Transport 和连接池，同时保留单请求超时。临时测试覆盖正常分片、缺失尾段、部分失败、写回失败、候选切换和 64 路并发连接复用，`go test -race` 通过后已删除测试源码；全量 `go test ./...`、`go vet ./...`、`go build ./...`、前端 lint 和生产构建通过。
+- [x] 2026-08-12 新增 `POST /v1/responses` OpenAI 兼容入口，复用逻辑模型、渠道优先级/权重、密钥轮换、供应商模型映射、超时、重试、AI 风控、限流和 token 指标；支持原生 Responses 成功 JSON/SSE 透传、失败脱敏及 Chat Completions fallback 的文本、拒绝、函数调用和 usage 状态机转换，流交付后不再切换渠道。学生响应成功写入下游后写共享日额度账本，账本故障不改写已交付结果；生产 Nginx 与本地 Vite 均代理 `/v1/`。不支持存储、后台任务、跨请求会话状态、内建工具、provider reusable prompt 及文件/音频输入，真实外部 provider 与官方 SDK 的兼容性仍归入生产验收。
 - [ ] 对外部 provider 的 Tutor、Portrait、Diagnostician、Math Solver、Question Parser、Question Generator 和 OCR 做真实运行质量验收。
 
 ### AI 自主练习加固

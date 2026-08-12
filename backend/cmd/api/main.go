@@ -32,6 +32,7 @@ import (
 	messagecenterhttp "mathstudy/backend/internal/adapter/http/messagecenter"
 	mistakehttp "mathstudy/backend/internal/adapter/http/mistake"
 	noticehttp "mathstudy/backend/internal/adapter/http/notice"
+	openaihttp "mathstudy/backend/internal/adapter/http/openai"
 	portraithttp "mathstudy/backend/internal/adapter/http/portrait"
 	progresshttp "mathstudy/backend/internal/adapter/http/progress"
 	qathreadhttp "mathstudy/backend/internal/adapter/http/qathread"
@@ -100,6 +101,8 @@ const (
 	messageCenterRateLimitWindow    = time.Minute
 	dailyQuestionGenerationLimitMax = 10
 	dailyQuestionGenerationWindow   = time.Minute
+	openAIResponsesRateLimitMax     = 30
+	openAIResponsesRateLimitWindow  = time.Minute
 )
 
 func main() {
@@ -264,10 +267,31 @@ func main() {
 		logger.Error("configure admin AI config repository", "error", err)
 		os.Exit(1)
 	}
-	providerHTTPClient := openaicompatadapter.WrapClient(outbound.NewPublicHTTPSClient(20 * time.Second))
+	providerBaseHTTPClient := outbound.NewPublicHTTPSClient(20 * time.Second)
+	if transport, ok := providerBaseHTTPClient.Transport.(*http.Transport); ok {
+		transport.MaxIdleConnsPerHost = 20
+	}
+	providerHTTPClient := openaicompatadapter.WrapClient(providerBaseHTTPClient)
 	adminAIConfigService, err := adminaiconfigapp.NewService(adminAIConfigRepo, appCipher, providerHTTPClient)
 	if err != nil {
 		logger.Error("configure admin AI config service", "error", err)
+		os.Exit(1)
+	}
+	responsesDispatcher, err := openaicompatadapter.NewResponsesDispatcher(adminAIConfigService, providerBaseHTTPClient)
+	if err != nil {
+		logger.Error("configure OpenAI Responses dispatcher", "error", err)
+		os.Exit(1)
+	}
+	responsesLimiter, err := ratelimit.New(
+		redisClient,
+		"msp:openai_responses",
+		openAIResponsesRateLimitMax,
+		openAIResponsesRateLimitWindow,
+		cfg.RedisFallbackCacheMaxSize,
+		logger,
+	)
+	if err != nil {
+		logger.Error("configure OpenAI Responses rate limit", "error", err)
 		os.Exit(1)
 	}
 	adminAIConfigHandler, err := adminaiconfighthttp.NewHandler(logger, adminAIConfigService, authService)
@@ -283,6 +307,18 @@ func main() {
 	aiRiskService, err := airiskapp.NewService(aiRiskRepo, aiRiskSlots, airiskapp.WithContentReviewer(contentReviewer))
 	if err != nil {
 		logger.Error("configure AI risk service", "error", err)
+		os.Exit(1)
+	}
+	openAIHandler, err := openaihttp.NewHandler(
+		logger,
+		responsesDispatcher,
+		authService,
+		aiRiskService,
+		responsesLimiter,
+		store,
+	)
+	if err != nil {
+		logger.Error("configure OpenAI Responses handler", "error", err)
 		os.Exit(1)
 	}
 	aiRiskHandler, err := adminairiskhttp.NewHandler(logger, aiRiskService, authService)
@@ -918,6 +954,7 @@ func main() {
 		checker,
 		store,
 		httpserver.WithRoutes(func(mux *http.ServeMux) {
+			openAIHandler.Register(mux)
 			authHandler.Register(mux, cfg.APIV1Prefix+"/auth")
 			wechatHandler.RegisterPublic(mux, cfg.APIV1Prefix+"/integrations/wechat")
 			wechatHandler.RegisterUser(mux, cfg.APIV1Prefix+"/integrations/wechat")

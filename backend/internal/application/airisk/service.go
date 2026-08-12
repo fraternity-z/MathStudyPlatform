@@ -111,6 +111,28 @@ func (s *Service) GetSettings(ctx context.Context) (Settings, error) {
 	return s.withResetMetadata(settings), nil
 }
 
+// RecordSuccessfulReply commits one delivered response to the student's daily quota ledger.
+func (s *Service) RecordSuccessfulReply(ctx context.Context, studentID string) error {
+	access, ok, err := s.repo.GetStudentAccess(ctx, strings.TrimSpace(studentID))
+	if err != nil {
+		return Error{Kind: ErrUnavailable, Message: "AI 风控服务暂不可用"}
+	}
+	if !ok || !access.IsStudent {
+		return nil
+	}
+	usageID, err := s.newID()
+	if err != nil {
+		return Error{Kind: ErrUnavailable, Message: "AI 风控服务暂不可用"}
+	}
+	now := s.now()
+	if err := s.repo.InsertReplyUsage(ctx, ReplyUsage{
+		ID: usageID, StudentID: access.StudentID, UsageDate: s.usageDate(now), CreatedAt: now,
+	}); err != nil {
+		return Error{Kind: ErrUnavailable, Message: "AI 风控服务暂不可用"}
+	}
+	return nil
+}
+
 // UpdateSettings validates and stores the uniform student AI limits.
 func (s *Service) UpdateSettings(ctx context.Context, input UpdateSettingsRequest) (Settings, error) {
 	settings, err := normalizeSettings(input)

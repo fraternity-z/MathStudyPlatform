@@ -137,6 +137,23 @@ go run ./cmd/migrate  # 重复执行应无待应用版本
 
 学习会话的 `POST /session/start-chat` 和 `POST /session/{session_id}/chat` 使用真正的模型分片流，而不是等待完整回复后再包装为 SSE。事件顺序为可选的 `session_info`、一次 `task_info`、多次 `message` chunk、一次 `message` done；每个事件写入后立即 flush。Tutor 流式请求直接使用 provider 的 Chat Completions 流，Responses 自动转换继续只用于非流式 Agent。默认模型请求共享进程级 HTTP Transport 和连接池，但通过客户端浅拷贝保留每次运行配置的独立总超时；显式注入的测试客户端仍按请求单独包装。
 
+## OpenAI Responses 兼容接口
+
+`POST /v1/responses` 接受平台 access token 作为 Bearer token；`model` 填管理端模型的逻辑名称而不是供应商 `model_id`。入口支持非流式 JSON 和 `stream=true` 的具名 SSE，常用字段 `input`、`instructions`、函数 `tools`、`tool_choice`、`temperature`、`top_p`、`max_output_tokens`、`parallel_tool_calls`、`reasoning.effort` 和 `text.format` 会原生透传，或在 Chat fallback 中转换为对应字段。入口只接受兼容层列出的 OpenAI Responses 顶层字段，未知供应商扩展返回 `unsupported_parameter`；只开放函数工具，文件、音频输入和 provider 端 reusable prompt 因无法进入现有内容审核链而统一拒绝。模型 `capabilities` 可用布尔键 `responses`、`chat_completions`、`tools`、`temperature` 明确关闭不支持的能力；未声明时按 OpenAI-compatible 能力尝试。
+
+本服务不实现 Response 查询、取消或后台任务端点，因此强制原生请求默认 `store=false`，并对 `store=true`、`background=true`、`previous_response_id`、`conversation` 和 reusable `prompt` 返回明确的 `unsupported_parameter`。Chat fallback 支持文本、用户图片和 JSON Schema 格式；其他供应商专有状态字段会返回明确错误，而不会静默丢弃。上游失败只会在首个流事件交付前按模型级 `default_max_retries` 切换候选；兼容供应商没有统一幂等协议，重试可能产生额外 token 成本，所以对有外部副作用的函数工具应由调用方或工具执行层使用业务幂等键。学生额度只在非流式响应体或 `response.completed|incomplete` 终态成功写入下游后计入；配额账本短暂写入失败会记录脱敏运维错误，不会把已经交付的模型结果改写成可重试的 5xx 或尾随 `error` 事件。
+
+本地联调可直接请求 Go API；通过 Vite 或生产前端容器时 `/v1/` 也会代理到后端：
+
+```powershell
+$headers = @{ Authorization = 'Bearer <platform-access-token>'; 'Content-Type' = 'application/json' }
+$body = '{"model":"<logical-model>","input":"计算 2+2","instructions":"简洁回答","max_output_tokens":128}'
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/v1/responses -Headers $headers -Body $body
+
+$streamBody = '{"model":"<logical-model>","input":"计算 2+2","stream":true}'
+curl.exe -N http://localhost:8000/v1/responses -H "Authorization: Bearer <platform-access-token>" -H "Content-Type: application/json" -d $streamBody
+```
+
 ## 微信公众号测试号联调
 
 公众号回调由微信服务器从公网发起，不能直接填写 `localhost`。本地联调需要同时运行 PostgreSQL、Redis、Go API 和临时 HTTPS 隧道；前端在测试学生或教师绑定时需要运行。建议先使用微信公众平台接口测试号，正式公众号仍需单独验收主体权限。下文以默认 `API_V1_PREFIX=/api/v1` 为例；若修改了该配置，所有回调和调试 API 路径都要同步替换前缀。

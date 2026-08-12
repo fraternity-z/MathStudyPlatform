@@ -111,10 +111,12 @@ type httpSnapshot struct {
 
 // Store keeps Prometheus-compatible process and request metrics.
 type Store struct {
-	version     string
-	environment string
-	startedAt   time.Time
-	requests    atomic.Uint64
+	version               string
+	environment           string
+	startedAt             time.Time
+	requests              atomic.Uint64
+	responsesInputTokens  atomic.Uint64
+	responsesOutputTokens atomic.Uint64
 
 	mu                   sync.RWMutex
 	http                 map[httpLabels]*httpSeries
@@ -139,6 +141,19 @@ func NewStore(version, environment string) *Store {
 // IncRequests increments the legacy process-level HTTP request counter.
 func (s *Store) IncRequests() {
 	s.requests.Add(1)
+}
+
+// ObserveOpenAIResponsesUsage records provider-reported token usage without high-cardinality labels.
+func (s *Store) ObserveOpenAIResponsesUsage(inputTokens, outputTokens int) {
+	if s == nil {
+		return
+	}
+	if inputTokens > 0 {
+		s.responsesInputTokens.Add(uint64(inputTokens))
+	}
+	if outputTokens > 0 {
+		s.responsesOutputTokens.Add(uint64(outputTokens))
+	}
 }
 
 // ObserveHTTPRequest records one completed HTTP request using bounded labels.
@@ -245,6 +260,12 @@ func (s *Store) Render() string {
 	b.WriteString("# HELP msp_http_requests_total Total HTTP requests handled by the Go API.\n")
 	b.WriteString("# TYPE msp_http_requests_total counter\n")
 	fmt.Fprintf(&b, "msp_http_requests_total %d\n", s.requests.Load())
+	b.WriteString("# HELP msp_openai_responses_input_tokens_total Provider-reported input tokens for terminal Responses API requests.\n")
+	b.WriteString("# TYPE msp_openai_responses_input_tokens_total counter\n")
+	fmt.Fprintf(&b, "msp_openai_responses_input_tokens_total %d\n", s.responsesInputTokens.Load())
+	b.WriteString("# HELP msp_openai_responses_output_tokens_total Provider-reported output tokens for terminal Responses API requests.\n")
+	b.WriteString("# TYPE msp_openai_responses_output_tokens_total counter\n")
+	fmt.Fprintf(&b, "msp_openai_responses_output_tokens_total %d\n", s.responsesOutputTokens.Load())
 	renderHTTPMetrics(&b, httpStats)
 	if runtimeProvider != nil {
 		renderRuntimeMetrics(&b, runtimeProvider())

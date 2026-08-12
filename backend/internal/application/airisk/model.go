@@ -198,6 +198,14 @@ type Lease interface {
 	Release(context.Context) error
 }
 
+// ReplyUsage records one delivered AI response against a student's daily quota.
+type ReplyUsage struct {
+	ID        string
+	StudentID string
+	UsageDate string
+	CreatedAt time.Time
+}
+
 // ModelReviewResult is the normalized result returned by a moderation provider.
 type ModelReviewResult struct {
 	Model          string
@@ -215,6 +223,7 @@ type Repository interface {
 	UpsertSettings(context.Context, []SettingUpdate) error
 	GetStudentAccess(context.Context, string) (StudentAccess, bool, error)
 	CountReplies(context.Context, string, string) (int, error)
+	InsertReplyUsage(context.Context, ReplyUsage) error
 	Overview(context.Context, string, int) (Overview, error)
 	ListStudents(context.Context, StudentListFilter) ([]StudentItem, int, error)
 	SetStudentAccess(context.Context, StudentAccessMutation) (StudentAccessResponse, bool, error)

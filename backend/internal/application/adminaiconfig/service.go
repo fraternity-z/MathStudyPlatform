@@ -409,6 +409,7 @@ type RuntimeConfig struct {
 	Timeout       time.Duration
 	MaxRetries    int
 	MaxIterations int
+	Capabilities  map[string]any
 }
 
 // RuntimeCandidate binds one logical model capability to a concrete channel.
@@ -898,6 +899,49 @@ func (s *Service) RuntimeConfigs(ctx context.Context, agentType string) ([]Runti
 	if err != nil {
 		return nil, false, err
 	}
+	ordered, err := orderRuntimeCandidates(candidates)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(ordered) == 0 {
+		return nil, false, nil
+	}
+	retries := 0
+	if config.MaxRetriesOverride != nil {
+		retries = *config.MaxRetriesOverride
+	}
+	retries = min(max(retries, 0), 10)
+	configs := s.runtimeConfigsFromCandidates(config, ordered, modelKey, retries)
+	if len(configs) == 0 {
+		return nil, false, nil
+	}
+	return configs, true, nil
+}
+
+// RuntimeConfigsForModel resolves the ordered channel attempts for an OpenAI-compatible model request.
+// The request model is the logical model name; each returned candidate carries its provider-specific model ID.
+func (s *Service) RuntimeConfigsForModel(ctx context.Context, modelKey string) ([]RuntimeConfig, bool, error) {
+	modelKey = strings.TrimSpace(modelKey)
+	if err := validateModelKey(modelKey); err != nil {
+		return nil, false, err
+	}
+	candidates, err := s.repo.ListRuntimeCandidates(ctx, modelKey)
+	if err != nil {
+		return nil, false, err
+	}
+	ordered, err := orderRuntimeCandidates(candidates)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(ordered) == 0 {
+		return nil, false, nil
+	}
+	retries := min(max(ordered[0].Model.DefaultMaxRetries, 0), 10)
+	configs := s.runtimeConfigsFromCandidates(AgentModelConfig{}, ordered, modelKey, retries)
+	return configs, len(configs) > 0, nil
+}
+
+func orderRuntimeCandidates(candidates []RuntimeCandidate) ([]RuntimeCandidate, error) {
 	routable := make([]llmrouting.Candidate[RuntimeCandidate], 0, len(candidates))
 	seenChannels := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
@@ -913,16 +957,12 @@ func (s *Service) RuntimeConfigs(ctx context.Context, agentType string) ([]Runti
 	}
 	ordered, err := llmrouting.Order(routable, nil)
 	if err != nil {
-		return nil, false, fmt.Errorf("order runtime channels: %w", err)
+		return nil, fmt.Errorf("order runtime channels: %w", err)
 	}
-	if len(ordered) == 0 {
-		return nil, false, nil
-	}
-	retries := 0
-	if config.MaxRetriesOverride != nil {
-		retries = *config.MaxRetriesOverride
-	}
-	retries = min(max(retries, 0), 10)
+	return ordered, nil
+}
+
+func (s *Service) runtimeConfigsFromCandidates(config AgentModelConfig, ordered []RuntimeCandidate, modelKey string, retries int) []RuntimeConfig {
 	attempts := retries + 1
 	configs := make([]RuntimeConfig, 0, attempts)
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -932,10 +972,7 @@ func (s *Service) RuntimeConfigs(ctx context.Context, agentType string) ([]Runti
 			configs = append(configs, runtime)
 		}
 	}
-	if len(configs) == 0 {
-		return nil, false, nil
-	}
-	return configs, true, nil
+	return configs
 }
 
 func (s *Service) runtimeConfigFromCandidate(config AgentModelConfig, candidate RuntimeCandidate, modelKey string, retries int) (RuntimeConfig, bool) {
@@ -973,6 +1010,7 @@ func (s *Service) runtimeConfigFromCandidate(config AgentModelConfig, candidate 
 		Timeout:       time.Duration(timeoutSeconds) * time.Second,
 		MaxRetries:    retries,
 		MaxIterations: defaultAgentMaxIterations,
+		Capabilities:  normalizeObjectMap(model.Capabilities),
 	}, true
 }
 

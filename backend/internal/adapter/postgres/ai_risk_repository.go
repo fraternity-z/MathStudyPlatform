@@ -110,7 +110,7 @@ func (r AIRiskRepository) GetStudentAccess(ctx context.Context, studentID string
 	return access, true, nil
 }
 
-// CountReplies returns successful metered AI replies for one local day.
+// CountReplies returns delivered metered AI replies for one local day.
 func (r AIRiskRepository) CountReplies(ctx context.Context, studentID, usageDate string) (int, error) {
 	var count int
 	err := r.DB().QueryRow(ctx, `
@@ -118,6 +118,21 @@ func (r AIRiskRepository) CountReplies(ctx context.Context, studentID, usageDate
 		FROM public.student_ai_reply_usage
 		WHERE student_id = $1 AND usage_date = $2::date`, studentID, usageDate).Scan(&count)
 	return count, err
+}
+
+// InsertReplyUsage records a delivered non-session AI response in the shared quota ledger.
+func (r AIRiskRepository) InsertReplyUsage(ctx context.Context, usage airiskapp.ReplyUsage) error {
+	_, err := r.DB().Exec(ctx, `
+		INSERT INTO public.student_ai_reply_usage (
+			id, student_id, session_id, message_id, usage_date, created_at
+		)
+		VALUES ($1, $2, NULL, $1, $3::date, $4)`,
+		usage.ID,
+		usage.StudentID,
+		usage.UsageDate,
+		usage.CreatedAt,
+	)
+	return err
 }
 
 // Overview returns risk-center counters for one local day.
