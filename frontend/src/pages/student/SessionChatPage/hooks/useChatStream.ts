@@ -46,7 +46,7 @@ interface UseChatStreamProps {
   attachmentsPending: boolean;
   selectedImages: File[];
   sseControllerRef: React.MutableRefObject<SSEController | null>;
-  onSendStart?: () => void;
+  onSendStart?: (sentInputText: string) => void;
   onSessionPrepared?: (identity: DraftSessionIdentity) => void;
   onFirstRequestPrepared?: (sessionId: string, request: DraftFirstRequest) => void;
   onSessionMaterialized?: (sessionId: string) => void;
@@ -159,6 +159,7 @@ export const useChatStream = ({
       const target = resolveChatTarget();
       if (!target) return false;
       const frozenFirstRequest = target.kind === 'draft' ? target.firstRequest : undefined;
+      const sentInputText = frozenFirstRequest?.inputText ?? messageContent;
       if (
         !frozenFirstRequest &&
         !messageContent.trim() &&
@@ -236,7 +237,7 @@ export const useChatStream = ({
           onChatSettled?.({
             sessionId: recoverySessionId,
             outcome,
-            retryText: messageContent,
+            retryText: sentInputText,
             errorMessage,
             errorCode,
             errorStatus,
@@ -290,6 +291,7 @@ export const useChatStream = ({
           }
           if (target.kind === 'draft') {
             onFirstRequestPrepared?.(recoverySessionId, {
+              inputText: messageContent,
               message: fullMessage,
               attachments: uploadedImageUrls,
             });
@@ -304,7 +306,7 @@ export const useChatStream = ({
         optimisticMessageIds = [userMessageId, aiMessageId];
 
         // 输入和附件准备完成后，才使上一轮异步对账失效。
-        onSendStart?.();
+        onSendStart?.(sentInputText);
 
         // 1. 添加用户消息到 UI
         dispatch(

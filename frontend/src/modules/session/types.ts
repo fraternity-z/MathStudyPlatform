@@ -15,6 +15,7 @@ export interface DraftSessionIdentity {
 
 /** 服务端开始处理后固定不变的首轮请求，用于严格幂等重放。 */
 export interface DraftFirstRequest {
+  inputText: string;
   message: string;
   attachments: string[];
 }

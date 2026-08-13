@@ -10,6 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { useToast } from '@/components/ui/Toast';
 import {
   getAllPresetModels,
   getProviderPreset,
@@ -100,6 +101,7 @@ export const ChannelFormModal: React.FC<ChannelFormModalProps> = ({
   onUpdate,
   onUpdateModels,
 }) => {
+  const { toast } = useToast();
   const dialogRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const modelFetchSessionIdRef = useRef(0);
@@ -406,6 +408,10 @@ export const ChannelFormModal: React.FC<ChannelFormModalProps> = ({
     const models = validateForm();
     if (!models) return;
 
+    const channelName = name.trim();
+    const savedChannelCount = credentialMode === 'batch'
+      ? batchCreatedCount + credentialKeys.length
+      : 1;
     setIsSubmitting(true);
     try {
       if (isEditMode && editingProvider && onUpdate) {
@@ -446,7 +452,11 @@ export const ChannelFormModal: React.FC<ChannelFormModalProps> = ({
             created += 1;
           }
         } catch (batchError) {
-          const detail = batchError instanceof Error ? batchError.message : '批量创建失败';
+          const detail = typeof batchError === 'string'
+            ? batchError
+            : batchError instanceof Error
+              ? batchError.message
+              : '批量创建失败';
           const completed = batchCreatedCount + created;
           if (created > 0) {
             setApiKey(credentialKeys.slice(created).join('\n'));
@@ -469,9 +479,22 @@ export const ChannelFormModal: React.FC<ChannelFormModalProps> = ({
           models,
         });
       }
+      toast({
+        type: 'success',
+        title: isEditMode ? '渠道配置已更新' : '渠道配置已保存',
+        description: savedChannelCount > 1
+          ? `${savedChannelCount} 个渠道已保存`
+          : `${channelName} 已保存`,
+      });
       onClose();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : '保存渠道失败');
+      setError(
+        typeof submitError === 'string'
+          ? submitError
+          : submitError instanceof Error
+            ? submitError.message
+            : '保存渠道失败'
+      );
     } finally {
       setIsSubmitting(false);
     }

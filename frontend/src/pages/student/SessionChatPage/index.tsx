@@ -128,6 +128,7 @@ export const SessionChatPage: React.FC = () => {
   const isReconciling = reconcileState === 'loading';
   const isDeleting = deletingSessionId !== null || isBatchDeleting;
   const interactionBusy = isBusy || isModeUpdating || isReconciling || isDeleting;
+  const composerDisabled = isLoading || isModeUpdating || isReconciling || isDeleting;
   const persistedSessionReady = !isDraftSession
     && historySessionId === sessionId
     && historySessionStatus === 'active';
@@ -204,8 +205,9 @@ export const SessionChatPage: React.FC = () => {
     dispatch(completeDraftFirstTurn(completedSessionId));
   }, [dispatch]);
 
-  const handleSendStart = useCallback(() => {
+  const handleSendStart = useCallback((sentInputText: string) => {
     settlementAttemptRef.current += 1;
+    setInputValue((currentValue) => currentValue === sentInputText ? '' : currentValue);
   }, []);
 
   const refreshSessionList = useCallback(() => {
@@ -239,7 +241,6 @@ export const SessionChatPage: React.FC = () => {
     const settlementAttempt = ++settlementAttemptRef.current;
     if (outcome === 'done') {
       if (!settledSessionId) return;
-      setInputValue((currentValue) => currentValue === retryText ? '' : currentValue);
       refreshSessionList();
       if (isDraftSession) navigate(`/session/${settledSessionId}`, { replace: true });
       return;
@@ -280,7 +281,9 @@ export const SessionChatPage: React.FC = () => {
     toast({
       type: 'error',
       title: outcome === 'cancelled' ? '响应已取消' : '消息发送未完成',
-      description: errorMessage ?? '输入和附件已保留，可以直接重试',
+      description: errorMessage ?? (isFirstTurn
+        ? '当前问题和下一轮草稿已保留，可以直接重试'
+        : '输入和附件已保留，可以直接重试'),
     });
 
     if (!settledSessionId) return;
@@ -300,7 +303,6 @@ export const SessionChatPage: React.FC = () => {
 
         if (reconcileHistoryAsync.fulfilled.match(result)) {
           if (isFirstTurn && result.payload.firstTurnCompleted) {
-            setInputValue((currentValue) => currentValue === retryText ? '' : currentValue);
             clearImages();
             clearFiles();
             navigate(`/session/${settledSessionId}`, { replace: true });
@@ -667,7 +669,7 @@ export const SessionChatPage: React.FC = () => {
             isStreaming={isStreaming}
             isSending={isSending}
             contentLocked={draftRequestLocked}
-            disabled={interactionBusy || isLoading || (!isDraftSession && !persistedSessionReady)}
+            disabled={composerDisabled || (!isDraftSession && !persistedSessionReady)}
             files={uploadedFiles}
             isFileParsing={isFileParsing}
             onChange={setInputValue}

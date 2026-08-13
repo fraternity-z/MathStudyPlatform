@@ -1,6 +1,6 @@
 import React, { useRef } from 'react';
 import { Button } from '../../../../components/ui/Button';
-import { Send, Square, Paperclip, Image as ImageIcon, Mic, Loader2, X, FileText, AlertCircle } from 'lucide-react';
+import { Send, Square, Paperclip, Image as ImageIcon, Mic, Loader2, X, FileText, AlertCircle, RotateCcw } from 'lucide-react';
 import { getDocumentAcceptTypes, formatFileSize } from '@/libs/utils/documentParser';
 import type { FileUploadItem } from '../hooks/useFileUpload';
 
@@ -48,6 +48,9 @@ export const ChatInput = React.memo<ChatInputProps>(
     const hasAttachments = previewUrls.length > 0 || files.length > 0;
     const isPreparingSend = isSending && !isStreaming;
     const isBusy = isPreparingSend || isFileParsing;
+    const textInputDisabled = Boolean(
+      disabled || isPreparingSend || (contentLocked && !isStreaming)
+    );
     const attachmentLocked = Boolean(
       disabled || contentLocked || isSending || isStreaming || isFileParsing
     );
@@ -185,7 +188,7 @@ export const ChatInput = React.memo<ChatInputProps>(
                 value={value}
                 onChange={(e) => onChange(e.target.value)}
                 onKeyDown={handleKeyDown}
-                disabled={isStreaming || isSending || contentLocked || disabled}
+                disabled={textInputDisabled}
               />
 
               {/* Voice & Send/Cancel Buttons */}
@@ -203,14 +206,30 @@ export const ChatInput = React.memo<ChatInputProps>(
                     variant="destructive"
                     className="h-10 w-10 rounded-xl"
                     onClick={onCancel}
+                    aria-label="停止生成"
+                    title="停止生成"
                   >
                     <Square className="w-4 h-4" />
+                  </Button>
+                ) : contentLocked ? (
+                  <Button
+                    size="icon"
+                    variant="outline"
+                    className="h-10 w-10 rounded-xl"
+                    onClick={() => onSend()}
+                    disabled={isBusy || disabled}
+                    aria-label="重试上一轮"
+                    title="重试上一轮"
+                  >
+                    <RotateCcw className="w-4 h-4" />
                   </Button>
                 ) : (
                   <Button
                     size="icon"
                     className="h-10 w-10 rounded-xl"
                     onClick={() => onSend()}
+                    aria-label="发送"
+                    title="发送"
                     disabled={
                       (!value.trim() && selectedImages.length === 0 && !files.some((f) => f.status === 'done')) ||
                       isBusy ||
@@ -226,7 +245,15 @@ export const ChatInput = React.memo<ChatInputProps>(
 
           {/* Tips */}
           <div className="flex items-center justify-center text-xs text-surface-400 dark:text-surface-500">
-            <span>按 Enter 发送，Shift + Enter 换行</span>
+            <span>
+              {isStreaming
+                ? '生成中，可编辑但暂不可发送'
+                : isSending
+                  ? '正在准备发送'
+                  : contentLocked
+                    ? '上一轮回复未完成，请先重试'
+                    : '按 Enter 发送，Shift + Enter 换行'}
+            </span>
           </div>
         </div>
       </div>
