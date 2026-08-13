@@ -455,6 +455,7 @@ const sessionSlice = createSlice({
     ) {
       if (state.draftSessionId !== action.payload.sessionId || state.draftFirstRequest) return;
       state.draftFirstRequest = {
+        inputText: action.payload.request.inputText,
         message: action.payload.request.message,
         attachments: [...action.payload.request.attachments],
       };

@@ -20,6 +20,7 @@ import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
+import { useToast } from '@/components/ui/Toast';
 import { AgentTypeDisplayNames } from '@/modules/ai-config/types/aiConfig';
 import type {
   AgentModelConfig,
@@ -72,6 +73,7 @@ export const AgentConfigPanel: React.FC<AgentConfigPanelProps> = ({
   onDeleteConfig,
   loading = false,
 }) => {
+  const { toast } = useToast();
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
   const [formData, setFormData] = useState<Record<string, AgentConfigFormData>>({});
   const [savingAgent, setSavingAgent] = useState<string | null>(null);
@@ -151,8 +153,18 @@ export const AgentConfigPanel: React.FC<AgentConfigPanelProps> = ({
       };
 
       await onUpdateConfig(agentType, request);
+      setExpandedAgent((currentAgent) => currentAgent === agentType ? null : currentAgent);
+      toast({
+        type: 'success',
+        title: '智能体配置已保存',
+        description: `${getAgentDisplayName(agentType)}已使用 ${data.model_key}`,
+      });
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : '保存失败';
+      const message = typeof err === 'string'
+        ? err
+        : err instanceof Error
+          ? err.message
+          : '保存智能体配置失败';
       setError(message);
     } finally {
       setSavingAgent(null);
@@ -171,7 +183,11 @@ export const AgentConfigPanel: React.FC<AgentConfigPanelProps> = ({
           [agentType]: { ...defaultFormData },
         }));
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : '重置失败';
+        const message = typeof err === 'string'
+          ? err
+          : err instanceof Error
+            ? err.message
+            : '重置智能体配置失败';
         setError(message);
       } finally {
         setSavingAgent(null);
