@@ -4,6 +4,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Eye,
+  EyeOff,
   FileText,
   Loader2,
   RefreshCw,
@@ -38,6 +39,7 @@ import type {
 import type { ForumPost, ForumSort } from '@/modules/forum/types';
 
 type ViewMode = 'posts' | 'reports';
+type PostActionTarget = Pick<ForumPost, 'id' | 'title'>;
 
 const pageSize = 15;
 
@@ -49,16 +51,17 @@ const reportStatusOptions: Array<{ value: 'all' | ForumReportStatus; label: stri
 ];
 
 const postStatusOptions: Array<{ value: ForumModerationPostStatusFilter; label: string }> = [
-  { value: 'all', label: '全部状态' },
+  { value: 'all', label: '全部帖子' },
+  { value: 'visible', label: '可见帖子' },
   { value: 'open', label: '讨论中' },
   { value: 'resolved', label: '已解决' },
-  { value: 'hidden', label: '已隐藏' },
+  { value: 'hidden', label: '不可见' },
   { value: 'deleted', label: '已删除' },
 ];
 
 function postStatusLabel(status: string): string {
   if (status === 'resolved') return '已解决';
-  if (status === 'hidden') return '已隐藏';
+  if (status === 'hidden') return '不可见';
   if (status === 'deleted') return '已删除';
   return '讨论中';
 }
@@ -118,7 +121,9 @@ interface PostDetailModalProps {
   error: string;
   mutation: string;
   onClose: () => void;
-  onDelete: () => void;
+  onHide: () => void;
+  onRestore: () => void;
+  onHardDelete: () => void;
   onDeleteReply: (replyId: string) => void;
   onResolve: (status: 'resolved' | 'dismissed') => void;
 }
@@ -130,7 +135,9 @@ function PostDetailModal({
   error,
   mutation,
   onClose,
-  onDelete,
+  onHide,
+  onRestore,
+  onHardDelete,
   onDeleteReply,
   onResolve,
 }: PostDetailModalProps) {
@@ -212,16 +219,31 @@ function PostDetailModal({
           <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-surface-200 pt-4 dark:border-surface-700">
             <div className="text-xs text-surface-500 dark:text-surface-400">浏览 {post.viewCount} · 回复 {post.replyCount} · 点赞 {post.likeCount} · 星标 {post.favoriteCount}</div>
             <div className="flex flex-wrap items-center gap-2">
-                  {report?.status === 'pending' && report.targetType === 'reply' && post.replies.some((reply) => reply.id === report.targetId) ? (
-                    <Button variant="destructive" size="sm" onClick={() => onDeleteReply(report.targetId)} disabled={Boolean(mutation)} title="软删除被举报回复并处理举报">
-				  {mutation === 'delete-reply' ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Trash2 className="mr-1.5 h-4 w-4" />}
-				  删除回复
-				</Button>
-			  ) : null}
-              <Button variant="destructive" size="sm" onClick={onDelete} disabled={Boolean(mutation) || !post.canDelete} title="软删除帖子">
-                {mutation === 'delete' ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Trash2 className="mr-1.5 h-4 w-4" />}
-                软删除
-              </Button>
+              {report?.status === 'pending' && report.targetType === 'reply' && post.replies.some((reply) => reply.id === report.targetId) ? (
+                <Button variant="destructive" size="sm" onClick={() => onDeleteReply(report.targetId)} disabled={Boolean(mutation)} title="将被举报回复设为不可见并处理举报">
+                  {mutation === 'delete-reply' ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <EyeOff className="mr-1.5 h-4 w-4" />}
+                  设为不可见
+                </Button>
+              ) : null}
+              {post.status !== 'hidden' && post.status !== 'deleted' && post.canDelete ? (
+                <IconTooltip label="设为不可见" side="top">
+                  <Button variant="ghost" size="icon" onClick={onHide} disabled={Boolean(mutation)} aria-label="设为不可见">
+                    {mutation === 'hide' ? <Loader2 className="h-4 w-4 animate-spin" /> : <EyeOff className="h-4 w-4 text-amber-600" />}
+                  </Button>
+                </IconTooltip>
+              ) : null}
+              {post.status === 'hidden' ? (
+                <IconTooltip label="重新设为可见" side="top">
+                  <Button variant="ghost" size="icon" onClick={onRestore} disabled={Boolean(mutation)} aria-label="重新设为可见">
+                    {mutation === 'restore' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4 text-emerald-600" />}
+                  </Button>
+                </IconTooltip>
+              ) : null}
+              <IconTooltip label="永久删除" side="top">
+                <Button variant="ghost" size="icon" onClick={onHardDelete} disabled={Boolean(mutation)} aria-label="永久删除">
+                  {mutation === 'hard-delete' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4 text-red-600" />}
+                </Button>
+              </IconTooltip>
               {report?.status === 'pending' ? (
                 <>
                   <Button variant="outline" size="sm" onClick={() => onResolve('dismissed')} disabled={Boolean(mutation)}>
@@ -267,7 +289,9 @@ export const ForumManagementPage: React.FC = () => {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const [mutation, setMutation] = useState('');
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [hideTarget, setHideTarget] = useState<PostActionTarget | null>(null);
+  const [restoreTarget, setRestoreTarget] = useState<PostActionTarget | null>(null);
+  const [hardDeleteTarget, setHardDeleteTarget] = useState<PostActionTarget | null>(null);
   const [deleteReplyID, setDeleteReplyID] = useState('');
   const detailAbortRef = useRef<AbortController | null>(null);
   const postRequest = useRef(0);
@@ -366,22 +390,71 @@ export const ForumManagementPage: React.FC = () => {
     setSelectedReport(null);
     setDetailError('');
     setDetailLoading(false);
-    setMutation('');
     setDeleteReplyID('');
   };
 
-  const deletePost = async () => {
-    if (!selectedPost || mutation) return;
-    setMutation('delete');
+  const hidePost = async () => {
+    if (!hideTarget || mutation) return;
+    const target = hideTarget;
+    setMutation('hide');
     try {
-      await forumAdminService.deletePost(selectedPost.id);
-      toast({ type: 'success', title: '帖子已软删除' });
-      setDeleteOpen(false);
-      closeDetail();
+      await forumAdminService.hidePost(target.id);
+      toast({
+        type: 'success',
+        title: '帖子已设为不可见',
+        description: '可在“不可见”筛选中重新设为可见',
+      });
+      setHideTarget(null);
+      setPosts((current) => postStatus === 'all'
+        ? current.map((post): ForumPost => post.id === target.id ? { ...post, status: 'hidden', featured: false } : post)
+        : current.filter((post) => post.id !== target.id));
+      if (selectedPost?.id === target.id) closeDetail();
       await loadPosts();
       if (view === 'reports') await loadReports();
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '删除帖子失败') });
+      toast({ type: 'error', title: getApiErrorMessage(error, '设置帖子不可见失败') });
+    } finally {
+      setMutation('');
+    }
+  };
+
+  const hardDeletePost = async () => {
+    if (!hardDeleteTarget || mutation) return;
+    const target = hardDeleteTarget;
+    setMutation('hard-delete');
+    try {
+      await forumAdminService.permanentlyDeletePost(target.id);
+      toast({ type: 'success', title: '帖子已永久删除' });
+      setHardDeleteTarget(null);
+      setPosts((current) => current.filter((post) => post.id !== target.id));
+      setReports((current) => current.filter((report) => report.postId !== target.id));
+      if (selectedPost?.id === target.id) closeDetail();
+      await loadPosts();
+      if (view === 'reports') await loadReports();
+    } catch (error) {
+      toast({ type: 'error', title: getApiErrorMessage(error, '永久删除帖子失败') });
+    } finally {
+      setMutation('');
+    }
+  };
+
+  const restorePost = async () => {
+    if (!restoreTarget || mutation) return;
+    const target = restoreTarget;
+    setMutation('restore');
+    try {
+      await forumAdminService.restorePost(target.id);
+      toast({ type: 'success', title: '帖子已重新设为可见' });
+      setRestoreTarget(null);
+      setPosts((current) => postStatus === 'all'
+        ? current.map((post): ForumPost => post.id === target.id
+          ? { ...post, status: post.acceptedReplyId ? 'resolved' : 'open' }
+          : post)
+        : current.filter((post) => post.id !== target.id));
+      if (selectedPost?.id === target.id) closeDetail();
+      await loadPosts();
+    } catch (error) {
+      toast({ type: 'error', title: getApiErrorMessage(error, '恢复帖子可见状态失败') });
     } finally {
       setMutation('');
     }
@@ -393,13 +466,13 @@ export const ForumManagementPage: React.FC = () => {
     setMutation('delete-reply');
     try {
       await forumAdminService.deleteReply(selectedPost.id, replyId);
-      toast({ type: 'success', title: '回复已软删除，举报已处理' });
+      toast({ type: 'success', title: '回复已设为不可见，举报已处理' });
       setDeleteReplyID('');
       closeDetail();
       await loadPosts();
       if (view === 'reports') await loadReports();
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '删除回复失败') });
+      toast({ type: 'error', title: getApiErrorMessage(error, '设置回复不可见失败') });
     } finally {
       setMutation('');
     }
@@ -492,12 +565,26 @@ export const ForumManagementPage: React.FC = () => {
                           <div className="flex justify-end gap-1">
                             <IconTooltip label="查看帖子" side="left">
                               <Button variant="ghost" size="icon" onClick={() => void openPost(post.id)} aria-label="查看帖子" disabled={Boolean(mutation)}>
-                                <Eye className="h-4 w-4" />
+                                <FileText className="h-4 w-4" />
                               </Button>
                             </IconTooltip>
-                            <IconTooltip label="打开后处理" side="left">
-                              <Button variant="ghost" size="icon" onClick={() => void openPost(post.id)} aria-label="打开后处理" disabled={Boolean(mutation)}>
-                                <Trash2 className="h-4 w-4 text-red-500" />
+                            {post.status !== 'hidden' && post.status !== 'deleted' && post.canDelete ? (
+                              <IconTooltip label="设为不可见" side="left">
+                                <Button variant="ghost" size="icon" onClick={() => setHideTarget(post)} aria-label="设为不可见" disabled={Boolean(mutation)}>
+                                  <EyeOff className="h-4 w-4 text-amber-600" />
+                                </Button>
+                              </IconTooltip>
+                            ) : null}
+                            {post.status === 'hidden' ? (
+                              <IconTooltip label="重新设为可见" side="left">
+                                <Button variant="ghost" size="icon" onClick={() => setRestoreTarget(post)} aria-label="重新设为可见" disabled={Boolean(mutation)}>
+                                  <Eye className="h-4 w-4 text-emerald-600" />
+                                </Button>
+                              </IconTooltip>
+                            ) : null}
+                            <IconTooltip label="永久删除" side="left">
+                              <Button variant="ghost" size="icon" onClick={() => setHardDeleteTarget(post)} aria-label="永久删除" disabled={Boolean(mutation)}>
+                                <Trash2 className="h-4 w-4 text-red-600" />
                               </Button>
                             </IconTooltip>
                           </div>
@@ -633,13 +720,44 @@ export const ForumManagementPage: React.FC = () => {
           error={detailError}
           mutation={mutation}
           onClose={closeDetail}
-          onDelete={() => setDeleteOpen(true)}
+          onHide={() => selectedPost && setHideTarget(selectedPost)}
+          onRestore={() => selectedPost && setRestoreTarget(selectedPost)}
+          onHardDelete={() => selectedPost && setHardDeleteTarget(selectedPost)}
           onDeleteReply={setDeleteReplyID}
           onResolve={(status) => void resolveReport(status)}
         />
       ) : null}
-      <ConfirmDialog isOpen={Boolean(deleteReplyID)} onClose={() => { if (!mutation) setDeleteReplyID(''); }} onConfirm={() => void deleteReply()} loading={mutation === 'delete-reply'} title="软删除回复" message="删除后回复将不再显示，对应待处理举报将一并标记为已处理。确认继续吗？" confirmText="软删除回复" />
-      <ConfirmDialog isOpen={deleteOpen} onClose={() => { if (!mutation) setDeleteOpen(false); }} onConfirm={() => void deletePost()} loading={mutation === 'delete'} title="软删除帖子" message="删除后帖子和回复将不再对其他用户显示，举报记录仍会保留供审计。确认继续吗？" confirmText="软删除" />
+      <ConfirmDialog isOpen={Boolean(deleteReplyID)} onClose={() => { if (!mutation) setDeleteReplyID(''); }} onConfirm={() => void deleteReply()} loading={mutation === 'delete-reply'} title="设为不可见" message="回复将不再显示，对应待处理举报将一并标记为已处理。确认继续吗？" confirmText="设为不可见" showIcon={false} />
+      <ConfirmDialog
+        isOpen={Boolean(hideTarget)}
+        onClose={() => { if (!mutation) setHideTarget(null); }}
+        onConfirm={() => void hidePost()}
+        loading={mutation === 'hide'}
+        title="设为不可见"
+        message={<>帖子《<strong className="break-all">{hideTarget?.title}</strong>》及其回复将不再对其他用户显示，但内容仍会保留。确认继续吗？</>}
+        confirmText="设为不可见"
+        showIcon={false}
+      />
+      <ConfirmDialog
+        isOpen={Boolean(hardDeleteTarget)}
+        onClose={() => { if (!mutation) setHardDeleteTarget(null); }}
+        onConfirm={() => void hardDeletePost()}
+        loading={mutation === 'hard-delete'}
+        title="永久删除帖子"
+        message={<>该操作会永久删除帖子《<strong className="break-all">{hardDeleteTarget?.title}</strong>》的正文、回复及相关互动记录，无法恢复；附件文件由存储回收流程另行清理。确认继续吗？</>}
+        confirmText="永久删除"
+      />
+      <ConfirmDialog
+        isOpen={Boolean(restoreTarget)}
+        onClose={() => { if (!mutation) setRestoreTarget(null); }}
+        onConfirm={() => void restorePost()}
+        loading={mutation === 'restore'}
+        title="重新设为可见"
+        message={<>帖子《<strong className="break-all">{restoreTarget?.title}</strong>》及其中仍有效的回复将重新对论坛用户显示；已设为不可见或已删除的回复不会恢复。确认继续吗？</>}
+        confirmText="设为可见"
+        confirmVariant="primary"
+        showIcon={false}
+      />
     </AdminLayout>
   );
 };

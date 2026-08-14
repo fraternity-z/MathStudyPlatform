@@ -292,8 +292,22 @@ export const forumService = {
     return mapPost(response.data);
   },
 
+  async hide(id: string): Promise<void> {
+    await apiClient.delete(postPath(id));
+  },
+
+  async restore(id: string): Promise<void> {
+    await apiClient.post(postPath(id, '/restore'));
+  },
+
+  // Keep the legacy service alias for callers outside the forum screens; the
+  // endpoint now represents making a post invisible rather than hard delete.
   async delete(id: string): Promise<void> {
     await apiClient.delete(postPath(id));
+  },
+
+  async permanentlyDelete(id: string): Promise<void> {
+    await apiClient.delete(postPath(id, '/permanent'));
   },
 
   async createReply(postId: string, payload: CreateForumReplyPayload): Promise<ForumReply> {

@@ -32,6 +32,8 @@ type Service interface {
 	CreatePost(context.Context, string, user.Role, forumapp.CreatePostInput) (forumapp.PostDetail, error)
 	UpdatePost(context.Context, string, string, user.Role, forumapp.UpdatePostInput) (forumapp.PostDetail, error)
 	DeletePost(context.Context, string, string, user.Role) error
+	RestorePost(context.Context, string, user.Role) error
+	HardDeletePost(context.Context, string, user.Role) error
 	CreateReply(context.Context, string, string, user.Role, forumapp.CreateReplyInput) (forumapp.Reply, error)
 	UpdateReply(context.Context, string, string, string, user.Role, forumapp.UpdateReplyInput) (forumapp.Reply, error)
 	DeleteReply(context.Context, string, string, string, user.Role) error
@@ -96,6 +98,8 @@ func (h *Handler) Register(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc("GET "+prefix+"/posts/{id}", h.getPost)
 	mux.HandleFunc("PATCH "+prefix+"/posts/{id}", h.updatePost)
 	mux.HandleFunc("DELETE "+prefix+"/posts/{id}", h.deletePost)
+	mux.HandleFunc("POST "+prefix+"/posts/{id}/restore", h.restorePost)
+	mux.HandleFunc("DELETE "+prefix+"/posts/{id}/permanent", h.hardDeletePost)
 	mux.HandleFunc("POST "+prefix+"/posts/{id}/replies", h.createReply)
 	mux.HandleFunc("PATCH "+prefix+"/posts/{id}/replies/{reply_id}", h.updateReply)
 	mux.HandleFunc("DELETE "+prefix+"/posts/{id}/replies/{reply_id}", h.deleteReply)
@@ -263,7 +267,39 @@ func (h *Handler) deletePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.service.DeletePost(r.Context(), principal.UserID, r.PathValue("id"), principal.Role); err != nil {
-		h.handleError(w, "delete forum post failed", err, "删除帖子失败")
+		h.handleError(w, "hide forum post failed", err, "设置帖子不可见失败")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) restorePost(w http.ResponseWriter, r *http.Request) {
+	principal, ok := h.requireForumUser(w, r)
+	if ok && principal.Role != user.RoleAdmin {
+		h.handleError(w, "restore forum post forbidden", forumapp.ErrForbidden, "恢复帖子可见需要管理员权限")
+		return
+	}
+	if !ok || !h.allowWrite(w, r, principal.UserID) {
+		return
+	}
+	if err := h.service.RestorePost(r.Context(), r.PathValue("id"), principal.Role); err != nil {
+		h.handleError(w, "restore forum post failed", err, "恢复帖子可见失败")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) hardDeletePost(w http.ResponseWriter, r *http.Request) {
+	principal, ok := h.requireForumUser(w, r)
+	if ok && principal.Role != user.RoleAdmin {
+		h.handleError(w, "hard delete forum post forbidden", forumapp.ErrForbidden, "永久删除帖子需要管理员权限")
+		return
+	}
+	if !ok || !h.allowWrite(w, r, principal.UserID) {
+		return
+	}
+	if err := h.service.HardDeletePost(r.Context(), r.PathValue("id"), principal.Role); err != nil {
+		h.handleError(w, "hard delete forum post failed", err, "永久删除帖子失败")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

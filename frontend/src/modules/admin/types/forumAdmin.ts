@@ -40,7 +40,7 @@ export interface ForumModerationReportQuery {
 export type ForumModerationPostStatus = 'open' | 'resolved' | 'hidden' | 'deleted';
 export type ForumModerationPost = ForumPostDetail;
 export type ForumModerationPostListResponse = ForumPostListResponse;
-export type ForumModerationPostStatusFilter = 'all' | ForumModerationPostStatus;
+export type ForumModerationPostStatusFilter = 'visible' | 'all' | ForumModerationPostStatus;
 
 export interface ForumModerationPostQuery {
   search: string;

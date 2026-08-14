@@ -2,7 +2,6 @@ import { apiClient } from '@/libs/http/apiClient';
 import { forumService } from '@/modules/forum';
 import type {
   ForumAuthor,
-  ForumPostStatus,
   ForumReportReason,
   ForumReportTargetType,
   ForumRole,
@@ -111,7 +110,7 @@ export const forumAdminService = {
   ): Promise<ForumModerationPostListResponse> {
     const response = await forumService.list({
       search: query.search,
-      status: query.status === 'all' ? undefined : query.status as ForumPostStatus,
+      status: query.status,
       sort: query.sort,
       scope: 'all',
       page: query.page,
@@ -124,8 +123,21 @@ export const forumAdminService = {
     return forumService.get(id, signal, false);
   },
 
+  hidePost(id: string): Promise<void> {
+    return forumService.hide(id);
+  },
+
+  restorePost(id: string): Promise<void> {
+    return forumService.restore(id);
+  },
+
+  // Legacy alias: DELETE /posts/{id} now means make the post invisible.
   deletePost(id: string): Promise<void> {
-    return forumService.delete(id);
+    return forumService.hide(id);
+  },
+
+  permanentlyDeletePost(id: string): Promise<void> {
+    return forumService.permanentlyDelete(id);
   },
 
   deleteReply(postId: string, replyId: string): Promise<void> {
