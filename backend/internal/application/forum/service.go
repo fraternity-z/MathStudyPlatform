@@ -229,6 +229,8 @@ type Repository interface {
 	CreatePost(context.Context, string, string, user.Role, time.Time, CreatePostInput) (PostDetail, error)
 	UpdatePost(context.Context, string, string, user.Role, time.Time, UpdatePostInput) (PostDetail, bool, bool, error)
 	DeletePost(context.Context, string, string, user.Role, time.Time) (bool, bool, error)
+	RestorePost(context.Context, string, time.Time) (bool, bool, error)
+	HardDeletePost(context.Context, string) (bool, error)
 	CreateReply(context.Context, string, string, string, user.Role, time.Time, CreateReplyInput) (Reply, bool, error)
 	UpdateReply(context.Context, string, string, string, time.Time, UpdateReplyInput) (Reply, bool, bool, error)
 	DeleteReply(context.Context, string, string, string, user.Role, time.Time) (bool, bool, error)
@@ -279,7 +281,7 @@ func (s *Service) ListPosts(ctx context.Context, viewerID string, role user.Role
 		filter.Sort = "latest"
 	}
 	if filter.Status == "" {
-		filter.Status = "all"
+		filter.Status = "visible"
 	}
 	if !validListFilter(filter, role) {
 		return ListPostsResponse{}, ErrInvalidInput
@@ -358,6 +360,48 @@ func (s *Service) DeletePost(ctx context.Context, actorID, postID string, role u
 	}
 	if !allowed {
 		return ErrForbidden
+	}
+	return nil
+}
+
+// RestorePost makes a hidden forum post visible again. Restoring is restricted
+// to administrators, is idempotent for visible posts, and rejects legacy
+// deleted posts that cannot be recovered safely.
+func (s *Service) RestorePost(ctx context.Context, postID string, role user.Role) error {
+	if role != user.RoleAdmin {
+		return ErrForbidden
+	}
+	if !validIdentifier(postID) {
+		return ErrInvalidInput
+	}
+	found, restored, err := s.repo.RestorePost(ctx, postID, s.now())
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrNotFound
+	}
+	if !restored {
+		return ErrConflict
+	}
+	return nil
+}
+
+// HardDeletePost permanently removes a forum post. This is deliberately
+// restricted to administrators because the operation cannot be undone.
+func (s *Service) HardDeletePost(ctx context.Context, postID string, role user.Role) error {
+	if role != user.RoleAdmin {
+		return ErrForbidden
+	}
+	if !validIdentifier(postID) {
+		return ErrInvalidInput
+	}
+	found, err := s.repo.HardDeletePost(ctx, postID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrNotFound
 	}
 	return nil
 }
@@ -769,7 +813,7 @@ func validListFilter(filter ListPostsFilter, role user.Role) bool {
 		return false
 	}
 	switch filter.Status {
-	case "all", "open", "resolved":
+	case "all", "visible", "open", "resolved":
 	case "hidden", "deleted":
 		if role != user.RoleAdmin {
 			return false

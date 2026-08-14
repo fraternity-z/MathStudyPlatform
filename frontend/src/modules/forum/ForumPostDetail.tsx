@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Edit3,
   Eye,
+  EyeOff,
   Heart,
   Loader2,
   MessageCircle,
@@ -12,7 +13,6 @@ import {
   Sparkles,
   Star,
   TriangleAlert,
-  Trash2,
   UserRound,
   X,
 } from 'lucide-react';
@@ -46,7 +46,7 @@ interface ForumPostDetailProps {
   actionKey: string;
   onBack: () => void;
   onEdit: () => void;
-  onDelete: () => void;
+  onHide: () => void;
   onLike: () => Promise<void>;
   onFavorite: () => Promise<void>;
   onFeature: () => Promise<void>;
@@ -101,7 +101,7 @@ export function ForumPostDetailPane({
   actionKey,
   onBack,
   onEdit,
-  onDelete,
+  onHide,
   onLike,
   onFavorite,
   onFeature,
@@ -303,15 +303,15 @@ export function ForumPostDetailPane({
                   </IconTooltip>
                 ) : null}
                 {post.canDelete ? (
-                  <IconTooltip label="删除帖子" side="bottom">
+                  <IconTooltip label="设为不可见" side="bottom">
                     <button
                       type="button"
-                      aria-label="删除帖子"
+                      aria-label="设为不可见"
                       disabled={Boolean(actionKey)}
-                      onClick={onDelete}
-                      className="grid h-9 w-9 place-items-center rounded-md text-surface-400 hover:bg-red-50 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:opacity-50 dark:hover:bg-red-950/30 dark:hover:text-red-300"
+                      onClick={onHide}
+                      className="grid h-9 w-9 place-items-center rounded-md text-surface-400 hover:bg-amber-50 hover:text-amber-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:opacity-50 dark:hover:bg-amber-950/30 dark:hover:text-amber-300"
                     >
-                      <Trash2 className="h-4 w-4" />
+                      <EyeOff className="h-4 w-4" />
                     </button>
                   </IconTooltip>
                 ) : null}
@@ -414,8 +414,8 @@ export function ForumPostDetailPane({
                           </Button>
                         ) : null}
                         {reply.canDelete ? (
-                          <Button variant="ghost" size="sm" className="h-8 px-2 text-xs text-surface-500 hover:text-red-600" onClick={() => setReplyPendingDelete(reply)} disabled={Boolean(deletingReplyId)}>
-                            {deletingReplyId === reply.id ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Trash2 className="mr-1 h-3.5 w-3.5" />}删除
+                          <Button variant="ghost" size="sm" className="h-8 px-2 text-xs text-surface-500 hover:text-amber-700 dark:hover:text-amber-300" onClick={() => setReplyPendingDelete(reply)} disabled={Boolean(deletingReplyId)}>
+                            {deletingReplyId === reply.id ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <EyeOff className="mr-1 h-3.5 w-3.5" />}设为不可见
                           </Button>
                         ) : null}
                         {reply.canReport ? (
@@ -540,9 +540,10 @@ export function ForumPostDetailPane({
         onClose={() => { if (!deletingReplyId) setReplyPendingDelete(null); }}
         onConfirm={() => void removeReply()}
         loading={Boolean(deletingReplyId)}
-        title="删除回复"
-        message="删除后这条回复将不再显示，确认继续吗？"
-        confirmText="删除回复"
+        title="设为不可见"
+        message="这条回复将不再显示，但内容仍会保留。确认继续吗？"
+        confirmText="设为不可见"
+        showIcon={false}
       />
     </>
   );

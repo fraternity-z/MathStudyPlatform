@@ -136,8 +136,8 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
   const [editingPost, setEditingPost] = useState<ForumPost | null>(null);
   const [saving, setSaving] = useState(false);
   const [actionKey, setActionKey] = useState('');
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [hideOpen, setHideOpen] = useState(false);
+  const [hiding, setHiding] = useState(false);
   const [unreadPostIDs, setUnreadPostIDs] = useState<Set<string>>(new Set());
   const [unreadError, setUnreadError] = useState('');
   const listRequest = useRef(0);
@@ -332,20 +332,20 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
     }
   }, [actionKey, detail, loadDetail, notifyUnreadChange, toast]);
 
-  const deletePost = async () => {
-    if (!detail || deleting) return;
-    setDeleting(true);
+  const hidePost = async () => {
+    if (!detail || hiding) return;
+    setHiding(true);
     try {
-      await forumService.delete(detail.id);
-      setDeleteOpen(false);
+      await forumService.hide(detail.id);
+      setHideOpen(false);
       selectPost('');
       refresh();
-      toast({ type: 'success', title: '帖子已删除' });
+      toast({ type: 'success', title: '帖子已设为不可见' });
       notifyUnreadChange();
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '帖子删除失败') });
+      toast({ type: 'error', title: getApiErrorMessage(error, '设置帖子不可见失败') });
     } finally {
-      setDeleting(false);
+      setHiding(false);
     }
   };
 
@@ -565,7 +565,7 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
                     actionKey={actionKey}
                     onBack={() => selectPost('')}
                     onEdit={openEdit}
-                    onDelete={() => setDeleteOpen(true)}
+                    onHide={() => setHideOpen(true)}
                     onLike={() => runAction('like', () => forumService.likePost(detail.id, !detail.liked), detail.liked ? '已取消点赞' : '已点赞', '点赞操作失败')}
                     onFavorite={() => runAction('favorite', () => forumService.favoritePost(detail.id, !detail.favorited), detail.favorited ? '已取消收藏' : '已收藏', '收藏操作失败')}
                     onFeature={() => runAction('feature', () => forumService.featurePost(detail.id, !detail.featured), detail.featured ? '已取消精选' : '已设为精选', '精选操作失败')}
@@ -609,13 +609,14 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
         />
       ) : null}
       <ConfirmDialog
-        isOpen={deleteOpen}
-        onClose={() => { if (!deleting) setDeleteOpen(false); }}
-        onConfirm={() => void deletePost()}
-        loading={deleting}
-        title="删除帖子"
-        message="删除后帖子和回复将不再对其他用户显示，确认继续吗？"
-        confirmText="删除帖子"
+        isOpen={hideOpen}
+        onClose={() => { if (!hiding) setHideOpen(false); }}
+        onConfirm={() => void hidePost()}
+        loading={hiding}
+        title="设为不可见"
+        message="帖子和回复将不再对其他用户显示，但内容仍会保留。确认继续吗？"
+        confirmText="设为不可见"
+        showIcon={false}
       />
     </>
   );

@@ -3,6 +3,7 @@ import type { MessageAttachment } from '@/modules/message-center/attachmentTypes
 export type ForumRole = 'student' | 'teacher' | 'admin';
 export type ForumPostType = 'question' | 'discussion' | 'resource';
 export type ForumPostStatus = 'open' | 'resolved' | 'hidden' | 'deleted';
+export type ForumPostStatusFilter = ForumPostStatus | 'visible' | 'all';
 export type ForumSort = 'latest' | 'hot' | 'featured';
 export type ForumScope = 'all' | 'mine' | 'replied' | 'favorites';
 export type ForumReportTargetType = 'post' | 'reply';
@@ -88,7 +89,7 @@ export interface ForumPostQuery {
   search?: string;
   boardSlug?: string;
   type?: ForumPostType;
-  status?: ForumPostStatus;
+  status?: ForumPostStatusFilter;
   sort?: ForumSort;
   scope?: ForumScope;
   page?: number;

@@ -59,6 +59,12 @@ attachment_matches AS (
 
     SELECT (
         post.author_id = $2
+        OR EXISTS (
+            SELECT 1
+            FROM public.users viewer
+            WHERE viewer.id = $2
+              AND viewer.role = 'ADMIN'::public.userrole
+        )
         OR (post.deleted_at IS NULL AND post.status IN ('open', 'resolved'))
     ) AS allowed
     FROM public.forum_posts AS post
@@ -71,6 +77,12 @@ attachment_matches AS (
 
     SELECT (
         reply.author_id = $2
+        OR EXISTS (
+            SELECT 1
+            FROM public.users viewer
+            WHERE viewer.id = $2
+              AND viewer.role = 'ADMIN'::public.userrole
+        )
         OR (
             reply.deleted_at IS NULL
             AND reply.status = 'active'

@@ -52,7 +52,10 @@ func (r ForumRepository) ListBoards(ctx context.Context) ([]forumapp.Board, erro
 
 func (r ForumRepository) ListPosts(ctx context.Context, viewerID string, role user.Role, filter forumapp.ListPostsFilter) ([]forumapp.Post, int, error) {
 	where := ` WHERE $1::text IS NOT NULL`
-	if role != user.RoleAdmin {
+	// A soft-hidden post is retained for moderation/audit, but must not leak
+	// into public or default administrator lists. Administrators can request
+	// `all` or an explicit status when reviewing retained content.
+	if role != user.RoleAdmin || filter.Status == "" || filter.Status == "visible" {
 		where += ` AND p.status IN ('open', 'resolved')`
 	}
 	args := []any{viewerID}
@@ -67,7 +70,7 @@ func (r ForumRepository) ListPosts(ctx context.Context, viewerID string, role us
 		args = append(args, string(filter.Type))
 		idx++
 	}
-	if filter.Status != "all" {
+	if filter.Status != "" && filter.Status != "all" && filter.Status != "visible" {
 		where += ` AND p.status = $` + idxStr(idx)
 		args = append(args, filter.Status)
 		idx++
@@ -333,7 +336,7 @@ func (r ForumRepository) DeletePost(ctx context.Context, postID, actorID string,
 		allowed = true
 		if _, err := current.DB().Exec(ctx, `
 			UPDATE public.forum_posts
-			SET status = 'deleted', deleted_at = $2, updated_at = $2,
+			SET status = 'hidden', deleted_at = $2, updated_at = $2,
 				is_featured = false, featured_by = NULL, featured_at = NULL
 			WHERE id = $1`, postID, now); err != nil {
 			return err
@@ -354,8 +357,8 @@ func (r ForumRepository) DeletePost(ctx context.Context, postID, actorID string,
 			}
 		}
 		// Keep notification rows for audit/history, but make them inert once the
-		// target is removed. This avoids resurrecting a deleted post in message
-		// center previews while preserving the recipient's read state.
+		// target is hidden. This avoids surfacing a hidden post in message-center
+		// previews while preserving the recipient's read state.
 		if _, err := current.DB().Exec(ctx, `
 			UPDATE public.forum_notifications
 			SET read_at = COALESCE(read_at, $2)
@@ -365,6 +368,83 @@ func (r ForumRepository) DeletePost(ctx context.Context, postID, actorID string,
 		return nil
 	})
 	return found, allowed, err
+}
+
+// RestorePost makes a hidden post public again, preserving whether it has an
+// accepted reply. Already-visible posts are treated as an idempotent success;
+// the second return value is false only for a non-restorable legacy state.
+func (r ForumRepository) RestorePost(ctx context.Context, postID string, now time.Time) (bool, bool, error) {
+	found := false
+	restored := false
+	err := withRepositoryTx(ctx, "forum post restore", r.Repository, func(base Repository) ForumRepository {
+		return ForumRepository{Repository: base}
+	}, func(current ForumRepository) error {
+		var status string
+		if err := current.DB().QueryRow(ctx, `
+			SELECT status
+			FROM public.forum_posts
+			WHERE id = $1
+			FOR UPDATE`, postID).Scan(&status); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		found = true
+		if status != "hidden" {
+			restored = status == "open" || status == "resolved"
+			return nil
+		}
+		if _, err := current.DB().Exec(ctx, `
+			UPDATE public.forum_posts
+			SET status = CASE WHEN accepted_reply_id IS NULL THEN 'open' ELSE 'resolved' END,
+				deleted_at = NULL, updated_at = $2
+			WHERE id = $1`, postID, now); err != nil {
+			return err
+		}
+		restored = true
+		return nil
+	})
+	return found, restored, err
+}
+
+// HardDeletePost permanently removes a post and all database-owned dependent
+// rows. Reports use polymorphic IDs instead of foreign keys, so they must be
+// removed explicitly before the post's cascading dependents disappear.
+// Attachment URLs are embedded in JSON and can belong to any configured object
+// storage backend. This repository deliberately does not delete those objects:
+// storage deletion is an external side effect and there is no transactional
+// object-delete contract here. A storage garbage-collector should reclaim
+// unreferenced objects separately.
+func (r ForumRepository) HardDeletePost(ctx context.Context, postID string) (bool, error) {
+	found := false
+	err := withRepositoryTx(ctx, "forum post hard delete", r.Repository, func(base Repository) ForumRepository {
+		return ForumRepository{Repository: base}
+	}, func(current ForumRepository) error {
+		var lockedPostID string
+		if err := current.DB().QueryRow(ctx, `
+			SELECT id
+			FROM public.forum_posts
+			WHERE id = $1
+			FOR UPDATE`, postID).Scan(&lockedPostID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		found = true
+		if _, err := current.DB().Exec(ctx, `
+			DELETE FROM public.forum_reports
+			WHERE (target_type = 'post' AND target_id = $1)
+			   OR (target_type = 'reply' AND target_id IN (
+					SELECT id FROM public.forum_replies WHERE post_id = $1
+				))`, postID); err != nil {
+			return err
+		}
+		_, err := current.DB().Exec(ctx, `DELETE FROM public.forum_posts WHERE id = $1`, postID)
+		return err
+	})
+	return found, err
 }
 
 func (r ForumRepository) CreateReply(ctx context.Context, replyID, postID, actorID string, role user.Role, now time.Time, input forumapp.CreateReplyInput) (forumapp.Reply, bool, error) {
@@ -598,7 +678,9 @@ func (r ForumRepository) DeleteReply(ctx context.Context, postID, replyID, actor
 		if acceptedReplyID.Valid && acceptedReplyID.String == replyID {
 			if _, err := current.DB().Exec(ctx, `
 				UPDATE public.forum_posts
-				SET accepted_reply_id = NULL, status = 'open', updated_at = $2
+				SET accepted_reply_id = NULL,
+					status = CASE WHEN status = 'hidden' THEN 'hidden' ELSE 'open' END,
+					updated_at = $2
 				WHERE id = $1`, postID, now); err != nil {
 				return err
 			}
