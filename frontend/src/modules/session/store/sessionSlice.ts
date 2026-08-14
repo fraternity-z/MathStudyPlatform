@@ -9,7 +9,6 @@ import {
 import type {
   ChatMode,
   ChatSessionListItem,
-  DraftFirstRequest,
   DraftSessionIdentity,
   SessionMode,
 } from '@/modules/session/types';
@@ -37,7 +36,6 @@ export interface SessionState {
   draftSessionId: string | null;
   draftSessionTopic: string | null;
   draftSessionMode: SessionMode | null;
-  draftFirstRequest: DraftFirstRequest | null;
   draftSessionMaterialized: boolean;
   draftFirstTurnCompleted: boolean;
   loadingState: LoadingState;
@@ -69,7 +67,6 @@ const initialState: SessionState = {
   draftSessionId: null,
   draftSessionTopic: null,
   draftSessionMode: null,
-  draftFirstRequest: null,
   draftSessionMaterialized: false,
   draftFirstTurnCompleted: false,
   loadingState: 'idle',
@@ -429,7 +426,6 @@ const sessionSlice = createSlice({
       state.draftSessionId = sessionId;
       state.draftSessionTopic = topic ?? null;
       state.draftSessionMode = mode;
-      state.draftFirstRequest = null;
       state.draftSessionMaterialized = false;
       state.draftFirstTurnCompleted = false;
     },
@@ -446,19 +442,6 @@ const sessionSlice = createSlice({
           }
         }
       }
-    },
-
-    // 请求发往服务端前冻结完整首轮负载，后续只允许按原样幂等重放。
-    freezeDraftFirstRequest(
-      state,
-      action: PayloadAction<{ sessionId: string; request: DraftFirstRequest }>
-    ) {
-      if (state.draftSessionId !== action.payload.sessionId || state.draftFirstRequest) return;
-      state.draftFirstRequest = {
-        inputText: action.payload.request.inputText,
-        message: action.payload.request.message,
-        attachments: [...action.payload.request.attachments],
-      };
     },
 
     // 首轮回答完成后才允许从幂等 start-chat 切换到普通会话聊天。
@@ -509,7 +492,6 @@ const sessionSlice = createSlice({
       state.draftSessionId = null;
       state.draftSessionTopic = null;
       state.draftSessionMode = null;
-      state.draftFirstRequest = null;
       state.draftSessionMaterialized = false;
       state.draftFirstTurnCompleted = false;
       state.reconcileState = 'idle';
@@ -546,7 +528,6 @@ const sessionSlice = createSlice({
         state.draftSessionId = null;
         state.draftSessionTopic = null;
         state.draftSessionMode = null;
-        state.draftFirstRequest = null;
         state.draftSessionMaterialized = false;
         state.draftFirstTurnCompleted = false;
       }
@@ -659,7 +640,6 @@ const sessionSlice = createSlice({
         state.draftSessionId = null;
         state.draftSessionTopic = null;
         state.draftSessionMode = null;
-        state.draftFirstRequest = null;
         state.draftSessionMaterialized = false;
         state.draftFirstTurnCompleted = false;
       })
@@ -684,7 +664,6 @@ const sessionSlice = createSlice({
         state.draftSessionId = null;
         state.draftSessionTopic = null;
         state.draftSessionMode = null;
-        state.draftFirstRequest = null;
         state.draftSessionMaterialized = false;
         state.draftFirstTurnCompleted = false;
         state.reconcileState = 'idle';
@@ -781,7 +760,6 @@ const sessionSlice = createSlice({
           state.draftSessionId = null;
           state.draftSessionTopic = null;
           state.draftSessionMode = null;
-          state.draftFirstRequest = null;
           state.draftSessionMaterialized = false;
           state.draftFirstTurnCompleted = false;
         }
@@ -899,7 +877,6 @@ const sessionSlice = createSlice({
         state.draftSessionId = null;
         state.draftSessionTopic = null;
         state.draftSessionMode = null;
-        state.draftFirstRequest = null;
         state.draftSessionMaterialized = false;
         state.draftFirstTurnCompleted = false;
         state.messages = [];
@@ -924,7 +901,6 @@ const sessionSlice = createSlice({
         state.draftSessionId = null;
         state.draftSessionTopic = null;
         state.draftSessionMode = null;
-        state.draftFirstRequest = null;
         state.draftSessionMaterialized = false;
         state.draftFirstTurnCompleted = false;
         state.messages = [];
@@ -940,7 +916,6 @@ export const {
   removeMessagesById,
   prepareDraftSession,
   materializeDraftSession,
-  freezeDraftFirstRequest,
   completeDraftFirstTurn,
   updateLastMessage,
   appendToLastMessage,
@@ -968,7 +943,6 @@ export const selectMode = createFieldSelector<SessionState, 'session', 'mode'>('
 export const selectDraftSessionId = createFieldSelector<SessionState, 'session', 'draftSessionId'>('session', 'draftSessionId');
 export const selectDraftSessionTopic = createFieldSelector<SessionState, 'session', 'draftSessionTopic'>('session', 'draftSessionTopic');
 export const selectDraftSessionMode = createFieldSelector<SessionState, 'session', 'draftSessionMode'>('session', 'draftSessionMode');
-export const selectDraftFirstRequest = createFieldSelector<SessionState, 'session', 'draftFirstRequest'>('session', 'draftFirstRequest');
 export const selectDraftSessionMaterialized = createFieldSelector<SessionState, 'session', 'draftSessionMaterialized'>('session', 'draftSessionMaterialized');
 export const selectDraftFirstTurnCompleted = createFieldSelector<SessionState, 'session', 'draftFirstTurnCompleted'>('session', 'draftFirstTurnCompleted');
 export const selectSessionLoadingState = createFieldSelector<SessionState, 'session', 'loadingState'>('session', 'loadingState');

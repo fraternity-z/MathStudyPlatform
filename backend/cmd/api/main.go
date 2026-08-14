@@ -471,6 +471,7 @@ func main() {
 		sessionRepo,
 		sessionapp.WithChatAgent(tutorAgent),
 		sessionapp.WithAIRequestGuard(aiRiskService),
+		sessionapp.WithLogger(logger),
 	)
 	if err != nil {
 		logger.Error("configure session service", "error", err)

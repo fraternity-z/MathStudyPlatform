@@ -139,7 +139,13 @@ go run ./cmd/migrate  # 重复执行应无待应用版本
 
 管理端的智能体参数覆盖不再提供或发送 Top P。新发现模型保存 Temperature `1.0`、Max Tokens `4096`、超时 `1800` 秒和最大重试 `3` 次作为配置基线；其中 Temperature、Max Tokens 和最大重试默认不启用，输入留空时前两项不写入 provider 请求且应用层不重试，只有显式覆盖才生效。超时留空时使用模型的 `1800` 秒总请求时限；这与 Cherry Studio 流式请求收到数据后重新计时的 idle timeout 并不完全等价。Agent 的 `MaxIterations` 固定使用独立默认值 `8`，不得再从重试次数推导。数值和开关语义参考 Cherry Studio 当前的 [Assistant 默认设置](https://github.com/CherryHQ/cherry-studio/blob/12498d68ecb4fb261670843ca7a8e4e64a37526a/src/shared/data/types/assistant.ts)、[请求超时](https://github.com/CherryHQ/cherry-studio/blob/12498d68ecb4fb261670843ca7a8e4e64a37526a/src/main/ai/constants.ts) 和 [模型重试策略](https://github.com/CherryHQ/cherry-studio/blob/12498d68ecb4fb261670843ca7a8e4e64a37526a/docs/references/ai/model-retry.md)。`0014_ai_generation_defaults` 会清空历史 Top P，并只校准仍使用旧默认值的模型；显式自定义的其他数值不变。数据库中的旧 Top P 列和后端兼容 JSON 字段暂时保留，但运行时一律忽略。
 
-学习会话的 `POST /session/start-chat` 和 `POST /session/{session_id}/chat` 使用真正的模型分片流，而不是等待完整回复后再包装为 SSE。事件顺序为可选的 `session_info`、一次 `task_info`、多次 `message` chunk、一次 `message` done；每个事件写入后立即 flush。Tutor 流式请求直接使用 provider 的 Chat Completions 流，Responses 自动转换继续只用于非流式 Agent。默认模型请求共享进程级 HTTP Transport 和连接池，但通过客户端浅拷贝保留每次运行配置的独立总超时；显式注入的测试客户端仍按请求单独包装。前端在回复流式生成期间允许编辑下一轮文本草稿，但发送按钮、回车提交、附件和语音保持锁定，当前流结束前不会发起第二个聊天请求。
+学习会话的 `POST /session/start-chat` 和 `POST /session/{session_id}/chat` 使用真正的模型分片流，而不是等待完整回复后再包装为 SSE。事件顺序为可选的 `session_info`、一次 `task_info`、多次 `message` chunk、一次 `message` done；每个事件写入后立即 flush。前端以 `session_info` 或 `task_info` 确认服务端接收，缺失这两类元信息时以首个 chunk 或 done 兜底确认；确认后的轮次不会因断流恢复成待发送内容，也不自动重放。Tutor 流式请求直接使用 provider 的 Chat Completions 流，Responses 自动转换继续只用于非流式 Agent。默认模型请求共享进程级 HTTP Transport 和连接池，但通过客户端浅拷贝保留每次运行配置的独立总超时；显式注入的测试客户端仍按请求单独包装。
+
+生成期间输入框仍可编辑下一轮文字草稿，但发送、回车提交、附件增删、语音、模式切换和当前轮次相关操作保持锁定。停止按钮使用 `task_info` 中的任务 ID 调用取消接口；活动任务只登记在处理该流的 Go API 进程内，因此本地和当前生产拓扑按单 API 实例验收，多实例环境不能假设任意实例都能取消任务。取消只在用户停止成为任务 context 的首个原因时生效，并等待中断回复持久化及 AI 并发租约释放尝试完成；停止终态在进程内保留 5 分钟，使重复取消短期幂等，进程重启后不保留。前端在取消接口成功后优先等待原聊天流的 `cancelled` 事件消费完末尾分片，事件丢失时才超时兜底，取消接口失败则保持原流并明确提示。
+
+显式停止会保存已生成部分并追加独立 Markdown 引用行 `> 已停止生成`；异常中断保存已生成部分并追加 `> 生成已中断`。已确认接收的停止或中断直接保留本地已收分片并刷新会话列表，不用即时历史读取覆盖界面；只有请求已经发出但尚未收到接收事件时，才按稳定会话 ID 做只读历史探测。不显示或执行“重试上一轮”，用户在生成期间输入的下一轮草稿保持不变。若 done 与首个接收确认位于同一批 SSE 数据中，输入 ref 会在结算前同步区分已发送内容和真正的下一轮草稿，避免错误停留在 `/session/new`。
+
+首次聊天仍以客户端生成的会话 UUID 作为幂等身份。`session_info` 表示欢迎消息和首条用户消息已经原子落库，停止、中断和正常 done 都必须在同一完成事务中保存首轮助手消息及完成标记。若客户端在任何接收事件前断开，会先按该 UUID 探测历史：确认不存在才丢弃身份，已经物化则转为现有会话，输入和附件仍由用户当前草稿持有。若进程中断遗留的 claim 已过期且仍未产生助手消息，下一次普通聊天会先以确定性助手消息 ID 补写 `> 生成已中断` 并完成首轮；历史结构不再是欢迎语加首条用户消息时返回冲突，不猜测或重复生成。
 
 ## OpenAI Responses 兼容接口
 

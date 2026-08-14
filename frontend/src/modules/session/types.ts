@@ -13,13 +13,6 @@ export interface DraftSessionIdentity {
   mode: SessionMode;
 }
 
-/** 服务端开始处理后固定不变的首轮请求，用于严格幂等重放。 */
-export interface DraftFirstRequest {
-  inputText: string;
-  message: string;
-  attachments: string[];
-}
-
 /** 聊天侧栏使用的会话摘要，不扩散到全局 LearningSession 模型。 */
 export interface ChatSessionListItem extends LearningSession {
   mode: SessionMode;

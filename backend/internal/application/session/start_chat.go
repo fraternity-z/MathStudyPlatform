@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -90,16 +91,18 @@ func (s *Service) StartChat(
 			historyByteBudget,
 			onStarted,
 			requestHash,
-			false,
+			nil,
 			stream,
 		)
 	}
+	var taskLease *chatTaskLease
 	if s.guard != nil {
 		lease, err := s.guard.Acquire(ctx, userID, "session_chat", message, true)
 		if err != nil {
 			return ChatResult{}, err
 		}
-		defer releaseAILease(lease)
+		taskLease = &chatTaskLease{lease: lease}
+		defer s.releaseChatLease(taskLease, "unregistered")
 	}
 
 	welcomeMessageID, err := s.newID()
@@ -150,8 +153,7 @@ func (s *Service) StartChat(
 		ClaimExpiresAt:     firstChatClaimExpiresAt(ctx, startedAt),
 	})
 	if err != nil {
-		s.releaseFirstChatClaim(session.ID, ids.TaskID)
-		return ChatResult{}, err
+		return ChatResult{}, wrapChatPersistenceError(errors.Join(err, s.releaseFirstChatClaim(session.ID, ids.TaskID)))
 	}
 	if !created {
 		existing, exists, err := s.repo.GetSession(ctx, sessionID, userID)
@@ -172,7 +174,7 @@ func (s *Service) StartChat(
 			historyByteBudget,
 			onStarted,
 			requestHash,
-			true,
+			taskLease,
 			stream,
 		)
 	}
@@ -192,6 +194,7 @@ func (s *Service) StartChat(
 		userCreatedAt,
 		airiskapp.UsageDate(startedAt),
 		ids,
+		taskLease,
 		stream,
 	)
 }
@@ -207,7 +210,7 @@ func (s *Service) replayStartChat(
 	historyByteBudget int,
 	onStarted StartChatNotifier,
 	requestHash string,
-	guardHeld bool,
+	taskLease *chatTaskLease,
 	stream ChatStreamCallbacks,
 ) (ChatResult, error) {
 	storedRequest, exists, err := s.repo.GetFirstChatRequest(ctx, session.ID)
@@ -225,49 +228,24 @@ func (s *Service) replayStartChat(
 		return ChatResult{}, err
 	}
 	if replyExists {
-		taskID, err := s.newID()
-		if err != nil {
-			return ChatResult{}, err
-		}
-		agent := "tutor"
-		if storedReply.Agent != nil && strings.TrimSpace(*storedReply.Agent) != "" {
-			agent = *storedReply.Agent
-		}
-		result := ChatResult{
-			TaskID:    taskID,
-			MessageID: storedReply.ID,
-			Agent:     agent,
-			Content:   storedReply.Content,
-		}
-		if err := publishStoredChatResult(stream, result); err != nil {
-			return ChatResult{}, err
-		}
-		return result, nil
+		return s.publishStoredFirstChat(storedReply, stream)
 	}
 	if storedRequest.CompletedAt != nil {
 		return ChatResult{}, ErrFirstChatCannotResume
 	}
 
-	messages, total, err := s.repo.ListMessages(ctx, session.ID, 3, 0)
-	if err != nil {
-		return ChatResult{}, err
-	}
-	if total != 2 || len(messages) != 2 ||
-		normalizedChatRole(messages[0].Role) != "assistant" ||
-		normalizedChatRole(messages[1].Role) != "user" {
-		return ChatResult{}, ErrFirstChatCannotResume
-	}
 	claimTime := s.now()
 	if storedRequest.ClaimExpiresAt.After(claimTime) {
-		return ChatResult{}, ErrStartChatInProgress
+		return s.replayLatestFirstChat(ctx, session.ID, stream)
 	}
 
-	if !guardHeld && s.guard != nil {
+	if taskLease == nil && s.guard != nil {
 		lease, err := s.guard.Acquire(ctx, userID, "session_chat", message, true)
 		if err != nil {
 			return ChatResult{}, err
 		}
-		defer releaseAILease(lease)
+		taskLease = &chatTaskLease{lease: lease}
+		defer s.releaseChatLease(taskLease, "unregistered")
 	}
 	taskID, err := s.newID()
 	if err != nil {
@@ -282,11 +260,19 @@ func (s *Service) replayStartChat(
 		firstChatClaimExpiresAt(ctx, claimTime),
 	)
 	if err != nil {
-		s.releaseFirstChatClaim(session.ID, taskID)
-		return ChatResult{}, err
+		return ChatResult{}, wrapChatPersistenceError(errors.Join(err, s.releaseFirstChatClaim(session.ID, taskID)))
 	}
 	if !claimed {
-		return ChatResult{}, ErrStartChatInProgress
+		return s.replayLatestFirstChat(ctx, session.ID, stream)
+	}
+	messages, total, err := s.repo.ListMessages(ctx, session.ID, 3, 0)
+	if err != nil {
+		return ChatResult{}, wrapChatPersistenceError(errors.Join(err, s.releaseFirstChatClaim(session.ID, taskID)))
+	}
+	if total != 2 || len(messages) != 2 ||
+		normalizedChatRole(messages[0].Role) != "assistant" ||
+		normalizedChatRole(messages[1].Role) != "user" {
+		return ChatResult{}, joinChatCleanupError(ErrFirstChatCannotResume, s.releaseFirstChatClaim(session.ID, taskID))
 	}
 	ids := chatMessageIDs{
 		UserMessageID:      messages[1].ID,
@@ -305,8 +291,136 @@ func (s *Service) replayStartChat(
 		messages[1].CreatedAt,
 		airiskapp.UsageDate(claimTime),
 		ids,
+		taskLease,
 		stream,
 	)
+}
+
+func (s *Service) replayLatestFirstChat(
+	ctx context.Context,
+	sessionID string,
+	stream ChatStreamCallbacks,
+) (ChatResult, error) {
+	request, exists, err := s.repo.GetFirstChatRequest(ctx, sessionID)
+	if err != nil {
+		return ChatResult{}, err
+	}
+	if !exists {
+		return ChatResult{}, ErrSessionIDConflict
+	}
+	if request.CompletedAt == nil {
+		return ChatResult{}, ErrStartChatInProgress
+	}
+	reply, exists, err := s.repo.GetMessage(ctx, sessionID, request.AssistantMessageID)
+	if err != nil {
+		return ChatResult{}, err
+	}
+	if !exists {
+		return ChatResult{}, ErrFirstChatCannotResume
+	}
+	return s.publishStoredFirstChat(reply, stream)
+}
+
+func (s *Service) publishStoredFirstChat(reply Message, stream ChatStreamCallbacks) (ChatResult, error) {
+	taskID, err := s.newID()
+	if err != nil {
+		return ChatResult{}, err
+	}
+	agent := "tutor"
+	if reply.Agent != nil && strings.TrimSpace(*reply.Agent) != "" {
+		agent = *reply.Agent
+	}
+	result := ChatResult{
+		TaskID:    taskID,
+		MessageID: reply.ID,
+		Agent:     agent,
+		Content:   reply.Content,
+	}
+	if err := publishStoredChatResult(stream, result); err != nil {
+		return ChatResult{}, err
+	}
+	return result, nil
+}
+
+func (s *Service) completeExpiredFirstChat(
+	ctx context.Context,
+	session LearningSession,
+	studentID string,
+	request FirstChatRequest,
+) error {
+	now := s.now()
+	claimToken, err := s.newID()
+	if err != nil {
+		return err
+	}
+	claimed, err := s.repo.ClaimFirstChat(
+		ctx,
+		session.ID,
+		claimToken,
+		now,
+		firstChatClaimExpiresAt(ctx, now),
+	)
+	if err != nil {
+		return wrapChatPersistenceError(err)
+	}
+	if !claimed {
+		return s.resolveFirstChatCompletion(ctx, session.ID, ErrStartChatInProgress)
+	}
+
+	messages, total, err := s.repo.ListMessages(ctx, session.ID, 3, 0)
+	if err != nil {
+		return wrapChatPersistenceError(errors.Join(err, s.releaseFirstChatClaim(session.ID, claimToken)))
+	}
+	if total != 2 || len(messages) != 2 ||
+		normalizedChatRole(messages[0].Role) != "assistant" ||
+		normalizedChatRole(messages[1].Role) != "user" {
+		if releaseErr := s.releaseFirstChatClaim(session.ID, claimToken); releaseErr != nil {
+			return wrapChatPersistenceError(errors.Join(ErrFirstChatCannotResume, releaseErr))
+		}
+		return s.resolveFirstChatCompletion(ctx, session.ID, ErrFirstChatCannotResume)
+	}
+
+	agent := "tutor"
+	createdAt := s.now()
+	if !createdAt.After(messages[1].CreatedAt) {
+		createdAt = messages[1].CreatedAt.Add(time.Microsecond)
+	}
+	writeCtx, cancel := interruptedWriteContext(ctx)
+	completed, completeErr := s.repo.CompleteFirstChat(writeCtx, FirstChatCompletion{
+		StudentID:  studentID,
+		ClaimToken: claimToken,
+		Message: Message{
+			ID:        request.AssistantMessageID,
+			SessionID: session.ID,
+			Role:      "assistant",
+			Content:   strings.TrimPrefix(interruptedAssistantSuffix, "\n\n"),
+			Agent:     &agent,
+			CreatedAt: createdAt,
+		},
+		Metered: false,
+	})
+	cancel()
+	if completeErr != nil {
+		return wrapChatPersistenceError(errors.Join(completeErr, s.releaseFirstChatClaim(session.ID, claimToken)))
+	}
+	if !completed {
+		if releaseErr := s.releaseFirstChatClaim(session.ID, claimToken); releaseErr != nil {
+			return wrapChatPersistenceError(errors.Join(ErrStartChatInProgress, releaseErr))
+		}
+		return s.resolveFirstChatCompletion(ctx, session.ID, ErrStartChatInProgress)
+	}
+	return nil
+}
+
+func (s *Service) resolveFirstChatCompletion(ctx context.Context, sessionID string, fallback error) error {
+	latest, exists, err := s.repo.GetFirstChatRequest(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if exists && latest.CompletedAt != nil {
+		return nil
+	}
+	return fallback
 }
 
 func firstChatRequestHash(topic *string, mode string, message string, attachments []string) string {
@@ -398,10 +512,21 @@ func (s *Service) completeChat(
 	systemInstruction string,
 	userCreatedAt time.Time,
 	ids chatMessageIDs,
+	taskLease *chatTaskLease,
 	stream ChatStreamCallbacks,
 ) (ChatResult, error) {
-	assistantMessage, agent, metered, err := s.buildAssistantMessage(
-		ctx,
+	taskCtx, task, err := s.registerActiveChatTask(ctx, ids.TaskID, userID)
+	if err != nil {
+		return ChatResult{}, err
+	}
+	var persistenceErr error
+	defer func() {
+		s.finishActiveChatTask(ids.TaskID, task, persistenceErr)
+	}()
+	defer s.releaseChatLease(taskLease, ids.TaskID)
+
+	assistantMessage, agent, metered, generationErr := s.buildAssistantMessage(
+		taskCtx,
 		session,
 		userID,
 		message,
@@ -412,15 +537,39 @@ func (s *Service) completeChat(
 		ids,
 		stream,
 	)
-	if err != nil {
-		return ChatResult{}, err
-	}
-	if metered {
-		if err := s.repo.InsertMeteredAssistantMessage(ctx, userID, assistantMessage, airiskapp.UsageDate(userCreatedAt)); err != nil {
-			return ChatResult{}, err
+	stopped := s.finishActiveChatGeneration(task)
+	if generationErr == nil {
+		if ctxErr := taskCtx.Err(); ctxErr != nil {
+			generationErr = ctxErr
+		} else if stopped {
+			generationErr = context.Canceled
 		}
-	} else if err := s.repo.InsertMessage(ctx, assistantMessage); err != nil {
-		return ChatResult{}, err
+	}
+	if generationErr != nil {
+		assistantMessage.Content = interruptedAssistantContent(
+			assistantMessage.Content,
+			stopped,
+		)
+		writeCtx, cancel := interruptedWriteContext(taskCtx)
+		persistenceErr = s.repo.InsertMessage(writeCtx, assistantMessage)
+		cancel()
+		if persistenceErr != nil {
+			return ChatResult{}, wrapChatPersistenceError(persistenceErr)
+		}
+		if stopped {
+			return stoppedChatResult(ids.TaskID, assistantMessage, agent), nil
+		}
+		return ChatResult{}, generationErr
+	}
+	writeCtx, cancel := interruptedWriteContext(taskCtx)
+	if metered {
+		persistenceErr = s.repo.InsertMeteredAssistantMessage(writeCtx, userID, assistantMessage, airiskapp.UsageDate(userCreatedAt))
+	} else {
+		persistenceErr = s.repo.InsertMessage(writeCtx, assistantMessage)
+	}
+	cancel()
+	if persistenceErr != nil {
+		return ChatResult{}, wrapChatPersistenceError(persistenceErr)
 	}
 	return chatResult(ids.TaskID, assistantMessage, agent), nil
 }
@@ -436,10 +585,21 @@ func (s *Service) completeFirstChat(
 	userCreatedAt time.Time,
 	usageDate string,
 	ids chatMessageIDs,
+	taskLease *chatTaskLease,
 	stream ChatStreamCallbacks,
 ) (ChatResult, error) {
-	assistantMessage, agent, metered, err := s.buildAssistantMessage(
-		ctx,
+	taskCtx, task, err := s.registerActiveChatTask(ctx, ids.TaskID, userID)
+	if err != nil {
+		return ChatResult{}, joinChatCleanupError(err, s.releaseFirstChatClaim(session.ID, ids.TaskID))
+	}
+	var persistenceErr error
+	defer func() {
+		s.finishActiveChatTask(ids.TaskID, task, persistenceErr)
+	}()
+	defer s.releaseChatLease(taskLease, ids.TaskID)
+
+	assistantMessage, agent, metered, generationErr := s.buildAssistantMessage(
+		taskCtx,
 		session,
 		userID,
 		message,
@@ -450,31 +610,65 @@ func (s *Service) completeFirstChat(
 		ids,
 		stream,
 	)
-	if err != nil {
-		s.releaseFirstChatClaim(session.ID, ids.TaskID)
-		return ChatResult{}, err
+	stopped := s.finishActiveChatGeneration(task)
+	if generationErr == nil {
+		if ctxErr := taskCtx.Err(); ctxErr != nil {
+			generationErr = ctxErr
+		} else if stopped {
+			generationErr = context.Canceled
+		}
 	}
-	completed, err := s.repo.CompleteFirstChat(ctx, FirstChatCompletion{
+	if generationErr != nil {
+		assistantMessage.Content = interruptedAssistantContent(
+			assistantMessage.Content,
+			stopped,
+		)
+		writeCtx, cancel := interruptedWriteContext(taskCtx)
+		completed, completeErr := s.repo.CompleteFirstChat(writeCtx, FirstChatCompletion{
+			StudentID:  userID,
+			ClaimToken: ids.TaskID,
+			Message:    assistantMessage,
+			Metered:    false,
+		})
+		cancel()
+		if completeErr != nil {
+			persistenceErr = completeErr
+			return ChatResult{}, wrapChatPersistenceError(errors.Join(completeErr, s.releaseFirstChatClaim(session.ID, ids.TaskID)))
+		}
+		if !completed {
+			persistenceErr = ErrStartChatInProgress
+			return ChatResult{}, persistenceErr
+		}
+		if stopped {
+			return stoppedChatResult(ids.TaskID, assistantMessage, agent), nil
+		}
+		return ChatResult{}, generationErr
+	}
+	writeCtx, cancel := interruptedWriteContext(taskCtx)
+	completed, completeErr := s.repo.CompleteFirstChat(writeCtx, FirstChatCompletion{
 		StudentID:  userID,
 		ClaimToken: ids.TaskID,
 		UsageDate:  usageDate,
 		Message:    assistantMessage,
 		Metered:    metered,
 	})
-	if err != nil {
-		s.releaseFirstChatClaim(session.ID, ids.TaskID)
-		return ChatResult{}, err
+	cancel()
+	if completeErr != nil {
+		persistenceErr = completeErr
+		return ChatResult{}, wrapChatPersistenceError(errors.Join(completeErr, s.releaseFirstChatClaim(session.ID, ids.TaskID)))
 	}
 	if !completed {
-		return ChatResult{}, ErrStartChatInProgress
+		persistenceErr = ErrStartChatInProgress
+		return ChatResult{}, persistenceErr
 	}
 	return chatResult(ids.TaskID, assistantMessage, agent), nil
 }
 
-func (s *Service) releaseFirstChatClaim(sessionID string, claimToken string) {
+func (s *Service) releaseFirstChatClaim(sessionID string, claimToken string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, _ = s.repo.ReleaseFirstChat(ctx, sessionID, claimToken, s.now())
+	_, err := s.repo.ReleaseFirstChat(ctx, sessionID, claimToken, s.now())
+	return err
 }
 
 func (s *Service) buildAssistantMessage(
@@ -489,38 +683,40 @@ func (s *Service) buildAssistantMessage(
 	ids chatMessageIDs,
 	stream ChatStreamCallbacks,
 ) (Message, string, bool, error) {
+	var generationErr error
 	if stream.OnStart != nil {
 		if err := stream.OnStart(ChatStreamStart{
 			TaskID:    ids.TaskID,
 			MessageID: ids.AssistantMessageID,
 			Agent:     "tutor",
 		}); err != nil {
-			return Message{}, "", false, wrapChatStreamDeliveryError(err)
+			generationErr = wrapChatStreamDeliveryError(err)
 		}
 	}
-	output, metered, err := s.generateAssistant(ctx, ChatAgentInput{
-		SessionID:         session.ID,
-		StudentID:         userID,
-		Message:           message,
-		SystemInstruction: systemInstruction,
-		Attachments:       attachments,
-		History:           history,
-	}, func(chunk ChatAgentChunk) error {
-		if stream.OnChunk == nil {
-			return nil
-		}
-		agent := chunk.Agent
-		if agent == "" {
-			agent = "tutor"
-		}
-		return stream.OnChunk(ChatStreamChunk{
-			MessageID: ids.AssistantMessageID,
-			Agent:     agent,
-			Content:   chunk.Content,
+	var output ChatAgentOutput
+	var metered bool
+	if generationErr == nil {
+		output, metered, generationErr = s.generateAssistant(ctx, ChatAgentInput{
+			SessionID:         session.ID,
+			StudentID:         userID,
+			Message:           message,
+			SystemInstruction: systemInstruction,
+			Attachments:       attachments,
+			History:           history,
+		}, func(chunk ChatAgentChunk) error {
+			if stream.OnChunk == nil {
+				return nil
+			}
+			agent := chunk.Agent
+			if agent == "" {
+				agent = "tutor"
+			}
+			return stream.OnChunk(ChatStreamChunk{
+				MessageID: ids.AssistantMessageID,
+				Agent:     agent,
+				Content:   chunk.Content,
+			})
 		})
-	})
-	if err != nil {
-		return Message{}, "", false, err
 	}
 	agent := output.Agent
 	if agent == "" {
@@ -538,7 +734,86 @@ func (s *Service) buildAssistantMessage(
 		Agent:     &agent,
 		CreatedAt: assistantCreatedAt,
 	}
-	return assistantMessage, agent, metered, nil
+	return assistantMessage, agent, metered, generationErr
+}
+
+func (s *Service) registerActiveChatTask(ctx context.Context, taskID string, studentID string) (context.Context, *activeChatTask, error) {
+	taskCtx, cancel := context.WithCancelCause(ctx)
+	task := &activeChatTask{
+		studentID:      studentID,
+		ctx:            taskCtx,
+		cancel:         cancel,
+		done:           make(chan struct{}),
+		acceptingStops: true,
+	}
+
+	s.activeTasksMu.Lock()
+	defer s.activeTasksMu.Unlock()
+	if s.activeTasks == nil {
+		s.activeTasks = make(map[string]*activeChatTask)
+	}
+	if s.stoppedTasks == nil {
+		s.stoppedTasks = make(map[string]stoppedChatTask)
+	}
+	s.pruneStoppedChatTasksLocked(s.now())
+	if _, exists := s.activeTasks[taskID]; exists {
+		cancel(errors.New("duplicate active chat task"))
+		return nil, nil, errors.New("chat task id is already active")
+	}
+	if _, exists := s.stoppedTasks[taskID]; exists {
+		cancel(errors.New("duplicate stopped chat task"))
+		return nil, nil, errors.New("chat task id was recently stopped")
+	}
+	s.activeTasks[taskID] = task
+	return taskCtx, task, nil
+}
+
+func (s *Service) finishActiveChatGeneration(task *activeChatTask) bool {
+	s.activeTasksMu.Lock()
+	defer s.activeTasksMu.Unlock()
+	task.acceptingStops = false
+	task.stopRequested = errors.Is(context.Cause(task.ctx), errGenerationStopped)
+	return task.stopRequested
+}
+
+func (s *Service) finishActiveChatTask(taskID string, task *activeChatTask, completionErr error) {
+	s.activeTasksMu.Lock()
+	defer s.activeTasksMu.Unlock()
+	task.cancel(nil)
+	task.stopRequested = errors.Is(context.Cause(task.ctx), errGenerationStopped)
+	task.completionErr = completionErr
+	if current, exists := s.activeTasks[taskID]; exists && current == task {
+		delete(s.activeTasks, taskID)
+	}
+	if task.stopRequested {
+		if s.stoppedTasks == nil {
+			s.stoppedTasks = make(map[string]stoppedChatTask)
+		}
+		s.stoppedTasks[taskID] = stoppedChatTask{
+			studentID:     task.studentID,
+			expiresAt:     s.now().Add(stoppedTaskRetention),
+			completionErr: completionErr,
+		}
+	}
+	close(task.done)
+}
+
+func interruptedAssistantContent(content string, stopped bool) string {
+	suffix := interruptedAssistantSuffix
+	if stopped {
+		suffix = stoppedAssistantSuffix
+	}
+	if strings.TrimSpace(content) == "" {
+		return strings.TrimPrefix(suffix, "\n\n")
+	}
+	if strings.HasSuffix(content, suffix) {
+		return content
+	}
+	return content + suffix
+}
+
+func interruptedWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), interruptedWriteTimeout)
 }
 
 func publishStoredChatResult(stream ChatStreamCallbacks, result ChatResult) error {
@@ -570,4 +845,10 @@ func chatResult(taskID string, message Message, agent string) ChatResult {
 		Agent:     agent,
 		Content:   message.Content,
 	}
+}
+
+func stoppedChatResult(taskID string, message Message, agent string) ChatResult {
+	result := chatResult(taskID, message, agent)
+	result.Stopped = true
+	return result
 }

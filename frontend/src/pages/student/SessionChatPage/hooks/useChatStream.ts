@@ -24,11 +24,9 @@ import {
   MAX_CHAT_MESSAGE_BYTES,
   MAX_CHAT_MESSAGE_KIB,
 } from '@/modules/session/limits';
-import type {
-  DraftFirstRequest,
-  DraftSessionIdentity,
-  SessionMode,
-} from '@/modules/session/types';
+import type { DraftSessionIdentity, SessionMode } from '@/modules/session/types';
+
+const CANCEL_EVENT_FALLBACK_MS = 1500;
 
 export type ChatTarget =
   | { kind: 'existing'; sessionId: string }
@@ -37,7 +35,6 @@ export type ChatTarget =
       sessionId?: string;
       topic?: string;
       mode: SessionMode;
-      firstRequest?: DraftFirstRequest;
     };
 
 interface UseChatStreamProps {
@@ -46,12 +43,12 @@ interface UseChatStreamProps {
   attachmentsPending: boolean;
   selectedImages: File[];
   sseControllerRef: React.MutableRefObject<SSEController | null>;
-  onSendStart?: (sentInputText: string) => void;
+  onRequestAccepted?: (sentInputText: string) => void;
   onSessionPrepared?: (identity: DraftSessionIdentity) => void;
-  onFirstRequestPrepared?: (sessionId: string, request: DraftFirstRequest) => void;
   onSessionMaterialized?: (sessionId: string) => void;
   onFirstTurnCompleted?: (sessionId: string) => void;
   onChatSettled?: (settlement: ChatSettlement) => void;
+  onCancelFailed?: () => void;
   onClearImages: () => void;
   /** 获取已解析的文档列表 */
   getParsedDocuments: () => ParsedDocument[];
@@ -64,7 +61,8 @@ export type ChatSendOutcome = 'done' | 'error' | 'cancelled' | 'closed';
 export interface ChatSettlement {
   sessionId: string | null;
   outcome: ChatSendOutcome;
-  retryText: string;
+  requestStarted: boolean;
+  requestAccepted: boolean;
   errorMessage?: string;
   errorCode?: string;
   errorStatus?: number;
@@ -86,12 +84,12 @@ export const useChatStream = ({
   attachmentsPending,
   selectedImages,
   sseControllerRef,
-  onSendStart,
+  onRequestAccepted,
   onSessionPrepared,
-  onFirstRequestPrepared,
   onSessionMaterialized,
   onFirstTurnCompleted,
   onChatSettled,
+  onCancelFailed,
   onClearImages,
   getParsedDocuments,
   onClearFiles,
@@ -104,6 +102,10 @@ export const useChatStream = ({
   const sendPendingRef = useRef(false);
   const sendAbortControllerRef = useRef<AbortController | null>(null);
   const activeFinishRef = useRef<FinishSend | null>(null);
+  const activeCancelRef = useRef<(() => Promise<boolean>) | null>(null);
+  const cancelPendingRef = useRef(false);
+  const cancelFallbackTimerRef = useRef<number | null>(null);
+  const stopRequestedRef = useRef(false);
   const activeRef = useRef(true);
   const uploadedImageCacheRef = useRef<WeakMap<File, UploadResponse>>(new WeakMap());
 
@@ -112,6 +114,13 @@ export const useChatStream = ({
     if (rafIdRef.current !== null) {
       cancelAnimationFrame(rafIdRef.current);
       rafIdRef.current = null;
+    }
+  }, []);
+
+  const clearCancelFallback = useCallback(() => {
+    if (cancelFallbackTimerRef.current !== null) {
+      window.clearTimeout(cancelFallbackTimerRef.current);
+      cancelFallbackTimerRef.current = null;
     }
   }, []);
 
@@ -129,9 +138,13 @@ export const useChatStream = ({
     return () => {
       activeRef.current = false;
       activeFinishRef.current = null;
+      activeCancelRef.current = null;
       sendAbortControllerRef.current?.abort();
       sendAbortControllerRef.current = null;
       sendPendingRef.current = false;
+      cancelPendingRef.current = false;
+      stopRequestedRef.current = false;
+      clearCancelFallback();
       sseControllerRef.current?.close();
       sseControllerRef.current = null;
       cancelPendingFlush();
@@ -141,7 +154,7 @@ export const useChatStream = ({
       dispatch(setStreamingMessageId(null));
       dispatch(setCurrentTaskId(null));
     };
-  }, [cancelPendingFlush, dispatch, sseControllerRef]);
+  }, [cancelPendingFlush, clearCancelFallback, dispatch, sseControllerRef]);
 
   // 发送消息
   const handleSendMessage = useCallback(
@@ -158,10 +171,8 @@ export const useChatStream = ({
 
       const target = resolveChatTarget();
       if (!target) return false;
-      const frozenFirstRequest = target.kind === 'draft' ? target.firstRequest : undefined;
-      const sentInputText = frozenFirstRequest?.inputText ?? messageContent;
+      const sentInputText = messageContent;
       if (
-        !frozenFirstRequest &&
         !messageContent.trim() &&
         imageSnapshot.length === 0 &&
         parsedDocs.length === 0
@@ -184,9 +195,15 @@ export const useChatStream = ({
       let recoverySessionId = target.kind === 'existing'
         ? target.sessionId
         : target.sessionId ?? crypto.randomUUID();
-      let sessionMaterialized = target.kind === 'existing';
       let optimisticMessageIds: string[] = [];
+      let requestStarted = false;
+      let requestAccepted = false;
+      let hasVisibleResponseContent = false;
+      let stopConfirmed = false;
+      let pendingStreamFailure: (() => void) | null = null;
       let settled = false;
+      stopRequestedRef.current = false;
+      clearCancelFallback();
 
       if (target.kind === 'draft') {
         onSessionPrepared?.({
@@ -195,6 +212,18 @@ export const useChatStream = ({
           mode: target.mode,
         });
       }
+
+      const markRequestAccepted = () => {
+        if (settled || requestAccepted || !activeRef.current) return;
+        requestAccepted = true;
+        if (target.kind === 'draft') onSessionMaterialized?.(recoverySessionId);
+        onRequestAccepted?.(sentInputText);
+        uploadedImageCacheRef.current = new WeakMap();
+        onClearImages();
+        onClearFiles();
+      };
+      const terminalNote = (message: string) =>
+        `${hasVisibleResponseContent ? '\n\n' : ''}> ${message}`;
 
       const finishSend: FinishSend = (
         outcome: ChatSendOutcome,
@@ -206,14 +235,18 @@ export const useChatStream = ({
       ) => {
         if (settled || activeFinishRef.current !== finishSend) return;
         settled = true;
+        clearCancelFallback();
+        pendingStreamFailure = null;
         activeFinishRef.current = null;
+        activeCancelRef.current = null;
+        stopRequestedRef.current = false;
         if (outcome !== 'done') abortController.abort();
         if (activeRef.current) {
           flushBuffer();
-          if (appendedMessage && optimisticMessageIds.length > 0) {
+          if (requestAccepted && appendedMessage && optimisticMessageIds.length > 0) {
             dispatch(appendToLastMessage(appendedMessage));
           }
-          if (!sessionMaterialized && outcome !== 'done' && optimisticMessageIds.length > 0) {
+          if (!requestAccepted && outcome !== 'done' && optimisticMessageIds.length > 0) {
             dispatch(removeMessagesById(optimisticMessageIds));
           }
         } else {
@@ -224,11 +257,8 @@ export const useChatStream = ({
         dispatch(setStreamStatus(nextStreamStatus));
         dispatch(setStreamingMessageId(null));
         dispatch(setCurrentTaskId(null));
-        if (activeRef.current && outcome === 'done') {
-          if (target.kind === 'draft') onFirstTurnCompleted?.(recoverySessionId);
-          uploadedImageCacheRef.current = new WeakMap();
-          onClearImages();
-          onClearFiles();
+        if (activeRef.current && requestAccepted) {
+          onFirstTurnCompleted?.(recoverySessionId);
         }
         const streamController = sseControllerRef.current;
         sseControllerRef.current = null;
@@ -237,7 +267,8 @@ export const useChatStream = ({
           onChatSettled?.({
             sessionId: recoverySessionId,
             outcome,
-            retryText: sentInputText,
+            requestStarted,
+            requestAccepted,
             errorMessage,
             errorCode,
             errorStatus,
@@ -247,56 +278,101 @@ export const useChatStream = ({
       };
       activeFinishRef.current = finishSend;
 
-      try {
-        let fullMessage = frozenFirstRequest?.message ?? '';
-        let uploadedImageUrls = [...(frozenFirstRequest?.attachments ?? [])];
-        if (!frozenFirstRequest) {
-          if (imageSnapshot.length > MAX_CHAT_IMAGES) {
-            throw new Error(`每次最多上传 ${MAX_CHAT_IMAGES} 张图片`);
-          }
-          if (parsedDocs.length > MAX_CHAT_DOCUMENTS) {
-            throw new Error(`每次最多上传 ${MAX_CHAT_DOCUMENTS} 个文档`);
-          }
+      const finishCancelled = () => {
+        finishSend(
+          'cancelled',
+          'cancelled',
+          terminalNote('已停止生成'),
+          '已停止生成'
+        );
+      };
 
-          // 在上传和创建草稿会话前完成文档拼接及大小校验。
-          const promptMessage = messageContent.trim()
-            ? messageContent
-            : parsedDocs.length > 0
-              ? '请分析我上传的文档。'
-              : '请分析我上传的图片。';
-          fullMessage = formatDocumentsForChat(parsedDocs, promptMessage);
-          if (new TextEncoder().encode(fullMessage).byteLength > MAX_CHAT_MESSAGE_BYTES) {
-            throw new Error(`消息和文档内容合计不能超过 ${MAX_CHAT_MESSAGE_KIB} KiB`);
-          }
+      const requestCancellation = async (): Promise<boolean> => {
+        if (settled || cancelPendingRef.current) return true;
 
-          // 上传成功后再冻结首轮请求，避免上传失败留下不可重放的半成品。
-          const uploadPromises = imageSnapshot.map(async (file) => {
-            const cached = uploadedImageCacheRef.current.get(file);
-            if (cached) return cached;
+        const streamController = sseControllerRef.current;
+        if (!streamController) {
+          finishSend('cancelled', 'cancelled', undefined, '已取消发送');
+          return true;
+        }
 
-            const uploaded = await uploadService.uploadImage(
-              file,
-              undefined,
-              abortController.signal
-            );
-            uploadedImageCacheRef.current.set(file, uploaded);
-            return uploaded;
-          });
-          if (uploadPromises.length > 0) {
-            const results = await Promise.all(uploadPromises);
-            uploadedImageUrls = results.map((result) => result.url);
-          }
-          if (isAborted()) {
+        const taskId = streamController.getTaskId();
+        if (!taskId) {
+          stopRequestedRef.current = true;
+          return true;
+        }
+
+        stopRequestedRef.current = true;
+        cancelPendingRef.current = true;
+        try {
+          const cancelled = await sessionService.cancelTask(taskId);
+          if (!cancelled) {
+            stopRequestedRef.current = false;
+            const streamFailure = pendingStreamFailure;
+            pendingStreamFailure = null;
+            if (streamFailure) {
+              streamFailure();
+            } else if (!settled && activeFinishRef.current === finishSend && activeRef.current) {
+              onCancelFailed?.();
+            }
             return false;
           }
-          if (target.kind === 'draft') {
-            onFirstRequestPrepared?.(recoverySessionId, {
-              inputText: messageContent,
-              message: fullMessage,
-              attachments: uploadedImageUrls,
-            });
+          stopConfirmed = true;
+          if (pendingStreamFailure) {
+            pendingStreamFailure = null;
+            finishCancelled();
+            return true;
           }
+          if (!settled && activeFinishRef.current === finishSend) {
+            clearCancelFallback();
+            cancelFallbackTimerRef.current = window.setTimeout(() => {
+              cancelFallbackTimerRef.current = null;
+              finishCancelled();
+            }, CANCEL_EVENT_FALLBACK_MS);
+          }
+          return true;
+        } finally {
+          cancelPendingRef.current = false;
         }
+      };
+      activeCancelRef.current = requestCancellation;
+
+      try {
+        if (imageSnapshot.length > MAX_CHAT_IMAGES) {
+          throw new Error(`每次最多上传 ${MAX_CHAT_IMAGES} 张图片`);
+        }
+        if (parsedDocs.length > MAX_CHAT_DOCUMENTS) {
+          throw new Error(`每次最多上传 ${MAX_CHAT_DOCUMENTS} 个文档`);
+        }
+
+        const promptMessage = messageContent.trim()
+          ? messageContent
+          : parsedDocs.length > 0
+            ? '请分析我上传的文档。'
+            : '请分析我上传的图片。';
+        const fullMessage = formatDocumentsForChat(parsedDocs, promptMessage);
+        if (new TextEncoder().encode(fullMessage).byteLength > MAX_CHAT_MESSAGE_BYTES) {
+          throw new Error(`消息和文档内容合计不能超过 ${MAX_CHAT_MESSAGE_KIB} KiB`);
+        }
+
+        const uploadPromises = imageSnapshot.map(async (file) => {
+          const cached = uploadedImageCacheRef.current.get(file);
+          if (cached) return cached;
+
+          const uploaded = await uploadService.uploadImage(
+            file,
+            undefined,
+            abortController.signal
+          );
+          uploadedImageCacheRef.current.set(file, uploaded);
+          return uploaded;
+        });
+        let uploadedImageUrls: string[] = [];
+        if (uploadPromises.length > 0) {
+          const results = await Promise.all(uploadPromises);
+          uploadedImageUrls = results.map((result) => result.url);
+        }
+        if (isAborted()) return false;
 
         const optimisticSessionId = recoverySessionId;
         const displayMessage = formatChatMessageForDisplay(fullMessage);
@@ -304,9 +380,6 @@ export const useChatStream = ({
         const userMessageId = crypto.randomUUID();
         const aiMessageId = crypto.randomUUID();
         optimisticMessageIds = [userMessageId, aiMessageId];
-
-        // 输入和附件准备完成后，才使上一轮异步对账失效。
-        onSendStart?.(sentInputText);
 
         // 1. 添加用户消息到 UI
         dispatch(
@@ -338,10 +411,15 @@ export const useChatStream = ({
 
         const streamHandlers: SSEHandlers = {
           onTaskInfo: (taskId: string) => {
-            if (!settled && activeRef.current) dispatch(setCurrentTaskId(taskId));
+            if (settled || !activeRef.current) return;
+            dispatch(setCurrentTaskId(taskId));
+            markRequestAccepted();
+            if (stopRequestedRef.current) void requestCancellation();
           },
           onChunk: (content: string) => {
             if (settled || !activeRef.current) return;
+            markRequestAccepted();
+            if (content.trim()) hasVisibleResponseContent = true;
             // rAF 节流：缓冲内容，每帧最多 dispatch 一次
             contentBufferRef.current += content;
             if (rafIdRef.current === null) {
@@ -354,30 +432,57 @@ export const useChatStream = ({
               });
             }
           },
-          onDone: () => finishSend('done', 'idle'),
+          onDone: () => {
+            markRequestAccepted();
+            finishSend('done', 'idle');
+          },
           onError: (error: SSEError) => {
             if (settled) return;
             console.error('SSE error:', error);
-            finishSend(
-              'error',
-              'error',
-              `\n\n[错误: ${error.message}]`,
-              error.message,
-              error.code,
-              error.status
-            );
+            if (stopConfirmed) {
+              finishCancelled();
+              return;
+            }
+            const finishError = () => finishSend(
+                'error',
+                'error',
+                terminalNote('生成已中断'),
+                error.message,
+                error.code,
+                error.status
+              );
+            if (cancelPendingRef.current && stopRequestedRef.current) {
+              pendingStreamFailure = finishError;
+              return;
+            }
+            finishError();
           },
-          onCancelled: () => finishSend(
-            'cancelled',
-            'cancelled',
-            '\n\n[响应已取消]',
-            '响应已取消'
-          ),
-          onClose: () => finishSend('closed', 'idle', undefined, '连接已关闭'),
+          onCancelled: () => {
+            markRequestAccepted();
+            finishCancelled();
+          },
+          onClose: () => {
+            if (stopConfirmed) {
+              finishCancelled();
+              return;
+            }
+            const finishClosed = () => finishSend(
+                'closed',
+                'error',
+                terminalNote('生成已中断'),
+                '生成已中断'
+              );
+            if (cancelPendingRef.current && stopRequestedRef.current) {
+              pendingStreamFailure ??= finishClosed;
+              return;
+            }
+            finishClosed();
+          },
         };
 
         // 草稿通过一个原子接口创建；已有会话继续使用原聊天接口。
         if (target.kind === 'draft') {
+          requestStarted = true;
           sseControllerRef.current = sessionService.startChatStream(
             {
               sessionId: recoverySessionId,
@@ -391,12 +496,13 @@ export const useChatStream = ({
               onSessionInfo: (materializedSessionId: string) => {
                 if (settled || !activeRef.current) return;
                 recoverySessionId = materializedSessionId;
-                sessionMaterialized = true;
-                onSessionMaterialized?.(materializedSessionId);
+                if (requestAccepted) onSessionMaterialized?.(materializedSessionId);
+                markRequestAccepted();
               },
             }
           );
         } else {
+          requestStarted = true;
           sseControllerRef.current = sessionService.chatStream(
             target.sessionId,
             fullMessage,
@@ -423,33 +529,24 @@ export const useChatStream = ({
       attachmentsPending,
       selectedImages,
       sseControllerRef,
-      onSendStart,
+      onRequestAccepted,
       onSessionPrepared,
-      onFirstRequestPrepared,
       onSessionMaterialized,
       onFirstTurnCompleted,
       onChatSettled,
+      onCancelFailed,
       onClearImages,
       onClearFiles,
       getParsedDocuments,
       dispatch,
       flushBuffer,
       cancelPendingFlush,
+      clearCancelFallback,
     ]
   );
 
-  const cancelCurrentSend = useCallback((): boolean => {
-    const finishSend = activeFinishRef.current;
-    if (!finishSend) return false;
-
-    // 先完成幂等本地结算，再关闭连接；随后到达的 onClose 会被忽略。
-    finishSend(
-      'cancelled',
-      'cancelled',
-      '\n\n[响应已取消]',
-      '响应已取消'
-    );
-    return true;
+  const cancelCurrentSend = useCallback(async (): Promise<boolean> => {
+    return activeCancelRef.current?.() ?? false;
   }, []);
 
   return {

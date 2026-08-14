@@ -14,7 +14,6 @@ import {
   clearCurrentSession,
   invalidateSession,
   prepareDraftSession,
-  freezeDraftFirstRequest,
   materializeDraftSession,
   completeDraftFirstTurn,
   selectCurrentSession,
@@ -23,7 +22,7 @@ import {
   selectDraftSessionId,
   selectDraftSessionTopic,
   selectDraftSessionMode,
-  selectDraftFirstRequest,
+  selectDraftSessionMaterialized,
   selectDraftFirstTurnCompleted,
   selectStreamStatus,
   selectStreamingMessageId,
@@ -40,7 +39,6 @@ import {
 } from '@/modules/session/store/sessionSlice';
 import type {
   ChatMode,
-  DraftFirstRequest,
   DraftSessionIdentity,
 } from '@/modules/session/types';
 import type { SSEController } from '../../../libs/http/sseClient';
@@ -84,7 +82,7 @@ export const SessionChatPage: React.FC = () => {
   const draftSessionId = useAppSelector(selectDraftSessionId);
   const draftSessionTopic = useAppSelector(selectDraftSessionTopic);
   const draftSessionMode = useAppSelector(selectDraftSessionMode);
-  const draftFirstRequest = useAppSelector(selectDraftFirstRequest);
+  const draftSessionMaterialized = useAppSelector(selectDraftSessionMaterialized);
   const draftFirstTurnCompleted = useAppSelector(selectDraftFirstTurnCompleted);
   const streamStatus = useAppSelector(selectStreamStatus);
   const streamingMessageId = useAppSelector(selectStreamingMessageId);
@@ -106,17 +104,18 @@ export const SessionChatPage: React.FC = () => {
   const [isSelectMode, setIsSelectMode] = useState(false);
   const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
   const [isBatchDeleting, setIsBatchDeleting] = useState(false);
+  const inputValueRef = useRef('');
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const sseControllerRef = useRef<SSEController | null>(null);
   const scrollRafRef = useRef<number | null>(null);
   const settlementAttemptRef = useRef(0);
   const pageActiveRef = useRef(true);
+  const composerHasContentRef = useRef(false);
 
   const isDraftSession = !sessionId || sessionId === 'new';
   const hasPreparedDraft = isDraftSession && draftSessionId !== null;
   const hasCompletedDraft = hasPreparedDraft && draftFirstTurnCompleted;
   const draftRecoveryPending = hasPreparedDraft && !draftFirstTurnCompleted;
-  const draftRequestLocked = draftRecoveryPending && draftFirstRequest !== null;
   const showDraftWelcome = isDraftSession
     && messages.length === 0;
   const currentModeConfig = CHAT_MODES.find((m) => m.id === currentMode)!;
@@ -159,6 +158,9 @@ export const SessionChatPage: React.FC = () => {
     clearFiles,
     getParsedDocuments,
   } = useFileUpload({ onError: handleAttachmentError });
+  composerHasContentRef.current = inputValue.length > 0
+    || selectedImages.length > 0
+    || uploadedFiles.length > 0;
 
   const resolveChatTarget = useCallback((): ChatTarget | null => {
     if (!isDraftSession) {
@@ -168,7 +170,7 @@ export const SessionChatPage: React.FC = () => {
         ? { kind: 'existing', sessionId }
         : null;
     }
-    if (draftSessionId && draftFirstTurnCompleted) {
+    if (draftSessionId && draftSessionMaterialized) {
       return { kind: 'existing', sessionId: draftSessionId };
     }
 
@@ -178,7 +180,6 @@ export const SessionChatPage: React.FC = () => {
         sessionId: draftSessionId,
         topic: draftSessionTopic ?? undefined,
         mode: draftSessionMode ?? currentMode,
-        firstRequest: draftFirstRequest ?? undefined,
       };
     }
 
@@ -187,14 +188,10 @@ export const SessionChatPage: React.FC = () => {
       topic: locationState?.topic,
       mode: locationState?.mode ?? currentMode,
     };
-  }, [currentMode, draftFirstRequest, draftFirstTurnCompleted, draftSessionId, draftSessionMode, draftSessionTopic, historySessionId, historySessionStatus, isDraftSession, locationState, sessionId]);
+  }, [currentMode, draftSessionId, draftSessionMaterialized, draftSessionMode, draftSessionTopic, historySessionId, historySessionStatus, isDraftSession, locationState, sessionId]);
 
   const handleSessionPrepared = useCallback((identity: DraftSessionIdentity) => {
     dispatch(prepareDraftSession(identity));
-  }, [dispatch]);
-
-  const handleFirstRequestPrepared = useCallback((preparedSessionId: string, request: DraftFirstRequest) => {
-    dispatch(freezeDraftFirstRequest({ sessionId: preparedSessionId, request }));
   }, [dispatch]);
 
   const handleSessionMaterialized = useCallback((materializedSessionId: string) => {
@@ -205,9 +202,26 @@ export const SessionChatPage: React.FC = () => {
     dispatch(completeDraftFirstTurn(completedSessionId));
   }, [dispatch]);
 
-  const handleSendStart = useCallback((sentInputText: string) => {
+  const handleRequestAccepted = useCallback((sentInputText: string) => {
     settlementAttemptRef.current += 1;
-    setInputValue((currentValue) => currentValue === sentInputText ? '' : currentValue);
+    const currentValue = inputValueRef.current;
+    const nextValue = currentValue === sentInputText ? '' : currentValue;
+    inputValueRef.current = nextValue;
+    composerHasContentRef.current = nextValue.length > 0;
+    if (nextValue !== currentValue) setInputValue(nextValue);
+  }, []);
+
+  const handleCancelFailed = useCallback(() => {
+    toast({
+      type: 'error',
+      title: '停止生成失败',
+      description: '回复仍可能继续生成，请稍后重试',
+    });
+  }, [toast]);
+
+  const handleInputChange = useCallback((value: string) => {
+    inputValueRef.current = value;
+    setInputValue(value);
   }, []);
 
   const refreshSessionList = useCallback(() => {
@@ -232,7 +246,8 @@ export const SessionChatPage: React.FC = () => {
     const {
       sessionId: settledSessionId,
       outcome,
-      retryText,
+      requestStarted,
+      requestAccepted,
       errorMessage,
       errorCode,
       errorStatus,
@@ -242,13 +257,12 @@ export const SessionChatPage: React.FC = () => {
     if (outcome === 'done') {
       if (!settledSessionId) return;
       refreshSessionList();
-      if (isDraftSession) navigate(`/session/${settledSessionId}`, { replace: true });
+      if (isDraftSession && !composerHasContentRef.current) {
+        navigate(`/session/${settledSessionId}`, { replace: true });
+      }
       return;
     }
 
-    if (retryText.trim()) {
-      setInputValue((currentValue) => currentValue || retryText);
-    }
     const settlementError: SessionRequestError | undefined = errorMessage || errorCode || errorStatus
       ? { message: errorMessage ?? '消息发送失败', code: errorCode, status: errorStatus }
       : undefined;
@@ -279,16 +293,21 @@ export const SessionChatPage: React.FC = () => {
       return;
     }
     toast({
-      type: 'error',
-      title: outcome === 'cancelled' ? '响应已取消' : '消息发送未完成',
-      description: errorMessage ?? (isFirstTurn
-        ? '当前问题和下一轮草稿已保留，可以直接重试'
-        : '输入和附件已保留，可以直接重试'),
+      type: outcome === 'cancelled' ? 'info' : 'error',
+      title: outcome === 'cancelled' ? '已停止生成' : '消息发送未完成',
+      description: errorMessage ?? (requestAccepted
+        ? '已保留当前生成内容，可以继续输入新问题'
+        : '输入和附件已保留，请再次发送'),
     });
 
-    if (!settledSessionId) return;
+    if (requestAccepted) {
+      if (settledSessionId) refreshSessionList();
+      return;
+    }
+    if (!settledSessionId || !requestStarted) return;
 
-    refreshSessionList();
+    // 请求已经发出但接收事件可能丢失时，只读探测稳定会话 ID。
+    // 已确认接收的中断保留本地分片，不在这里用历史立即覆盖。
     void dispatch(reconcileHistoryAsync({
       sessionId: settledSessionId,
       preserveDraftOnNotFound: isFirstTurn,
@@ -302,9 +321,11 @@ export const SessionChatPage: React.FC = () => {
         }
 
         if (reconcileHistoryAsync.fulfilled.match(result)) {
-          if (isFirstTurn && result.payload.firstTurnCompleted) {
-            clearImages();
-            clearFiles();
+          if (
+            isFirstTurn &&
+            result.payload.firstTurnCompleted &&
+            !composerHasContentRef.current
+          ) {
             navigate(`/session/${settledSessionId}`, { replace: true });
           }
           return;
@@ -312,7 +333,11 @@ export const SessionChatPage: React.FC = () => {
 
         if (reconcileHistoryAsync.rejected.match(result) && !result.meta.condition) {
           if (isSessionNotFoundError(result.payload)) {
-            if (!isFirstTurn) recoverMissingSession(settledSessionId);
+            if (isFirstTurn) {
+              discardDraftRecovery(settledSessionId);
+            } else {
+              recoverMissingSession(settledSessionId);
+            }
             return;
           }
           toast({
@@ -322,7 +347,7 @@ export const SessionChatPage: React.FC = () => {
           });
         }
       });
-  }, [clearFiles, clearImages, discardDraftRecovery, dispatch, isDraftSession, navigate, recoverMissingSession, refreshSessionList, toast]);
+  }, [discardDraftRecovery, dispatch, isDraftSession, navigate, recoverMissingSession, refreshSessionList, toast]);
 
   const {
     handleSendMessage: sendMessage,
@@ -333,12 +358,12 @@ export const SessionChatPage: React.FC = () => {
     attachmentsPending: isFileParsing,
     selectedImages,
     sseControllerRef,
-    onSendStart: handleSendStart,
+    onRequestAccepted: handleRequestAccepted,
     onSessionPrepared: handleSessionPrepared,
-    onFirstRequestPrepared: handleFirstRequestPrepared,
     onSessionMaterialized: handleSessionMaterialized,
     onFirstTurnCompleted: handleFirstTurnCompleted,
     onChatSettled: handleChatSettled,
+    onCancelFailed: handleCancelFailed,
     onClearImages: clearImages,
     getParsedDocuments,
     onClearFiles: clearFiles,
@@ -448,7 +473,10 @@ export const SessionChatPage: React.FC = () => {
         initialMessageHandled.current = true;
         navigate(location.pathname, { replace: true, state: null });
         void handleSendMessage(initialMessage).then((started) => {
-          if (!started && pageActiveRef.current) setInputValue(initialMessage);
+          if (!started && pageActiveRef.current) {
+            inputValueRef.current = initialMessage;
+            setInputValue(initialMessage);
+          }
         });
       }, 0);
       return () => window.clearTimeout(sendTimer);
@@ -457,7 +485,7 @@ export const SessionChatPage: React.FC = () => {
 
   // 取消响应
   const handleCancelResponse = useCallback(() => {
-    cancelCurrentSend();
+    void cancelCurrentSend();
   }, [cancelCurrentSend]);
 
   // 切换模式
@@ -655,7 +683,6 @@ export const SessionChatPage: React.FC = () => {
           {(showDraftWelcome || messages.length === 0) &&
             !isLoading &&
             !interactionBusy &&
-            !draftRequestLocked &&
             !isFileParsing &&
             (isDraftSession || persistedSessionReady) && (
             <QuickActions actions={QUICK_ACTIONS} onActionClick={handleSendMessage} />
@@ -668,11 +695,10 @@ export const SessionChatPage: React.FC = () => {
             previewUrls={previewUrls}
             isStreaming={isStreaming}
             isSending={isSending}
-            contentLocked={draftRequestLocked}
             disabled={composerDisabled || (!isDraftSession && !persistedSessionReady)}
             files={uploadedFiles}
             isFileParsing={isFileParsing}
-            onChange={setInputValue}
+            onChange={handleInputChange}
             onSend={handleSendMessage}
             onCancel={handleCancelResponse}
             onImageSelect={handleImageSelect}

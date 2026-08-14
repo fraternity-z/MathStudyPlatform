@@ -49,7 +49,7 @@ export const isSessionNotFoundError = (
   || error?.code === 'NOT_FOUND'
   || error?.code === 'SESSION_NOT_FOUND';
 
-/** 只有请求本身确定无效时才丢弃客户端草稿 ID；传输错误和服务端暂态错误均可同 ID 重放。 */
+/** 只有请求本身确定无效时才丢弃草稿 ID；暂态错误保留稳定 ID 供只读对账。 */
 export const isDefinitiveDraftIdentityError = (
   error: SessionRequestError | null | undefined
 ): boolean => error?.code === 'SESSION_ID_CONFLICT'
