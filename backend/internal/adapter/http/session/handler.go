@@ -208,13 +208,21 @@ func (h *Handler) writeChatStreamFailure(stream *chatSSEWriter, err error, logMe
 		h.writeChatFailure(stream.response, err, logMessage)
 		return
 	}
-	if errors.Is(err, context.Canceled) || stream.err != nil {
+	persistenceFailure := sessionapp.IsChatPersistenceError(err)
+	if persistenceFailure {
+		h.logSessionError(logMessage, err)
+	}
+	if stream.err != nil || (!persistenceFailure && errors.Is(err, context.Canceled)) {
 		h.logger.Debug("session chat stream canceled")
 		return
 	}
 
 	code, message := "PROCESSING_ERROR", "处理消息时发生错误，请稍后重试"
 	switch {
+	case persistenceFailure:
+		// A repository failure must remain visible even when it wraps a
+		// cancellation or deadline from the interrupted write context.
+		code, message = "PROCESSING_ERROR", "回复保存失败，请稍后重试"
 	case errors.Is(err, context.DeadlineExceeded):
 		code, message = "REQUEST_TIMEOUT", "请求处理超时，请稍后重试"
 	case errors.Is(err, sessionapp.ErrStartChatInProgress):
@@ -234,6 +242,12 @@ func (h *Handler) writeChatStreamFailure(stream *chatSSEWriter, err error, logMe
 }
 
 func (h *Handler) writeChatFailure(w http.ResponseWriter, err error, logMessage string) {
+	persistenceFailure := sessionapp.IsChatPersistenceError(err)
+	if persistenceFailure {
+		h.logSessionError(logMessage, err)
+		writeSessionSSEError(w, "PROCESSING_ERROR", "回复保存失败，请稍后重试")
+		return
+	}
 	if errors.Is(err, context.Canceled) {
 		h.logger.Debug("session chat request canceled")
 		return
@@ -515,6 +529,13 @@ func (s *chatSSEWriter) writeResult(result sessionapp.ChatResult) error {
 		if err := s.writeTask(result.TaskID); err != nil {
 			return err
 		}
+	}
+	if result.Stopped {
+		return s.writeEvent("cancelled", map[string]string{
+			"type":       "cancelled",
+			"task_id":    result.TaskID,
+			"message_id": result.MessageID,
+		})
 	}
 	if !s.chunkWritten && result.Content != "" {
 		if err := s.writeChunk(result.MessageID, result.Agent, result.Content); err != nil {

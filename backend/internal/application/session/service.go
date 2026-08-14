@@ -3,8 +3,10 @@ package session
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	airiskapp "mathstudy/backend/internal/application/airisk"
@@ -42,7 +44,14 @@ var ErrStartChatInProgress = errors.New("first chat is still being processed")
 // append a missing first reply out of chronological order.
 var ErrFirstChatCannotResume = errors.New("first chat can no longer be resumed")
 
-const interruptedAssistantSuffix = "\n\n> 回复生成中断，请稍后重试。"
+const (
+	stoppedAssistantSuffix     = "\n\n> 已停止生成"
+	interruptedAssistantSuffix = "\n\n> 生成已中断"
+	interruptedWriteTimeout    = 2 * time.Second
+	stoppedTaskRetention       = 5 * time.Minute
+)
+
+var errGenerationStopped = errors.New("generation stopped by user")
 
 // Repository is the persistence surface required by session use cases.
 type Repository interface {
@@ -205,6 +214,7 @@ type ChatResult struct {
 	MessageID string
 	Agent     string
 	Content   string
+	Stopped   bool
 }
 
 // ChatAgent generates assistant responses for a learning session.
@@ -276,6 +286,46 @@ func (e *chatStreamDeliveryError) Unwrap() error {
 	return e.cause
 }
 
+// chatPersistenceError keeps a response-write failure distinguishable from
+// the context or provider error that may have led to the write attempt.
+type chatPersistenceError struct {
+	cause error
+}
+
+func (e *chatPersistenceError) Error() string {
+	return "persist chat response: " + e.cause.Error()
+}
+
+func (e *chatPersistenceError) Unwrap() error {
+	return e.cause
+}
+
+func wrapChatPersistenceError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var persistenceErr *chatPersistenceError
+	if errors.As(err, &persistenceErr) {
+		return err
+	}
+	return &chatPersistenceError{cause: err}
+}
+
+func joinChatCleanupError(primary error, cleanup error) error {
+	if cleanup == nil {
+		return primary
+	}
+	return wrapChatPersistenceError(errors.Join(primary, cleanup))
+}
+
+// IsChatPersistenceError reports whether a chat response could not be saved.
+// HTTP transports use this to retain the diagnostic error even when the
+// underlying repository returned a context cancellation or deadline error.
+func IsChatPersistenceError(err error) bool {
+	var persistenceErr *chatPersistenceError
+	return errors.As(err, &persistenceErr)
+}
+
 // AIRequestGuard applies student AI access, content, quota, and concurrency rules.
 type AIRequestGuard interface {
 	Acquire(context.Context, string, string, string, bool) (airiskapp.Lease, error)
@@ -289,11 +339,38 @@ type CancelTaskResponse struct {
 
 // Service implements session use cases.
 type Service struct {
-	repo  Repository
-	agent ChatAgent
-	guard AIRequestGuard
-	now   func() time.Time
-	newID func() (string, error)
+	repo          Repository
+	agent         ChatAgent
+	guard         AIRequestGuard
+	logger        *slog.Logger
+	now           func() time.Time
+	newID         func() (string, error)
+	activeTasksMu sync.Mutex
+	activeTasks   map[string]*activeChatTask
+	stoppedTasks  map[string]stoppedChatTask
+}
+
+type activeChatTask struct {
+	studentID      string
+	ctx            context.Context
+	cancel         context.CancelCauseFunc
+	done           chan struct{}
+	acceptingStops bool
+	stopRequested  bool
+	completionErr  error
+}
+
+type stoppedChatTask struct {
+	studentID     string
+	expiresAt     time.Time
+	completionErr error
+}
+
+type chatTaskLease struct {
+	lease      airiskapp.Lease
+	once       sync.Once
+	reportOnce sync.Once
+	err        error
 }
 
 // Option customizes the session service.
@@ -313,12 +390,28 @@ func WithAIRequestGuard(guard AIRequestGuard) Option {
 	}
 }
 
+// WithLogger enables structured diagnostics for asynchronous chat cleanup.
+func WithLogger(logger *slog.Logger) Option {
+	return func(service *Service) {
+		if logger != nil {
+			service.logger = logger
+		}
+	}
+}
+
 // NewService creates a session service.
 func NewService(repo Repository, options ...Option) (*Service, error) {
 	if repo == nil {
 		return nil, errors.New("session repository is nil")
 	}
-	service := &Service{repo: repo, now: time.Now, newID: NewUUID}
+	service := &Service{
+		repo:         repo,
+		logger:       slog.Default(),
+		now:          time.Now,
+		newID:        NewUUID,
+		activeTasks:  make(map[string]*activeChatTask),
+		stoppedTasks: make(map[string]stoppedChatTask),
+	}
 	for _, option := range options {
 		option(service)
 	}
@@ -405,7 +498,9 @@ func (s *Service) ProcessChat(ctx context.Context, sessionID string, userID stri
 		return ChatResult{}, err
 	}
 	if hasFirstChat && firstChat.CompletedAt == nil {
-		return ChatResult{}, ErrStartChatInProgress
+		if err := s.completeExpiredFirstChat(ctx, current, userID, firstChat); err != nil {
+			return ChatResult{}, err
+		}
 	}
 	systemInstruction := sessionModeInstruction(current.Mode)
 	historyByteBudget, ok := chatHistoryByteBudget(message, systemInstruction, attachments)
@@ -417,12 +512,14 @@ func (s *Service) ProcessChat(ctx context.Context, sessionID string, userID stri
 		return ChatResult{}, err
 	}
 	history = selectRecentChatHistory(history, historyByteBudget)
+	var taskLease *chatTaskLease
 	if s.guard != nil {
 		lease, err := s.guard.Acquire(ctx, userID, "session_chat", message, true)
 		if err != nil {
 			return ChatResult{}, err
 		}
-		defer releaseAILease(lease)
+		taskLease = &chatTaskLease{lease: lease}
+		defer s.releaseChatLease(taskLease, "unregistered")
 	}
 	ids, err := s.newChatMessageIDs()
 	if err != nil {
@@ -437,9 +534,9 @@ func (s *Service) ProcessChat(ctx context.Context, sessionID string, userID stri
 		Attachments: attachments,
 		CreatedAt:   userCreatedAt,
 	}); err != nil {
-		return ChatResult{}, err
+		return ChatResult{}, wrapChatPersistenceError(err)
 	}
-	return s.completeChat(ctx, current, userID, message, attachments, history, systemInstruction, userCreatedAt, ids, stream)
+	return s.completeChat(ctx, current, userID, message, attachments, history, systemInstruction, userCreatedAt, ids, taskLease, stream)
 }
 
 func normalizeChatAttachments(attachments []string) ([]string, error) {
@@ -516,43 +613,19 @@ func (s *Service) generateAssistant(ctx context.Context, input ChatAgentInput, o
 		output, err = s.agent.Generate(ctx, input)
 	}
 	if err != nil {
+		if emitted {
+			// A streaming provider can return a larger accumulated value after
+			// the transport has already failed. Persist only chunks delivered
+			// successfully so history cannot outrun the client-visible reply.
+			output.Content = deliveredContent.String()
+		}
+		if output.Agent == "" {
+			output.Agent = "tutor"
+		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return output, false, ctxErr
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return output, false, err
-		}
-		var deliveryErr *chatStreamDeliveryError
-		if errors.As(err, &deliveryErr) {
-			return output, false, err
-		}
-		if strings.TrimSpace(output.Content) != "" {
-			if output.Agent == "" {
-				output.Agent = "tutor"
-			}
-			chunk := output.Content + interruptedAssistantSuffix
-			if emitted {
-				streamed := deliveredContent.String()
-				if strings.HasPrefix(output.Content, streamed) {
-					chunk = output.Content[len(streamed):] + interruptedAssistantSuffix
-					output.Content += interruptedAssistantSuffix
-				} else {
-					output.Content = streamed + interruptedAssistantSuffix
-					chunk = interruptedAssistantSuffix
-				}
-			} else {
-				output.Content = chunk
-			}
-			if err := deliver(ChatAgentChunk{Agent: output.Agent, Content: chunk}); err != nil {
-				return output, false, err
-			}
-			return output, false, nil
-		}
-		fallback := ChatAgentOutput{
-			Agent:   "tutor",
-			Content: "智能导师暂时不可用；你的消息已保存。请稍后重试，或联系管理员检查导师智能体模型配置。",
-		}
-		return deliverAssistantOutput(fallback, false, deliver)
+		return output, false, err
 	}
 	if output.Agent == "" {
 		output.Agent = "tutor"
@@ -601,13 +674,23 @@ func wrapChatStreamDeliveryError(err error) error {
 	return &chatStreamDeliveryError{cause: err}
 }
 
-func releaseAILease(lease airiskapp.Lease) {
+func releaseAILease(lease airiskapp.Lease) error {
 	if lease == nil {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = lease.Release(ctx)
+	return lease.Release(ctx)
+}
+
+func (l *chatTaskLease) release() error {
+	if l == nil {
+		return nil
+	}
+	l.once.Do(func() {
+		l.err = releaseAILease(l.lease)
+	})
+	return l.err
 }
 
 // GetHistory returns a page of session messages.
@@ -712,9 +795,72 @@ func (s *Service) BatchDeleteSessions(ctx context.Context, sessionIDs []string, 
 	return BatchDeleteResponse{Success: true, DeletedCount: count, Message: "成功删除 " + strconv.Itoa(count) + " 个会话"}, nil
 }
 
-// CancelTask returns a compatible response for non-resident Go task state.
-func (s *Service) CancelTask(context.Context, string, string) (CancelTaskResponse, error) {
-	return CancelTaskResponse{Success: false, Message: "任务不存在或已完成"}, nil
+func (s *Service) releaseChatLease(lease *chatTaskLease, taskID string) {
+	if lease == nil {
+		return
+	}
+	err := lease.release()
+	if err == nil || s.logger == nil {
+		return
+	}
+	lease.reportOnce.Do(func() {
+		s.logger.Error("release session chat AI lease failed", "task_id", taskID, "error", err)
+	})
+}
+
+// CancelTask stops an active task owned by the student and waits for its
+// interrupted assistant message to finish persisting.
+func (s *Service) CancelTask(ctx context.Context, taskID string, studentID string) (CancelTaskResponse, error) {
+	taskID = strings.TrimSpace(taskID)
+	studentID = strings.TrimSpace(studentID)
+
+	s.activeTasksMu.Lock()
+	s.pruneStoppedChatTasksLocked(s.now())
+	task, ok := s.activeTasks[taskID]
+	if !ok {
+		stopped, stoppedOK := s.stoppedTasks[taskID]
+		s.activeTasksMu.Unlock()
+		if stoppedOK && stopped.studentID == studentID {
+			return cancelTaskResult(stopped.completionErr)
+		}
+		return CancelTaskResponse{Success: false, Message: "任务不存在或已完成"}, nil
+	}
+	if task.studentID != studentID {
+		s.activeTasksMu.Unlock()
+		return CancelTaskResponse{Success: false, Message: "任务不存在或已完成"}, nil
+	}
+	if task.acceptingStops {
+		task.acceptingStops = false
+		task.cancel(errGenerationStopped)
+		task.stopRequested = errors.Is(context.Cause(task.ctx), errGenerationStopped)
+	}
+	if !task.stopRequested {
+		s.activeTasksMu.Unlock()
+		return CancelTaskResponse{Success: false, Message: "任务不存在或已完成"}, nil
+	}
+	s.activeTasksMu.Unlock()
+
+	select {
+	case <-task.done:
+		return cancelTaskResult(task.completionErr)
+	case <-ctx.Done():
+		return CancelTaskResponse{Success: false, Message: "任务停止超时"}, ctx.Err()
+	}
+}
+
+func cancelTaskResult(err error) (CancelTaskResponse, error) {
+	if err != nil {
+		return CancelTaskResponse{Success: false, Message: "任务停止失败"}, err
+	}
+	return CancelTaskResponse{Success: true, Message: "任务已停止"}, nil
+}
+
+func (s *Service) pruneStoppedChatTasksLocked(now time.Time) {
+	for taskID, task := range s.stoppedTasks {
+		if !task.expiresAt.After(now) {
+			delete(s.stoppedTasks, taskID)
+		}
+	}
 }
 
 func toMessageResponses(messages []Message) []MessageResponse {

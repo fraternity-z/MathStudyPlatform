@@ -1,6 +1,6 @@
 import React, { useRef } from 'react';
 import { Button } from '../../../../components/ui/Button';
-import { Send, Square, Paperclip, Image as ImageIcon, Mic, Loader2, X, FileText, AlertCircle, RotateCcw } from 'lucide-react';
+import { Send, Square, Paperclip, Image as ImageIcon, Mic, Loader2, X, FileText, AlertCircle } from 'lucide-react';
 import { getDocumentAcceptTypes, formatFileSize } from '@/libs/utils/documentParser';
 import type { FileUploadItem } from '../hooks/useFileUpload';
 
@@ -10,7 +10,6 @@ interface ChatInputProps {
   previewUrls: string[];
   isStreaming: boolean;
   isSending: boolean;
-  contentLocked?: boolean;
   disabled?: boolean;
   // 文件上传相关
   files: FileUploadItem[];
@@ -31,7 +30,6 @@ export const ChatInput = React.memo<ChatInputProps>(
     previewUrls,
     isStreaming,
     isSending,
-    contentLocked,
     disabled,
     files,
     isFileParsing,
@@ -48,14 +46,12 @@ export const ChatInput = React.memo<ChatInputProps>(
     const hasAttachments = previewUrls.length > 0 || files.length > 0;
     const isPreparingSend = isSending && !isStreaming;
     const isBusy = isPreparingSend || isFileParsing;
-    const textInputDisabled = Boolean(
-      disabled || isPreparingSend || (contentLocked && !isStreaming)
-    );
     const attachmentLocked = Boolean(
-      disabled || contentLocked || isSending || isStreaming || isFileParsing
+      disabled || isSending || isStreaming || isFileParsing
     );
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         if (isBusy || isStreaming || disabled) return;
@@ -148,6 +144,7 @@ export const ChatInput = React.memo<ChatInputProps>(
               accept="image/jpeg,image/png,image/gif,image/webp"
               multiple
               onChange={onImageSelect}
+              disabled={attachmentLocked}
               className="hidden"
             />
             <input
@@ -156,6 +153,7 @@ export const ChatInput = React.memo<ChatInputProps>(
               accept={getDocumentAcceptTypes()}
               multiple
               onChange={onFileSelect}
+              disabled={attachmentLocked}
               className="hidden"
             />
 
@@ -188,13 +186,13 @@ export const ChatInput = React.memo<ChatInputProps>(
                 value={value}
                 onChange={(e) => onChange(e.target.value)}
                 onKeyDown={handleKeyDown}
-                disabled={textInputDisabled}
+                disabled={disabled}
               />
 
               {/* Voice & Send/Cancel Buttons */}
               <div className="flex items-center pr-2 pb-2 space-x-1">
                 <button
-                  disabled={isStreaming || isSending || contentLocked || disabled}
+                  disabled={isStreaming || isSending || disabled}
                   className="p-2 rounded-lg hover:bg-surface-200 dark:hover:bg-surface-700 text-surface-400 hover:text-surface-600 dark:hover:text-surface-300 transition-colors disabled:opacity-50"
                 >
                   <Mic className="w-5 h-5" />
@@ -210,18 +208,6 @@ export const ChatInput = React.memo<ChatInputProps>(
                     title="停止生成"
                   >
                     <Square className="w-4 h-4" />
-                  </Button>
-                ) : contentLocked ? (
-                  <Button
-                    size="icon"
-                    variant="outline"
-                    className="h-10 w-10 rounded-xl"
-                    onClick={() => onSend()}
-                    disabled={isBusy || disabled}
-                    aria-label="重试上一轮"
-                    title="重试上一轮"
-                  >
-                    <RotateCcw className="w-4 h-4" />
                   </Button>
                 ) : (
                   <Button
@@ -250,9 +236,7 @@ export const ChatInput = React.memo<ChatInputProps>(
                 ? '生成中，可编辑但暂不可发送'
                 : isSending
                   ? '正在准备发送'
-                  : contentLocked
-                    ? '上一轮回复未完成，请先重试'
-                    : '按 Enter 发送，Shift + Enter 换行'}
+                  : '按 Enter 发送，Shift + Enter 换行'}
             </span>
           </div>
         </div>
