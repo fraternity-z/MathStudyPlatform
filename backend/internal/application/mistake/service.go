@@ -77,6 +77,19 @@ type ListQuery struct {
 	DateFrom      *time.Time
 	DateTo        *time.Time
 	MasteryStatus string
+	// ReviewStatus optionally narrows the current review-plan state. It is
+	// intentionally separate from DueStatus so callers can combine, for
+	// example, a mastered-stage filter with a mastery filter without changing
+	// the historical mistake aggregation.
+	ReviewStatus string
+	// DueStatus selects whether the associated plan is due, scheduled, or both.
+	// "all" is the default for the mistake library.
+	DueStatus string
+	// Stage is the optional verification stage (0..3). Nil means all stages.
+	Stage *int
+	// ErrorCountMin filters aggregated cards by their historical wrong-answer
+	// count. A value <= 0 disables the filter.
+	ErrorCountMin int
 	SortBy        string
 	SortOrder     string
 }
@@ -90,11 +103,23 @@ type MistakeRow struct {
 
 // MistakeListRow stores one SQL-paginated mistake row with list aggregates.
 type MistakeListRow struct {
-	Row             MistakeRow
-	AvgMastery      float64
-	ErrorCount      int
-	LastReviewedAt  *time.Time
-	IsEarlyPractice bool
+	Row                   MistakeRow
+	AvgMastery            float64
+	ErrorCount            int
+	LastReviewedAt        *time.Time
+	IsEarlyPractice       bool
+	ReviewTaskID          string
+	ReviewStatus          string
+	ReviewRevision        *int64
+	ReviewDueAt           *time.Time
+	ReviewMasteredAt      *time.Time
+	ReviewStage           *int
+	ReviewCount           int
+	SuccessfulReviewCount int
+	ReviewLastOutcome     *bool
+	ReviewLastReviewedAt  *time.Time
+	ReviewIsDue           bool
+	DailyCorrection       bool
 }
 
 // AttemptContent combines an attempt and content row for write use cases.
@@ -162,17 +187,29 @@ type MistakeListResponse struct {
 
 // MistakeItem stores one list row.
 type MistakeItem struct {
-	ID              string           `json:"id"`
-	Exercise        MistakeExercise  `json:"exercise"`
-	Attempt         MistakeAttempt   `json:"attempt"`
-	Diagnosis       MistakeDiagnosis `json:"diagnosis"`
-	Mastery         MistakeMastery   `json:"mastery"`
-	ErrorCount      int              `json:"error_count"`
-	LastReviewedAt  *string          `json:"last_reviewed_at"`
-	CanReview       bool             `json:"can_review"`
-	CanDelete       bool             `json:"can_delete"`
-	CanArchive      bool             `json:"can_archive"`
-	IsEarlyPractice bool             `json:"is_early_practice"`
+	ID                    string           `json:"id"`
+	Exercise              MistakeExercise  `json:"exercise"`
+	Attempt               MistakeAttempt   `json:"attempt"`
+	Diagnosis             MistakeDiagnosis `json:"diagnosis"`
+	Mastery               MistakeMastery   `json:"mastery"`
+	ErrorCount            int              `json:"error_count"`
+	LastReviewedAt        *string          `json:"last_reviewed_at"`
+	CanReview             bool             `json:"can_review"`
+	CanDelete             bool             `json:"can_delete"`
+	CanArchive            bool             `json:"can_archive"`
+	IsEarlyPractice       bool             `json:"is_early_practice"`
+	ReviewTaskID          string           `json:"review_task_id,omitempty"`
+	ReviewStatus          string           `json:"review_status,omitempty"`
+	ReviewRevision        *int64           `json:"review_revision"`
+	ReviewDueAt           *string          `json:"review_due_at"`
+	ReviewStage           *int             `json:"review_stage"`
+	ReviewCount           int              `json:"review_count"`
+	SuccessfulReviewCount int              `json:"successful_review_count"`
+	MasteredAt            *string          `json:"mastered_at"`
+	ReviewLastOutcome     *bool            `json:"review_last_outcome"`
+	ReviewLastReviewedAt  *string          `json:"review_last_reviewed_at"`
+	ReviewIsDue           bool             `json:"review_is_due"`
+	DailyCorrection       bool             `json:"daily_correction"`
 }
 
 // MistakeExercise stores exercise summary data for a mistake row.
@@ -398,12 +435,24 @@ func (s *Service) GetMistakes(ctx context.Context, userID string, query ListQuer
 	}
 	for _, row := range rows {
 		responseItems = append(responseItems, toMistakeItem(listItemData{
-			row:             row.Row,
-			avgMastery:      row.AvgMastery,
-			errorCount:      row.ErrorCount,
-			lastReviewedAt:  row.LastReviewedAt,
-			isEarlyPractice: row.IsEarlyPractice,
-			knowledgeNames:  knowledgeNames,
+			row:                   row.Row,
+			avgMastery:            row.AvgMastery,
+			errorCount:            row.ErrorCount,
+			lastReviewedAt:        row.LastReviewedAt,
+			isEarlyPractice:       row.IsEarlyPractice,
+			reviewTaskID:          row.ReviewTaskID,
+			reviewStatus:          row.ReviewStatus,
+			reviewRevision:        row.ReviewRevision,
+			reviewDueAt:           row.ReviewDueAt,
+			reviewMasteredAt:      row.ReviewMasteredAt,
+			reviewStage:           row.ReviewStage,
+			reviewCount:           row.ReviewCount,
+			successfulReviewCount: row.SuccessfulReviewCount,
+			reviewLastOutcome:     row.ReviewLastOutcome,
+			reviewLastReviewedAt:  row.ReviewLastReviewedAt,
+			reviewIsDue:           row.ReviewIsDue,
+			dailyCorrection:       row.DailyCorrection,
+			knowledgeNames:        knowledgeNames,
 		}))
 	}
 
@@ -624,6 +673,44 @@ func (s *Service) GetReviewExerciseByAttempt(ctx context.Context, userID string,
 func normalizeListQuery(query ListQuery) ListQuery {
 	query.DateFrom = utcTimePointer(query.DateFrom)
 	query.DateTo = utcTimePointer(query.DateTo)
+	query.ReviewStatus = strings.ToLower(strings.TrimSpace(query.ReviewStatus))
+	query.DueStatus = strings.ToLower(strings.TrimSpace(query.DueStatus))
+	if query.DueStatus == "" {
+		query.DueStatus = "all"
+	}
+	if query.DueStatus == "overdue" {
+		query.DueStatus = "due"
+	}
+	if query.DueStatus == "upcoming" {
+		query.DueStatus = "scheduled"
+	}
+	if query.DueStatus != "all" && query.DueStatus != "due" && query.DueStatus != "scheduled" {
+		query.DueStatus = "all"
+	}
+	switch query.ReviewStatus {
+	case "", "all", "pending", "verification_due", "mastered", "archived", "none", "due", "overdue", "scheduled":
+	default:
+		query.ReviewStatus = "all"
+	}
+	// Keep the older review_status aliases useful while exposing the simpler
+	// due_status filter used by the list UI.
+	if (query.ReviewStatus == "due" || query.ReviewStatus == "overdue") && query.DueStatus == "all" {
+		query.DueStatus = "due"
+		query.ReviewStatus = "all"
+	}
+	if query.ReviewStatus == "scheduled" && query.DueStatus == "all" {
+		query.DueStatus = "scheduled"
+		query.ReviewStatus = "all"
+	}
+	if query.Stage != nil && (*query.Stage < 0 || *query.Stage > 3) {
+		query.Stage = nil
+	}
+	if query.ErrorCountMin < 0 {
+		query.ErrorCountMin = 0
+	}
+	if query.Now.IsZero() {
+		query.Now = time.Now().UTC()
+	}
 	if query.Page < 1 {
 		query.Page = 1
 	}
@@ -709,12 +796,24 @@ func toMistakeItem(item listItemData) MistakeItem {
 			Previous: item.avgMastery,
 			Trend:    masteryTrend(item.avgMastery),
 		},
-		ErrorCount:      item.errorCount,
-		LastReviewedAt:  optionalAttemptTimestamp(item.lastReviewedAt),
-		CanReview:       true,
-		CanDelete:       row.Attempt.CanDelete,
-		CanArchive:      true,
-		IsEarlyPractice: item.isEarlyPractice,
+		ErrorCount:            item.errorCount,
+		LastReviewedAt:        optionalAttemptTimestamp(item.lastReviewedAt),
+		CanReview:             true,
+		CanDelete:             row.Attempt.CanDelete,
+		CanArchive:            true,
+		IsEarlyPractice:       item.isEarlyPractice,
+		ReviewTaskID:          item.reviewTaskID,
+		ReviewStatus:          item.reviewStatus,
+		ReviewRevision:        item.reviewRevision,
+		ReviewDueAt:           optionalAttemptTimestamp(item.reviewDueAt),
+		ReviewStage:           item.reviewStage,
+		ReviewCount:           item.reviewCount,
+		SuccessfulReviewCount: item.successfulReviewCount,
+		MasteredAt:            optionalAttemptTimestamp(item.reviewMasteredAt),
+		ReviewLastOutcome:     ptrutil.Clone(item.reviewLastOutcome),
+		ReviewLastReviewedAt:  optionalAttemptTimestamp(item.reviewLastReviewedAt),
+		ReviewIsDue:           item.reviewIsDue,
+		DailyCorrection:       item.dailyCorrection,
 	}
 }
 
@@ -1051,12 +1150,24 @@ func nonEmpty(value string, fallback string) string {
 }
 
 type listItemData struct {
-	row             MistakeRow
-	avgMastery      float64
-	errorCount      int
-	lastReviewedAt  *time.Time
-	isEarlyPractice bool
-	knowledgeNames  map[string]string
+	row                   MistakeRow
+	avgMastery            float64
+	errorCount            int
+	lastReviewedAt        *time.Time
+	isEarlyPractice       bool
+	reviewTaskID          string
+	reviewStatus          string
+	reviewRevision        *int64
+	reviewDueAt           *time.Time
+	reviewMasteredAt      *time.Time
+	reviewStage           *int
+	reviewCount           int
+	successfulReviewCount int
+	reviewLastOutcome     *bool
+	reviewLastReviewedAt  *time.Time
+	reviewIsDue           bool
+	dailyCorrection       bool
+	knowledgeNames        map[string]string
 }
 
 type reviewCandidate struct {

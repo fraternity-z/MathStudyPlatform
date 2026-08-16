@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -12,19 +13,39 @@ import (
 	mistakeapp "mathstudy/backend/internal/application/mistake"
 )
 
+// mistakeReviewTaskOrderBy maps the public sort contract to fixed SQL
+// fragments. The client can choose direction, but never a column expression.
+func mistakeReviewTaskOrderBy(sortBy string, sortOrder string) string {
+	direction := "DESC"
+	if strings.EqualFold(strings.TrimSpace(sortOrder), "asc") {
+		direction = "ASC"
+	}
+	switch strings.ToLower(strings.TrimSpace(sortBy)) {
+	case "due_at":
+		return "task.due_at " + direction + " NULLS LAST, task.updated_at DESC, task.id"
+	case "mastered_at":
+		return "task.mastered_at " + direction + " NULLS LAST, task.updated_at DESC, task.id DESC"
+	case "error_count":
+		return "task.error_count " + direction + ", task.updated_at DESC, task.id"
+	case "mastery":
+		return "mastery.avg_mastery " + direction + " NULLS LAST, task.updated_at DESC, task.id"
+	case "stage":
+		return "task.stage " + direction + ", task.updated_at DESC, task.id"
+	default:
+		return "task.due_at ASC NULLS LAST, task.updated_at DESC, task.id"
+	}
+}
+
 // ListReviewTasks returns one server-sorted task page.
 func (r MistakeRepository) ListReviewTasks(ctx context.Context, userID string, query mistakeapp.ReviewTaskQuery) ([]mistakeapp.ReviewTaskRow, int, error) {
-	orderBy := "task.due_at ASC NULLS LAST, task.updated_at DESC, task.id"
-	if query.View == mistakeapp.ReviewTaskViewMastered {
-		orderBy = "task.mastered_at DESC NULLS LAST, task.id DESC"
-	}
+	orderBy := mistakeReviewTaskOrderBy(query.SortBy, query.SortOrder)
 	viewPredicate := `
 		(
 			($2 = 'mastered' AND task.status = 'mastered')
 			OR (
 				$2 = 'due'
 				AND task.status IN ('pending', 'verification_due')
-				AND ($5 <> '' OR task.due_at <= $6)
+				AND ($5 <> '' OR $7 = 'all' OR ($7 = 'due' AND task.due_at <= $6) OR ($7 = 'scheduled' AND task.due_at > $6))
 			)
 		)
 		AND ($3 = '' OR EXISTS (
@@ -38,8 +59,22 @@ func (r MistakeRepository) ListReviewTasks(ctx context.Context, userID string, q
 			WHERE selected_concept.value = $3
 		))
 		AND ($4 = '' OR diagnosis.error_type::text = $4)
-		AND ($5 = '' OR task.id = $5)`
-	args := []any{userID, query.View, query.ConceptID, query.ErrorType, query.TaskID, query.Now}
+		AND ($5 = '' OR task.id = $5)
+		AND ($8::integer IS NULL OR task.stage = $8)
+		AND ($9 <= 0 OR task.error_count >= $9)
+		AND ($10 = '' OR task.status = $10)`
+	args := []any{
+		userID,
+		query.View,
+		query.ConceptID,
+		query.ErrorType,
+		query.TaskID,
+		query.Now,
+		query.DueStatus,
+		query.Stage,
+		query.ErrorCountMin,
+		query.Status,
+	}
 	var total int
 	if err := r.DB().QueryRow(ctx, `
 			SELECT count(*)::int
@@ -113,7 +148,7 @@ func (r MistakeRepository) ListReviewTasks(ctx context.Context, userID string, q
 		) mastery ON true
 		WHERE task.student_id = $1 AND `+viewPredicate+`
 		ORDER BY `+orderBy+`
-		LIMIT $7 OFFSET $8`,
+		LIMIT $11 OFFSET $12`,
 		append(args, query.PageSize, (query.Page-1)*query.PageSize)...,
 	)
 	if err != nil {

@@ -41,3 +41,24 @@ func timestampPtr(value pgtype.Timestamp) *time.Time {
 	}
 	return &value.Time
 }
+
+func textValue(value pgtype.Text) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
+}
+
+func intValue(value pgtype.Int4) int {
+	if !value.Valid {
+		return 0
+	}
+	return int(value.Int32)
+}
+
+func int64Ptr(value pgtype.Int8) *int64 {
+	if !value.Valid {
+		return nil
+	}
+	return &value.Int64
+}

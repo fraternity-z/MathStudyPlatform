@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	authapp "mathstudy/backend/internal/application/auth"
@@ -218,13 +219,28 @@ func (h *Handler) reviewTasks(w http.ResponseWriter, r *http.Request) {
 		writeMistakePaginationError(w, err)
 		return
 	}
+	query := r.URL.Query()
+	stage, ok := parseStageQuery(w, query.Get("stage"))
+	if !ok {
+		return
+	}
+	errorCountMin, ok := parseNonNegativeIntQuery(w, query.Get("error_count_min"), "error_count_min")
+	if !ok {
+		return
+	}
 	response, err := h.service.GetReviewTasks(r.Context(), principal.UserID, mistakeapp.ReviewTaskQuery{
-		View:      r.URL.Query().Get("view"),
-		Page:      pagination.Page,
-		PageSize:  pagination.PageSize,
-		ConceptID: r.URL.Query().Get("concept_id"),
-		ErrorType: r.URL.Query().Get("error_type"),
-		TaskID:    r.URL.Query().Get("task_id"),
+		View:          query.Get("view"),
+		Page:          pagination.Page,
+		PageSize:      pagination.PageSize,
+		ConceptID:     query.Get("concept_id"),
+		ErrorType:     query.Get("error_type"),
+		TaskID:        query.Get("task_id"),
+		DueStatus:     query.Get("due_status"),
+		Stage:         stage,
+		ErrorCountMin: errorCountMin,
+		Status:        firstNonEmptyQueryValue(query.Get("status"), query.Get("review_status")),
+		SortBy:        query.Get("sort_by"),
+		SortOrder:     query.Get("sort_order"),
 	})
 	if err != nil {
 		h.logMistakeError("get mistake review tasks failed", err)
@@ -284,6 +300,14 @@ func parseListQuery(w http.ResponseWriter, r *http.Request) (mistakeapp.ListQuer
 	if sortOrder == "" {
 		sortOrder = "desc"
 	}
+	stage, ok := parseStageQuery(w, query.Get("stage"))
+	if !ok {
+		return mistakeapp.ListQuery{}, false
+	}
+	errorCountMin, ok := parseNonNegativeIntQuery(w, query.Get("error_count_min"), "error_count_min")
+	if !ok {
+		return mistakeapp.ListQuery{}, false
+	}
 	return mistakeapp.ListQuery{
 		Page:          pagination.Page,
 		PageSize:      pagination.PageSize,
@@ -294,9 +318,44 @@ func parseListQuery(w http.ResponseWriter, r *http.Request) (mistakeapp.ListQuer
 		DateFrom:      dateFrom,
 		DateTo:        dateTo,
 		MasteryStatus: masteryStatus,
+		ReviewStatus:  firstNonEmptyQueryValue(query.Get("review_status"), query.Get("status")),
+		DueStatus:     query.Get("due_status"),
+		Stage:         stage,
+		ErrorCountMin: errorCountMin,
 		SortBy:        sortBy,
 		SortOrder:     sortOrder,
 	}, true
+}
+
+func parseStageQuery(w http.ResponseWriter, value string) (*int, bool) {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" || value == "all" || value == "-1" {
+		return nil, true
+	}
+	parsed, err := httpquery.Int(value, 0)
+	if err != nil || parsed < 0 || parsed > 3 {
+		writeMistakeError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "stage 必须是 all、-1 或 0 到 3 之间的整数")
+		return nil, false
+	}
+	return &parsed, true
+}
+
+func parseNonNegativeIntQuery(w http.ResponseWriter, value string, name string) (int, bool) {
+	parsed, err := httpquery.Int(strings.TrimSpace(value), 0)
+	if err != nil || parsed < 0 || parsed > 1_000_000 {
+		writeMistakeError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", name+" 必须是 0 到 1000000 之间的整数")
+		return 0, false
+	}
+	return parsed, true
+}
+
+func firstNonEmptyQueryValue(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func writeMistakePaginationError(w http.ResponseWriter, err error) {

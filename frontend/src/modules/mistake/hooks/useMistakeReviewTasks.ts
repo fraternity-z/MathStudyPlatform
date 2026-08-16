@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { getApiErrorMessage } from '@/libs/http/apiClient';
 import {
   fetchReviewTasks,
+  type ReviewTaskQueryParams,
   type PaginationInfo,
   type ReviewTask,
   type ReviewTaskCounts,
@@ -22,8 +23,34 @@ const initialCounts: ReviewTaskCounts = {
   mastered: 0,
 };
 
+export type MistakeReviewTaskFilters = Omit<
+  ReviewTaskQueryParams,
+  'view' | 'page' | 'pageSize'
+>;
+
+export function buildReviewTaskRequestKey(
+  view: ReviewTaskView,
+  filters: MistakeReviewTaskFilters = {},
+  page = 1,
+): string {
+  return [
+    view,
+    filters.conceptId?.trim() || '',
+    filters.errorType?.trim() || '',
+    filters.dueStatus || (view === 'due' ? 'due' : 'all'),
+    Number.isInteger(filters.stage) && (filters.stage ?? 0) >= 0 ? filters.stage : '',
+    Number.isInteger(filters.errorCountMin) && (filters.errorCountMin ?? 0) > 0
+      ? filters.errorCountMin
+      : '',
+    filters.sortBy || '',
+    filters.sortOrder || '',
+    Math.max(1, page),
+  ].join('\u0000');
+}
+
 export function useMistakeReviewTasks(
   view: ReviewTaskView,
+  filters: MistakeReviewTaskFilters | number = {},
   requestedPage = 1,
 ) {
   const [tasks, setTasks] = useState<ReviewTask[]>([]);
@@ -34,8 +61,29 @@ export function useMistakeReviewTasks(
   const [resolvedRequestKey, setResolvedRequestKey] = useState('');
   const [reloadVersion, setReloadVersion] = useState(0);
   const requestIdRef = useRef(0);
-  const page = Math.max(1, requestedPage);
-  const requestKey = `${view}\u0000${page}`;
+  const page = Math.max(1, typeof filters === 'number' ? filters : requestedPage);
+  const filterParams: MistakeReviewTaskFilters = typeof filters === 'number' ? {} : filters;
+  const normalizedConceptId = filterParams.conceptId?.trim() || undefined;
+  const normalizedErrorType = filterParams.errorType?.trim() || undefined;
+  const normalizedDueStatus = filterParams.dueStatus || (view === 'due' ? 'due' : 'all');
+  const normalizedStage = Number.isInteger(filterParams.stage) && (filterParams.stage ?? 0) >= 0
+    ? filterParams.stage
+    : undefined;
+  const normalizedErrorCountMin = Number.isInteger(filterParams.errorCountMin)
+    && (filterParams.errorCountMin ?? 0) > 0
+    ? filterParams.errorCountMin
+    : undefined;
+  const normalizedSortBy = filterParams.sortBy;
+  const normalizedSortOrder = filterParams.sortOrder;
+  const requestKey = buildReviewTaskRequestKey(view, {
+    conceptId: normalizedConceptId,
+    errorType: normalizedErrorType,
+    dueStatus: normalizedDueStatus,
+    stage: normalizedStage,
+    errorCountMin: normalizedErrorCountMin,
+    sortBy: normalizedSortBy,
+    sortOrder: normalizedSortOrder,
+  }, page);
 
   useEffect(() => {
     const requestId = requestIdRef.current + 1;
@@ -47,7 +95,18 @@ export function useMistakeReviewTasks(
       setTasksError(null);
       try {
         const response = await fetchReviewTasks(
-          { view, page, pageSize: 20 },
+          {
+            view,
+            page,
+            pageSize: 20,
+            conceptId: normalizedConceptId,
+            errorType: normalizedErrorType,
+            dueStatus: normalizedDueStatus,
+            stage: normalizedStage,
+            errorCountMin: normalizedErrorCountMin,
+            sortBy: normalizedSortBy,
+            sortOrder: normalizedSortOrder,
+          },
           controller.signal
         );
         if (controller.signal.aborted || requestIdRef.current !== requestId) return;
@@ -75,11 +134,23 @@ export function useMistakeReviewTasks(
     void loadTasks();
 
     return () => controller.abort();
-  }, [page, reloadVersion, requestKey, view]);
+  }, [
+    normalizedConceptId,
+    normalizedErrorType,
+    normalizedDueStatus,
+    normalizedStage,
+    normalizedErrorCountMin,
+    normalizedSortBy,
+    normalizedSortOrder,
+    page,
+    reloadVersion,
+    requestKey,
+    view,
+  ]);
 
   const reloadTasks = useCallback(() => {
     setReloadVersion((version) => version + 1);
-  }, []);
+  }, [setReloadVersion]);
 
   return {
     tasks,
