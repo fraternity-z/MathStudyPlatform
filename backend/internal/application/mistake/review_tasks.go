@@ -21,13 +21,19 @@ const (
 
 // ReviewTaskQuery selects one task view and page.
 type ReviewTaskQuery struct {
-	View      string
-	Page      int
-	PageSize  int
-	Now       time.Time
-	ConceptID string
-	ErrorType string
-	TaskID    string
+	View          string
+	Page          int
+	PageSize      int
+	Now           time.Time
+	ConceptID     string
+	ErrorType     string
+	TaskID        string
+	DueStatus     string
+	Stage         *int
+	ErrorCountMin int
+	Status        string
+	SortBy        string
+	SortOrder     string
 }
 
 // ReviewTaskAssociation links a historical attempt to its aggregated review task.
@@ -131,8 +137,57 @@ func normalizeReviewTaskQuery(query ReviewTaskQuery) ReviewTaskQuery {
 	query.ConceptID = strings.TrimSpace(query.ConceptID)
 	query.ErrorType = strings.TrimSpace(query.ErrorType)
 	query.TaskID = strings.TrimSpace(query.TaskID)
+	query.DueStatus = strings.ToLower(strings.TrimSpace(query.DueStatus))
+	query.Status = strings.ToLower(strings.TrimSpace(query.Status))
+	query.SortBy = strings.ToLower(strings.TrimSpace(query.SortBy))
+	query.SortOrder = strings.ToLower(strings.TrimSpace(query.SortOrder))
 	if query.View != ReviewTaskViewMastered {
 		query.View = ReviewTaskViewDue
+	}
+	if query.DueStatus == "" {
+		if query.View == ReviewTaskViewDue {
+			query.DueStatus = "due"
+		} else {
+			query.DueStatus = "all"
+		}
+	}
+	if query.DueStatus == "overdue" {
+		query.DueStatus = "due"
+	}
+	if query.DueStatus == "upcoming" {
+		query.DueStatus = "scheduled"
+	}
+	if query.DueStatus != "all" && query.DueStatus != "due" && query.DueStatus != "scheduled" {
+		query.DueStatus = "all"
+		if query.View == ReviewTaskViewDue {
+			query.DueStatus = "due"
+		}
+	}
+	if query.Stage != nil && (*query.Stage < 0 || *query.Stage > 3) {
+		query.Stage = nil
+	}
+	if query.ErrorCountMin < 0 {
+		query.ErrorCountMin = 0
+	}
+	switch query.Status {
+	case "", ReviewTaskPending, ReviewTaskVerification, ReviewTaskMastered, ReviewTaskArchived:
+	default:
+		query.Status = ""
+	}
+	if query.SortBy != "due_at" && query.SortBy != "mastered_at" && query.SortBy != "error_count" && query.SortBy != "mastery" && query.SortBy != "stage" {
+		if query.View == ReviewTaskViewMastered {
+			query.SortBy = "mastered_at"
+		} else {
+			query.SortBy = "due_at"
+		}
+	}
+	if query.SortOrder != "asc" && query.SortOrder != "desc" {
+		switch query.SortBy {
+		case "due_at", "mastery", "stage":
+			query.SortOrder = "asc"
+		default:
+			query.SortOrder = "desc"
+		}
 	}
 	if query.Page < 1 {
 		query.Page = 1

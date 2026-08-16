@@ -4,6 +4,7 @@ import { getApiErrorMessage } from '@/libs/http/apiClient';
 import {
   archiveMistake,
   fetchMistakes,
+  type MistakeQueryParams,
   type MistakeRecord,
   type PaginationInfo,
 } from '@/modules/mistake/services/mistakeService';
@@ -33,11 +34,59 @@ export function getErrorTypeLabel(errorType: string | null) {
   return errorType ? labels[errorType] || '未知错误' : '未分类';
 }
 
-export function useMistakeBook(conceptId?: string, requestedPage = 1) {
+export type MistakeBookFilters = Pick<
+  MistakeQueryParams,
+  'conceptId' | 'errorType' | 'dueStatus' | 'stage' | 'errorCountMin' | 'sortBy' | 'sortOrder'
+>;
+
+export function buildMistakeBookRequestKey(
+  filters: MistakeBookFilters = {},
+  page = 1,
+): string {
+  return [
+    filters.conceptId?.trim() || '',
+    filters.errorType?.trim() || '',
+    filters.dueStatus || 'all',
+    Number.isInteger(filters.stage) && (filters.stage ?? 0) >= 0 ? filters.stage : '',
+    Number.isInteger(filters.errorCountMin) && (filters.errorCountMin ?? 0) > 0
+      ? filters.errorCountMin
+      : '',
+    filters.sortBy || 'time',
+    filters.sortOrder || 'desc',
+    Math.max(1, page),
+  ].join('\u0000');
+}
+
+export function useMistakeBook(
+  filters: MistakeBookFilters | string = {},
+  requestedPage = 1,
+) {
   const { toast } = useToast();
-  const normalizedConceptId = conceptId?.trim() || undefined;
+  const filterParams: MistakeBookFilters = typeof filters === 'string'
+    ? { conceptId: filters }
+    : filters;
+  const normalizedConceptId = filterParams.conceptId?.trim() || undefined;
+  const normalizedErrorType = filterParams.errorType?.trim() || undefined;
+  const normalizedDueStatus = filterParams.dueStatus || 'all';
+  const normalizedStage = Number.isInteger(filterParams.stage) && (filterParams.stage ?? 0) >= 0
+    ? filterParams.stage
+    : undefined;
+  const normalizedErrorCountMin = Number.isInteger(filterParams.errorCountMin)
+    && (filterParams.errorCountMin ?? 0) > 0
+    ? filterParams.errorCountMin
+    : undefined;
+  const normalizedSortBy = filterParams.sortBy || 'time';
+  const normalizedSortOrder = filterParams.sortOrder || 'desc';
   const page = Math.max(1, requestedPage);
-  const requestKey = `${normalizedConceptId ?? ''}\u0000${page}`;
+  const requestKey = buildMistakeBookRequestKey({
+    conceptId: normalizedConceptId,
+    errorType: normalizedErrorType,
+    dueStatus: normalizedDueStatus,
+    stage: normalizedStage,
+    errorCountMin: normalizedErrorCountMin,
+    sortBy: normalizedSortBy,
+    sortOrder: normalizedSortOrder,
+  }, page);
   const [mistakes, setMistakes] = useState<MistakeRecord[]>([]);
   const [pagination, setPagination] = useState<PaginationInfo>(initialPagination);
   const [mistakesLoading, setMistakesLoading] = useState<LoadingState>('idle');
@@ -68,8 +117,12 @@ export function useMistakeBook(conceptId?: string, requestedPage = 1) {
         page,
         pageSize: 20,
         conceptId: normalizedConceptId,
-        sortBy: 'time',
-        sortOrder: 'desc',
+        errorType: normalizedErrorType,
+        dueStatus: normalizedDueStatus,
+        stage: normalizedStage,
+        errorCountMin: normalizedErrorCountMin,
+        sortBy: normalizedSortBy,
+        sortOrder: normalizedSortOrder,
       },
       controller.signal
     )
@@ -95,7 +148,18 @@ export function useMistakeBook(conceptId?: string, requestedPage = 1) {
       });
 
     return () => controller.abort();
-  }, [normalizedConceptId, page, reloadVersion, requestKey]);
+  }, [
+    normalizedConceptId,
+    normalizedDueStatus,
+    normalizedErrorCountMin,
+    normalizedErrorType,
+    normalizedSortBy,
+    normalizedSortOrder,
+    normalizedStage,
+    page,
+    reloadVersion,
+    requestKey,
+  ]);
 
   const reloadMistakes = useCallback(() => {
     setReloadVersion((version) => version + 1);

@@ -102,40 +102,65 @@ func (r MistakeRepository) ListMistakePage(ctx context.Context, userID string, q
 		query.DifficultyMax,
 		query.DateFrom,
 		query.DateTo,
+		query.ReviewStatus,
+		query.DueStatus,
+		query.Stage,
+		query.ErrorCountMin,
+		query.Now,
 	}
 	whereMastery := mistakeMasteryPredicate(query.MasteryStatus)
 	var total int
 	if err := r.DB().QueryRow(ctx, `
 		SELECT count(*)::int`+mistakeListFromWhere+`
-			AND `+whereMastery, args...).Scan(&total); err != nil {
+			AND `+whereMastery+`
+			AND `+mistakeReviewStatusPredicate()+`
+			AND `+mistakeDueStatusPredicate()+`
+			AND ($10::integer IS NULL OR review_task.stage = $10)
+			AND ($11 <= 0 OR coalesce(ec.error_count, 1) >= $11)`, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	if total == 0 {
 		return []mistakeapp.MistakeListRow{}, 0, nil
 	}
-	pageArgs := append(args, query.Now, query.PageSize, (query.Page-1)*query.PageSize)
+	pageArgs := append(args, query.PageSize, (query.Page-1)*query.PageSize)
 	rows, err := r.DB().Query(ctx, `
 		SELECT `+mistakeSelectColumns+`,
 		       coalesce(ec.error_count, 1)::int AS error_count,
 		       mastery.avg_mastery::double precision AS avg_mastery,
-		       (
-		           SELECT review_task.last_reviewed_at
-		           FROM public.mistake_review_tasks review_task
-		           WHERE review_task.student_id = ca.student_id
-		             AND review_task.content_id = ca.content_id
-		       ) AS last_reviewed_at,
+		       review_task.id,
+		       review_task.status,
+		       review_task.revision,
+		       review_task.due_at,
+		       review_task.mastered_at,
+		       review_task.stage,
+		       review_task.review_count,
+		       review_task.successful_review_count,
+		       review_task.last_outcome,
+		       review_task.last_reviewed_at,
+		       (review_task.due_at IS NOT NULL
+		           AND review_task.due_at <= $12
+		           AND review_task.status IN ('pending', 'verification_due')) AS review_is_due,
+		       coalesce(
+		           daily_assignment.reviewable
+		           AND review_task.daily_assignment_id = daily_assignment.id
+		           AND review_task.source_attempt_id = ca.id
+		           AND review_task.status IN ('pending', 'verification_due')
+		           AND review_task.due_at > $12,
+		           false
+		       ) AS daily_correction,
 		       EXISTS (
 		           SELECT 1
-		           FROM public.mistake_review_tasks review_task
-		           WHERE review_task.student_id = ca.student_id
-		             AND review_task.content_id = ca.content_id
-		             AND review_task.source_attempt_id = ca.id
+		           WHERE review_task.source_attempt_id = ca.id
 		             AND review_task.status IN ('pending', 'verification_due')
-		             AND review_task.due_at > $8
+		             AND review_task.due_at > $12
 		       ) AS is_early_practice`+mistakeListFromWhere+`
 			AND `+whereMastery+`
+			AND `+mistakeReviewStatusPredicate()+`
+			AND `+mistakeDueStatusPredicate()+`
+			AND ($10::integer IS NULL OR review_task.stage = $10)
+			AND ($11 <= 0 OR coalesce(ec.error_count, 1) >= $11)
 		ORDER BY `+mistakeListOrderBy(query.SortBy, query.SortOrder)+`
-		LIMIT $9 OFFSET $10`, pageArgs...)
+		LIMIT $13 OFFSET $14`, pageArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -470,6 +495,9 @@ const mistakeListFromWhere = `
 			JOIN public.content_attempts ca ON ca.id = latest_mistake.id
 			JOIN public.diagnosis_reports dr ON ca.id = dr.attempt_id
 			JOIN public.contents c ON ca.content_id = c.id` + mistakeDailyAssignmentJoin + `
+			LEFT JOIN public.mistake_review_tasks review_task
+			  ON review_task.student_id = ca.student_id
+			 AND review_task.content_id = ca.content_id
 			LEFT JOIN public.student_profiles sp ON sp.student_id = ca.student_id
 		LEFT JOIN (
 			SELECT content_id, count(id)::int AS error_count
@@ -536,20 +564,48 @@ func mistakeMasteryPredicate(status string) string {
 	}
 }
 
+// mistakeReviewStatusPredicate returns SQL assembled only from a fixed set of
+// predicates. User-provided values are passed as parameters; they never enter
+// this fragment, which keeps the dynamic list query injection-safe.
+func mistakeReviewStatusPredicate() string {
+	return `CASE lower($8::text)
+		WHEN '' THEN TRUE
+		WHEN 'all' THEN TRUE
+		WHEN 'pending' THEN review_task.status = 'pending'
+		WHEN 'verification_due' THEN review_task.status = 'verification_due'
+		WHEN 'mastered' THEN review_task.status = 'mastered'
+		WHEN 'archived' THEN review_task.status = 'archived'
+		WHEN 'none' THEN review_task.id IS NULL
+		ELSE TRUE
+	END`
+}
+
+func mistakeDueStatusPredicate() string {
+	return `CASE lower($9::text)
+		WHEN '' THEN TRUE
+		WHEN 'all' THEN TRUE
+		WHEN 'due' THEN review_task.status IN ('pending', 'verification_due') AND review_task.due_at <= $12
+		WHEN 'scheduled' THEN review_task.status IN ('pending', 'verification_due') AND review_task.due_at > $12
+		ELSE TRUE
+	END`
+}
+
 func mistakeListOrderBy(sortBy string, sortOrder string) string {
 	direction := "DESC"
-	nulls := "NULLS LAST"
 	if strings.EqualFold(strings.TrimSpace(sortOrder), "asc") {
 		direction = "ASC"
-		nulls = "NULLS FIRST"
 	}
 	switch strings.ToLower(strings.TrimSpace(sortBy)) {
 	case "error_count":
 		return "error_count " + direction + ", ca.id " + direction
 	case "mastery":
 		return "avg_mastery " + direction + ", ca.id " + direction
+	case "due_at", "review_due_at":
+		return "review_task.due_at " + direction + " NULLS LAST, ca.id " + direction
+	case "stage", "review_stage":
+		return "review_task.stage " + direction + " NULLS LAST, ca.id " + direction
 	default:
-		return "ca.submitted_at " + direction + " " + nulls + ", ca.id " + direction
+		return "ca.submitted_at " + direction + " NULLS LAST, ca.id " + direction
 	}
 }
 
@@ -587,7 +643,18 @@ func scanMistakeListRow(rows pgx.Rows) (mistakeapp.MistakeListRow, error) {
 	var errorStepIndex pgtype.Int4
 	var errorCount int
 	var avgMastery float64
-	var lastReviewedAt pgtype.Timestamp
+	var reviewTaskID pgtype.Text
+	var reviewStatus pgtype.Text
+	var reviewRevision pgtype.Int8
+	var reviewDueAt pgtype.Timestamp
+	var reviewMasteredAt pgtype.Timestamp
+	var reviewStage pgtype.Int4
+	var reviewCount pgtype.Int4
+	var successfulReviewCount pgtype.Int4
+	var reviewLastOutcome pgtype.Bool
+	var reviewLastReviewedAt pgtype.Timestamp
+	var reviewIsDue bool
+	var dailyCorrection bool
 	var isEarlyPractice bool
 
 	if err := rows.Scan(
@@ -618,7 +685,18 @@ func scanMistakeListRow(rows pgx.Rows) (mistakeapp.MistakeListRow, error) {
 		&errorStepIndex,
 		&errorCount,
 		&avgMastery,
-		&lastReviewedAt,
+		&reviewTaskID,
+		&reviewStatus,
+		&reviewRevision,
+		&reviewDueAt,
+		&reviewMasteredAt,
+		&reviewStage,
+		&reviewCount,
+		&successfulReviewCount,
+		&reviewLastOutcome,
+		&reviewLastReviewedAt,
+		&reviewIsDue,
+		&dailyCorrection,
 		&isEarlyPractice,
 	); err != nil {
 		return mistakeapp.MistakeListRow{}, err
@@ -652,12 +730,29 @@ func scanMistakeListRow(rows pgx.Rows) (mistakeapp.MistakeListRow, error) {
 	content.ConceptIDs = conceptIDs
 	content.Meta = meta
 	diagnosis.RelatedConceptIDs = relatedConceptIDs
+	var reviewStageValue *int
+	if reviewStage.Valid {
+		value := int(reviewStage.Int32)
+		reviewStageValue = &value
+	}
 	return mistakeapp.MistakeListRow{
-		Row:             mistakeapp.MistakeRow{Attempt: attempt, Content: content, Diagnosis: diagnosis},
-		AvgMastery:      avgMastery,
-		ErrorCount:      errorCount,
-		LastReviewedAt:  timestampPtr(lastReviewedAt),
-		IsEarlyPractice: isEarlyPractice,
+		Row:                   mistakeapp.MistakeRow{Attempt: attempt, Content: content, Diagnosis: diagnosis},
+		AvgMastery:            avgMastery,
+		ErrorCount:            errorCount,
+		LastReviewedAt:        timestampPtr(reviewLastReviewedAt),
+		IsEarlyPractice:       isEarlyPractice,
+		ReviewTaskID:          textValue(reviewTaskID),
+		ReviewStatus:          textValue(reviewStatus),
+		ReviewRevision:        int64Ptr(reviewRevision),
+		ReviewDueAt:           timestampPtr(reviewDueAt),
+		ReviewMasteredAt:      timestampPtr(reviewMasteredAt),
+		ReviewStage:           reviewStageValue,
+		ReviewCount:           intValue(reviewCount),
+		SuccessfulReviewCount: intValue(successfulReviewCount),
+		ReviewLastOutcome:     boolPtr(reviewLastOutcome),
+		ReviewLastReviewedAt:  timestampPtr(reviewLastReviewedAt),
+		ReviewIsDue:           reviewIsDue,
+		DailyCorrection:       dailyCorrection,
 	}, nil
 }
 

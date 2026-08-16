@@ -53,6 +53,19 @@ export interface MistakeRecord {
   errorCount: number;
   lastReviewedAt: string | null;
   isEarlyPractice: boolean;
+  /** Current review-plan projection; absent for legacy records without a task. */
+  reviewTaskId?: string | null;
+  reviewStatus?: 'pending' | 'verification_due' | 'mastered' | 'archived' | null;
+  reviewDueAt?: string | null;
+  reviewStage?: number | null;
+  reviewCount?: number;
+  successfulReviewCount?: number;
+  masteredAt?: string | null;
+  reviewRevision?: number | null;
+  reviewLastOutcome?: boolean | null;
+  reviewLastReviewedAt?: string | null;
+  reviewIsDue?: boolean;
+  dailyCorrection?: boolean;
   canReview: boolean;
   canDelete: boolean;
   canArchive: boolean;
@@ -227,6 +240,13 @@ export interface ReviewTaskQueryParams {
   view: ReviewTaskView;
   page?: number;
   pageSize?: number;
+  conceptId?: string;
+  errorType?: string;
+  dueStatus?: 'all' | 'due' | 'scheduled';
+  stage?: number;
+  errorCountMin?: number;
+  sortBy?: 'due_at' | 'mastered_at' | 'error_count' | 'mastery' | 'stage';
+  sortOrder?: 'asc' | 'desc';
 }
 
 export interface ArchiveMistakeResponse {
@@ -246,6 +266,9 @@ export interface MistakeQueryParams {
   masteryStatus?: 'all' | 'weak' | 'improving' | 'mastered';
   sortBy?: 'time' | 'error_count' | 'mastery';
   sortOrder?: 'asc' | 'desc';
+  dueStatus?: 'all' | 'due' | 'scheduled';
+  stage?: number;
+  errorCountMin?: number;
 }
 
 export interface ReviewParams {
@@ -290,6 +313,18 @@ interface MistakeListResponseRaw {
     error_count: number;
     last_reviewed_at: string | null;
     is_early_practice: boolean;
+    review_task_id?: string | null;
+    review_status?: MistakeRecord['reviewStatus'];
+    review_due_at?: string | null;
+    review_stage?: number | null;
+    review_count?: number;
+    successful_review_count?: number;
+    mastered_at?: string | null;
+    review_revision?: number | null;
+    review_last_outcome?: boolean | null;
+    review_last_reviewed_at?: string | null;
+    review_is_due?: boolean;
+    daily_correction?: boolean;
     can_review: boolean;
     can_delete: boolean;
     can_archive: boolean;
@@ -486,6 +521,18 @@ function mapMistakeRecord(raw: MistakeListResponseRaw['items'][number]): Mistake
     errorCount: raw.error_count,
     lastReviewedAt: raw.last_reviewed_at,
     isEarlyPractice: raw.is_early_practice ?? false,
+    reviewTaskId: raw.review_task_id ?? null,
+    reviewStatus: raw.review_status ?? null,
+    reviewDueAt: raw.review_due_at ?? null,
+    reviewStage: raw.review_stage ?? null,
+    reviewCount: raw.review_count ?? 0,
+    successfulReviewCount: raw.successful_review_count ?? 0,
+    masteredAt: raw.mastered_at ?? null,
+    reviewRevision: raw.review_revision ?? null,
+    reviewLastOutcome: raw.review_last_outcome ?? null,
+    reviewLastReviewedAt: raw.review_last_reviewed_at ?? null,
+    reviewIsDue: raw.review_is_due ?? false,
+    dailyCorrection: raw.daily_correction ?? false,
     canReview: raw.can_review,
     canDelete: raw.can_delete,
     canArchive: raw.can_archive,
@@ -677,6 +724,9 @@ export async function fetchMistakes(
         mastery_status: params.masteryStatus || 'all',
         sort_by: params.sortBy || 'time',
         sort_order: params.sortOrder || 'desc',
+        due_status: params.dueStatus || 'all',
+        stage: params.stage,
+        error_count_min: params.errorCountMin,
       },
       signal,
     });
@@ -821,6 +871,13 @@ export async function fetchReviewTasks(
           view: params.view,
           page: params.page || 1,
           page_size: params.pageSize || 20,
+          concept_id: params.conceptId,
+          error_type: params.errorType,
+          due_status: params.dueStatus,
+          stage: params.stage,
+          error_count_min: params.errorCountMin,
+          sort_by: params.sortBy,
+          sort_order: params.sortOrder,
         },
         signal,
       }
