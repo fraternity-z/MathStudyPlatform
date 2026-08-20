@@ -6,6 +6,8 @@ import {
   BarChart3,
   BookOpen,
   CheckCircle,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Eye,
   Info,
@@ -21,7 +23,6 @@ import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Card, CardContent } from '../../components/ui/Card';
 import { Modal } from '../../components/ui/Modal';
-import { Pagination } from '../../components/ui/Pagination';
 import { Progress } from '../../components/ui/Progress';
 import { Select, type SelectOption } from '../../components/ui/Select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/Tabs';
@@ -883,6 +884,103 @@ function TabCount({ count }: { count: number }) {
   );
 }
 
+type MistakePageItem = number | 'dots';
+
+function getMistakePageItems(currentPage: number, totalPages: number): MistakePageItem[] {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
+  if (currentPage <= 4) return [1, 2, 3, 4, 5, 'dots', totalPages];
+  if (currentPage >= totalPages - 3) {
+    return [1, 'dots', totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
+  }
+  return [1, 'dots', currentPage - 1, currentPage, currentPage + 1, 'dots', totalPages];
+}
+
+function MistakeBookPagination({
+  currentPage,
+  totalPages,
+  onPageChange,
+}: {
+  currentPage: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+}) {
+  const [pageInput, setPageInput] = useState(String(currentPage));
+
+  useEffect(() => {
+    setPageInput(String(currentPage));
+  }, [currentPage]);
+
+  const submitPage = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const parsed = Number.parseInt(pageInput, 10);
+    if (!Number.isInteger(parsed)) {
+      setPageInput(String(currentPage));
+      return;
+    }
+    onPageChange(Math.min(Math.max(parsed, 1), totalPages));
+  };
+
+  const pages = getMistakePageItems(currentPage, totalPages);
+
+  return (
+    <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
+      <span className="order-last whitespace-nowrap text-sm text-surface-500 dark:text-surface-400 sm:order-none">
+        第 {currentPage} / {totalPages} 页
+      </span>
+      <nav aria-label="错题本分页" className="flex flex-wrap items-center justify-center gap-1">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={currentPage <= 1}
+          onClick={() => onPageChange(currentPage - 1)}
+          aria-label="上一页"
+        >
+          <ChevronLeft className="mr-1 h-4 w-4" />上一页
+        </Button>
+        {pages.map((page, index) => page === 'dots' ? (
+          <span key={`dots-${index}`} className="px-2 text-surface-400" aria-hidden="true">...</span>
+        ) : (
+          <Button
+            key={page}
+            variant={page === currentPage ? 'primary' : 'outline'}
+            size="sm"
+            className="min-w-9 px-2"
+            onClick={() => onPageChange(page)}
+            aria-label={`第 ${page} 页`}
+            aria-current={page === currentPage ? 'page' : undefined}
+          >
+            {page}
+          </Button>
+        ))}
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={currentPage >= totalPages}
+          onClick={() => onPageChange(currentPage + 1)}
+          aria-label="下一页"
+        >
+          下一页<ChevronRight className="ml-1 h-4 w-4" />
+        </Button>
+      </nav>
+      <form className="flex items-center gap-1.5 text-sm text-surface-500 dark:text-surface-400" onSubmit={submitPage}>
+        <label htmlFor="mistake-book-page-input" className="whitespace-nowrap">跳转到</label>
+        <input
+          id="mistake-book-page-input"
+          type="number"
+          min={1}
+          max={totalPages}
+          value={pageInput}
+          onChange={(event) => setPageInput(event.target.value)}
+          className="h-8 w-12 rounded border border-surface-200 bg-transparent px-1 text-center text-sm text-surface-900 shadow-none outline-none transition-colors focus:border-primary-500 focus:ring-1 focus:ring-primary-500/20 dark:border-surface-700 dark:text-surface-100"
+          aria-label="页码"
+        />
+        <span>/ {totalPages}</span>
+        <Button type="submit" variant="ghost" size="sm" className="h-8 px-2 shadow-none">确定</Button>
+      </form>
+    </div>
+  );
+}
+
 export const MistakeBookPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -1364,9 +1462,9 @@ export const MistakeBookPage: React.FC = () => {
               ))
             : null}
 
-          {activeRequestReady && activePagination.totalPages > 1 ? (
+          {activeRequestReady && activePagination.total > 0 ? (
             <div className="pt-2">
-              <Pagination
+              <MistakeBookPagination
                 currentPage={activePagination.page}
                 totalPages={activePagination.totalPages}
                 onPageChange={handlePageChange}

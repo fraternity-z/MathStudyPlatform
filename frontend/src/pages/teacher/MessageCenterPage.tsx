@@ -66,6 +66,7 @@ import {
   matchesAllKeywords,
 } from '@/modules/message-center/pageUtils';
 import { MessageCenterSideTab } from '@/modules/message-center/MessageCenterSideTab';
+import { MessageCenterListPagination } from '@/modules/message-center/MessageCenterListPagination';
 import { MessageCenterFilterMenu } from '@/modules/message-center/MessageCenterFilterMenu';
 import { MessageAttachmentPicker } from '@/modules/message-center/MessageAttachmentPicker';
 import { MessageAttachments } from '@/modules/message-center/MessageAttachments';
@@ -1082,18 +1083,20 @@ export const MessageCenterPage: React.FC = () => {
     }
   }, [activeConv, conversationSearchOpen]);
 
-  const loadMoreConversations = useCallback(async () => {
-    if (loadingMoreListRef.current || convItems.length >= conversationTotal) return;
+  const changeConversationPage = useCallback(async (nextPage: number) => {
+    const totalPages = Math.max(1, Math.ceil(conversationTotal / listPageSize));
+    const page = Math.min(Math.max(nextPage, 1), totalPages);
+    if (loadingMoreListRef.current || page === conversationPage) return;
     loadingMoreListRef.current = true;
     setLoadingMoreList('conversations');
     try {
-      const error = await loadConversations(conversationPage + 1, true);
-      if (error) notifyRequestError(error, '加载更多私信失败，请稍后重试');
+      const error = await loadConversations(page);
+      if (error) notifyRequestError(error, '切换私信页失败，请稍后重试');
     } finally {
       loadingMoreListRef.current = false;
       setLoadingMoreList('');
     }
-  }, [convItems.length, conversationTotal, loadConversations, conversationPage, notifyRequestError]);
+  }, [conversationPage, conversationTotal, loadConversations, notifyRequestError]);
 
   const archiveSelectedConversations = useCallback(async () => {
     if (archivingConversations || selectedConversationIds.length === 0) return;
@@ -1265,31 +1268,35 @@ export const MessageCenterPage: React.FC = () => {
     }
   }, [activeThread, notifyRequestError]);
 
-  const loadMoreNotices = useCallback(async () => {
-    if (loadingMoreListRef.current || notices.length >= noticeTotal) return;
+  const changeNoticePage = useCallback(async (nextPage: number) => {
+    const totalPages = Math.max(1, Math.ceil(noticeTotal / listPageSize));
+    const page = Math.min(Math.max(nextPage, 1), totalPages);
+    if (loadingMoreListRef.current || page === noticePage) return;
     loadingMoreListRef.current = true;
     setLoadingMoreList('notices');
     try {
-      const error = await loadNotices(noticePage + 1, true);
-      if (error) notifyRequestError(error, '加载更多通知失败，请稍后重试');
+      const error = await loadNotices(page);
+      if (error) notifyRequestError(error, '切换通知页失败，请稍后重试');
     } finally {
       loadingMoreListRef.current = false;
       setLoadingMoreList('');
     }
-  }, [notices.length, noticeTotal, loadNotices, noticePage, notifyRequestError]);
+  }, [loadNotices, noticePage, noticeTotal, notifyRequestError]);
 
-  const loadMoreThreads = useCallback(async () => {
-    if (loadingMoreListRef.current || threads.length >= threadTotal) return;
+  const changeThreadPage = useCallback(async (nextPage: number) => {
+    const totalPages = Math.max(1, Math.ceil(threadTotal / listPageSize));
+    const page = Math.min(Math.max(nextPage, 1), totalPages);
+    if (loadingMoreListRef.current || page === threadPage) return;
     loadingMoreListRef.current = true;
     setLoadingMoreList('threads');
     try {
-      const error = await loadThreads(threadPage + 1, true);
-      if (error) notifyRequestError(error, '加载更多答疑失败，请稍后重试');
+      const error = await loadThreads(page);
+      if (error) notifyRequestError(error, '切换答疑页失败，请稍后重试');
     } finally {
       loadingMoreListRef.current = false;
       setLoadingMoreList('');
     }
-  }, [threads.length, threadTotal, loadThreads, notifyRequestError, threadPage]);
+  }, [loadThreads, notifyRequestError, threadPage, threadTotal]);
 
   const updateThreadStatus = useCallback(async (id: string, status: string) => {
     if (threadStatusUpdateRef.current) return;
@@ -1516,8 +1523,14 @@ export const MessageCenterPage: React.FC = () => {
                         <div className="flex items-center gap-3"><span className={cn('grid shrink-0 place-items-center border', conversationSelectionMode ? 'h-5 w-5 rounded' : 'h-10 w-10 rounded-full shadow-sm', conversationSelectionMode && selectedConversationIds.includes(c.id) ? 'border-primary-600 bg-primary-600 text-white' : 'border-surface-300 bg-white text-surface-800 dark:border-surface-600 dark:bg-surface-900 dark:text-surface-100')}>{conversationSelectionMode ? selectedConversationIds.includes(c.id) && <Check className="h-3.5 w-3.5" /> : <UserRound className="h-5 w-5" />}</span><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium text-surface-900 dark:text-surface-100">{c.studentName}</div><div className="mt-0.5 truncate text-xs text-surface-500 dark:text-surface-400">{c.lastMessage || c.className}</div></div><div className="flex shrink-0 flex-col items-end gap-1 text-xs"><span className="text-surface-400">{c.lastTime}</span><span className={c.unread ? 'text-red-500' : c.pendingReply ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}>{c.unread ? '未读' : c.pendingReply ? '未回复' : '已回复'}</span></div></div>
                       </button>
                     ))}
-                    {convItems.length < conversationTotal && <Button variant="outline" size="sm" className="m-3 w-[calc(100%-1.5rem)]" onClick={loadMoreConversations} disabled={loadingMoreList !== ''}>{loadingMoreList === 'conversations' ? '加载中…' : '加载更多对话'}</Button>}
                   </div>
+                  <MessageCenterListPagination
+                    currentPage={conversationPage}
+                    totalItems={conversationTotal}
+                    pageSize={listPageSize}
+                    disabled={loadingMoreList !== ''}
+                    onPageChange={(page) => void changeConversationPage(page)}
+                  />
                 </CardContent>
               </Card>
 
@@ -1656,8 +1669,14 @@ export const MessageCenterPage: React.FC = () => {
                         <div className="flex items-center gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-surface-300 bg-white text-surface-800 dark:border-surface-600 dark:bg-surface-900 dark:text-surface-100"><Bell className="h-5 w-5" /></span><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium text-surface-900 dark:text-surface-100">{n.title}</div><div className="mt-0.5 truncate text-xs text-surface-500 dark:text-surface-400">通知 · {n.class_name}</div></div><div className="flex shrink-0 flex-col items-end gap-1 text-xs"><span className="text-surface-400">{formatRelativeTime(n.published_at)}</span><span className={n.confirmed_count >= n.total_count ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>{n.confirmed_count}/{n.total_count} 已确认</span></div></div>
                       </button>
                     ))}
-                    {notices.length < noticeTotal && <Button variant="outline" size="sm" className="m-3 w-[calc(100%-1.5rem)]" onClick={loadMoreNotices} disabled={loadingMoreList !== ''}>{loadingMoreList === 'notices' ? '加载中…' : '加载更多通知'}</Button>}
                   </div>
+                  <MessageCenterListPagination
+                    currentPage={noticePage}
+                    totalItems={noticeTotal}
+                    pageSize={listPageSize}
+                    disabled={loadingMoreList !== ''}
+                    onPageChange={(page) => void changeNoticePage(page)}
+                  />
                 </CardContent>
               </Card>
 
@@ -1737,8 +1756,14 @@ export const MessageCenterPage: React.FC = () => {
                         <div className="flex items-center gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-surface-300 bg-white text-surface-800 dark:border-surface-600 dark:bg-surface-900 dark:text-surface-100"><HelpCircle className="h-5 w-5" /></span><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium text-surface-900 dark:text-surface-100">{t.title}</div><div className="mt-0.5 truncate text-xs text-surface-500 dark:text-surface-400">{t.student_name} · {t.source}</div></div><div className="flex shrink-0 flex-col items-end gap-1 text-xs"><span className="text-surface-400">{formatRelativeTime(t.last_update)}</span><span className={t.status === '待回复' ? 'text-red-500' : t.status === '已回复' || t.status === '已解决' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>{t.status}</span></div></div>
                       </button>
                     ))}
-                    {threads.length < threadTotal && <Button variant="outline" size="sm" className="m-3 w-[calc(100%-1.5rem)]" onClick={loadMoreThreads} disabled={loadingMoreList !== ''}>{loadingMoreList === 'threads' ? '加载中…' : '加载更多答疑'}</Button>}
                   </div>
+                  <MessageCenterListPagination
+                    currentPage={threadPage}
+                    totalItems={threadTotal}
+                    pageSize={listPageSize}
+                    disabled={loadingMoreList !== ''}
+                    onPageChange={(page) => void changeThreadPage(page)}
+                  />
                 </CardContent>
               </Card>
 

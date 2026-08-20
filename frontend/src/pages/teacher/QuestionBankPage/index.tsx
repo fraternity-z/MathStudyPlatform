@@ -13,6 +13,66 @@ import { QuestionTable } from './components/QuestionTable';
 import { QuestionImportModal } from './components/QuestionImportModal';
 import { QuestionExportModal } from './components/QuestionExportModal';
 
+interface QuestionBankPaginationProps {
+  currentPage: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+}
+
+const QuestionBankPagination: React.FC<QuestionBankPaginationProps> = ({
+  currentPage,
+  totalPages,
+  onPageChange,
+}) => {
+  const [pageInput, setPageInput] = React.useState(String(currentPage));
+
+  React.useEffect(() => {
+    setPageInput(String(currentPage));
+  }, [currentPage]);
+
+  const submitPage = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const page = Number(pageInput);
+    if (!Number.isInteger(page)) {
+      setPageInput(String(currentPage));
+      return;
+    }
+    onPageChange(Math.min(Math.max(page, 1), totalPages));
+  };
+
+  return (
+    <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
+      <span className="order-last whitespace-nowrap text-sm text-surface-500 dark:text-surface-400 sm:order-none">
+        第 {currentPage} / {totalPages} 页
+      </span>
+      <Pagination
+        currentPage={currentPage}
+        totalPages={totalPages}
+        onPageChange={onPageChange}
+        className="mx-0 w-auto"
+      />
+      <form
+        className="flex items-center gap-1.5 text-sm text-surface-500 dark:text-surface-400"
+        onSubmit={submitPage}
+      >
+        <label htmlFor="question-bank-page-input" className="whitespace-nowrap">跳转到</label>
+        <input
+          id="question-bank-page-input"
+          type="number"
+          min={1}
+          max={totalPages}
+          value={pageInput}
+          onChange={(event) => setPageInput(event.target.value)}
+          className="h-8 w-12 rounded border border-surface-200 bg-transparent px-1 text-center text-sm text-surface-900 shadow-none outline-none transition-colors focus:border-primary-500 focus:ring-1 focus:ring-primary-500/20 dark:border-surface-700 dark:text-surface-100"
+          aria-label="页码"
+        />
+        <span>/ {totalPages}</span>
+        <Button type="submit" variant="ghost" size="sm" className="h-8 px-2 shadow-none">确定</Button>
+      </form>
+    </div>
+  );
+};
+
 export const QuestionBankPage: React.FC = () => {
   const navigate = useNavigate();
   const qb = useQuestionBank();
@@ -103,9 +163,9 @@ export const QuestionBankPage: React.FC = () => {
           onDelete={qb.handleDeleteSingle}
         />
 
-        {qb.total > qb.pageSize && (
+        {qb.total > 0 && (
           <div className="mt-6 flex justify-center">
-            <Pagination
+            <QuestionBankPagination
               currentPage={qb.currentPage}
               totalPages={Math.ceil(qb.total / qb.pageSize)}
               onPageChange={qb.setCurrentPage}
