@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronLeft,
-  ChevronRight,
   Filter,
   Loader2,
   MessagesSquare,
@@ -21,6 +20,7 @@ import { IconTooltip } from '@/components/ui/IconTooltip';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { useToast } from '@/components/ui/Toast';
+import { MessageCenterListPagination } from '@/modules/message-center/MessageCenterListPagination';
 import { toAppError, toAppErrorFeedback, type AppError } from '@/libs/http/apiClient';
 import { cn } from '@/libs/utils/cn';
 import { formatRelativeTime } from '@/libs/utils/dateFormat';
@@ -281,7 +281,6 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
     return () => controller.abort();
   }, [activePostId, loadDetail]);
 
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const hasFilter = Boolean(search || status || scope !== 'all');
 
   const selectPost = useCallback((id: string) => {
@@ -544,23 +543,13 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
                   ))
                 )}
               </div>
-              {totalPages > 1 ? (
-                <div className="flex shrink-0 items-center justify-between border-t border-surface-100 px-3 py-2 dark:border-surface-800">
-                  <span className="text-xs text-surface-400">第 {page}/{totalPages} 页</span>
-                  <div className="flex items-center gap-1">
-                    <IconTooltip label="上一页">
-                      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="上一页" disabled={page <= 1 || listLoading} onClick={() => setPage((current) => Math.max(1, current - 1))}>
-                        <ChevronLeft className="h-4 w-4" />
-                      </Button>
-                    </IconTooltip>
-                    <IconTooltip label="下一页">
-                      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="下一页" disabled={page >= totalPages || listLoading} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>
-                        <ChevronRight className="h-4 w-4" />
-                      </Button>
-                    </IconTooltip>
-                  </div>
-                </div>
-              ) : null}
+              <MessageCenterListPagination
+                currentPage={page}
+                totalItems={total}
+                pageSize={pageSize}
+                disabled={listLoading}
+                onPageChange={setPage}
+              />
             </aside>
 
             <section className={cn('min-h-0', !activePostId && 'hidden lg:block')}>

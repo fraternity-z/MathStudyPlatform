@@ -72,6 +72,7 @@ import {
   matchesAllKeywords,
 } from '@/modules/message-center/pageUtils';
 import { MessageCenterSideTab } from '@/modules/message-center/MessageCenterSideTab';
+import { MessageCenterListPagination } from '@/modules/message-center/MessageCenterListPagination';
 import { MessageCenterFilterMenu } from '@/modules/message-center/MessageCenterFilterMenu';
 import { MessageAttachmentPicker } from '@/modules/message-center/MessageAttachmentPicker';
 import { MessageAttachments } from '@/modules/message-center/MessageAttachments';
@@ -1024,41 +1025,47 @@ export const MessageCenterPage: React.FC = () => {
     }
   }, [activeConv, conversationSearchOpen]);
 
-  const loadMoreConversations = useCallback(async () => {
-    if (loadingMoreListRef.current || convItems.length >= conversationTotal) return;
+  const changeConversationPage = useCallback(async (nextPage: number) => {
+    const totalPages = Math.max(1, Math.ceil(conversationTotal / listPageSize));
+    const page = Math.min(Math.max(nextPage, 1), totalPages);
+    if (loadingMoreListRef.current || page === conversationPage) return;
     loadingMoreListRef.current = true;
     setLoadingMoreList('conversations');
     try {
-      await loadConversations(conversationPage + 1, true);
+      await loadConversations(page);
     } finally {
       loadingMoreListRef.current = false;
       setLoadingMoreList('');
     }
-  }, [convItems.length, conversationTotal, loadConversations, conversationPage]);
+  }, [conversationPage, conversationTotal, loadConversations]);
 
-  const loadMoreNotices = useCallback(async () => {
-    if (loadingMoreListRef.current || notices.length >= noticeTotal) return;
+  const changeNoticePage = useCallback(async (nextPage: number) => {
+    const totalPages = Math.max(1, Math.ceil(noticeTotal / listPageSize));
+    const page = Math.min(Math.max(nextPage, 1), totalPages);
+    if (loadingMoreListRef.current || page === noticePage) return;
     loadingMoreListRef.current = true;
     setLoadingMoreList('notices');
     try {
-      await loadNotices(noticePage + 1, true);
+      await loadNotices(page);
     } finally {
       loadingMoreListRef.current = false;
       setLoadingMoreList('');
     }
-  }, [notices.length, noticeTotal, loadNotices, noticePage]);
+  }, [loadNotices, noticePage, noticeTotal]);
 
-  const loadMoreQuestions = useCallback(async () => {
-    if (loadingMoreListRef.current || questions.length >= questionTotal) return;
+  const changeQuestionPage = useCallback(async (nextPage: number) => {
+    const totalPages = Math.max(1, Math.ceil(questionTotal / listPageSize));
+    const page = Math.min(Math.max(nextPage, 1), totalPages);
+    if (loadingMoreListRef.current || page === questionPage) return;
     loadingMoreListRef.current = true;
     setLoadingMoreList('questions');
     try {
-      await loadQuestions(questionPage + 1, true);
+      await loadQuestions(page);
     } finally {
       loadingMoreListRef.current = false;
       setLoadingMoreList('');
     }
-  }, [questions.length, questionTotal, loadQuestions, questionPage]);
+  }, [loadQuestions, questionPage, questionTotal]);
 
   const createConversation = useCallback(async () => {
     if (!selectedTeacherId || creatingConv) return;
@@ -1501,8 +1508,14 @@ export const MessageCenterPage: React.FC = () => {
                         <div className="flex items-center gap-3"><span className={cn('grid shrink-0 place-items-center border', conversationSelectionMode ? 'h-5 w-5 rounded' : 'h-10 w-10 rounded-full shadow-sm', conversationSelectionMode && selectedConversationIds.includes(c.id) ? 'border-primary-600 bg-primary-600 text-white' : 'border-surface-300 bg-white text-surface-800 dark:border-surface-600 dark:bg-surface-900 dark:text-surface-100')}>{conversationSelectionMode ? selectedConversationIds.includes(c.id) && <Check className="h-3.5 w-3.5" /> : <UserRound className="h-5 w-5" />}</span><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium text-surface-900 dark:text-surface-100">{c.teacherName}</div><div className="mt-0.5 truncate text-xs text-surface-500 dark:text-surface-400">{c.lastMessage || c.scope}</div></div><div className="flex shrink-0 flex-col items-end gap-1 text-xs"><span className="text-surface-400">{c.lastTime}</span><span className={c.unread > 0 ? 'text-red-500' : 'text-emerald-600 dark:text-emerald-400'}>{c.unread > 0 ? '未读' : '已回复'}</span></div></div>
                       </button>
                     ))}
-                    {convItems.length < conversationTotal && <Button variant="outline" size="sm" className="m-3 w-[calc(100%-1.5rem)]" onClick={loadMoreConversations} disabled={loadingMoreList !== ''}>{loadingMoreList === 'conversations' ? '加载中…' : '加载更多对话'}</Button>}
                   </div>
+                  <MessageCenterListPagination
+                    currentPage={conversationPage}
+                    totalItems={conversationTotal}
+                    pageSize={listPageSize}
+                    disabled={loadingMoreList !== ''}
+                    onPageChange={(page) => void changeConversationPage(page)}
+                  />
                 </CardContent>
               </Card>
 
@@ -1651,8 +1664,14 @@ export const MessageCenterPage: React.FC = () => {
                         <div className="flex items-center gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-surface-300 bg-white text-surface-800 dark:border-surface-600 dark:bg-surface-900 dark:text-surface-100"><Bell className="h-5 w-5" /></span><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium text-surface-900 dark:text-surface-100">{n.title}</div><div className="mt-0.5 truncate text-xs text-surface-500 dark:text-surface-400">通知 · {n.className}</div></div><div className="flex shrink-0 flex-col items-end gap-1 text-xs"><span className="text-surface-400">{n.publishedAt}</span><span className={n.confirmed ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>{n.confirmed ? '已确认' : '待确认'}</span></div></div>
                       </button>
                     ))}
-                    {notices.length < noticeTotal && <Button variant="outline" size="sm" className="m-3 w-[calc(100%-1.5rem)]" onClick={loadMoreNotices} disabled={loadingMoreList !== ''}>{loadingMoreList === 'notices' ? '加载中…' : '加载更多通知'}</Button>}
                   </div>
+                  <MessageCenterListPagination
+                    currentPage={noticePage}
+                    totalItems={noticeTotal}
+                    pageSize={listPageSize}
+                    disabled={loadingMoreList !== ''}
+                    onPageChange={(page) => void changeNoticePage(page)}
+                  />
                 </CardContent>
               </Card>
 
@@ -1745,8 +1764,14 @@ export const MessageCenterPage: React.FC = () => {
                       <div className="flex items-center gap-3"><span className="relative grid h-10 w-10 shrink-0 place-items-center rounded-full border border-surface-300 bg-white text-surface-800 dark:border-surface-600 dark:bg-surface-900 dark:text-surface-100"><HelpCircle className="h-5 w-5" />{q.unread && <span className="absolute right-0 top-0 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-white dark:ring-surface-900" aria-label="有新回复" />}</span><div className="min-w-0 flex-1"><div className="truncate text-sm font-medium text-surface-900 dark:text-surface-100">{q.title}</div><div className="mt-0.5 truncate text-xs text-surface-500 dark:text-surface-400">{q.teacher_name} · {q.source}</div></div><div className="flex shrink-0 flex-col items-end gap-1 text-xs"><span className="text-surface-400">{formatRelativeTime(q.last_update)}</span><span className={q.status === '待回复' ? 'text-red-500' : q.status === '已回复' || q.status === '已解决' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>{q.status}</span></div></div>
                       </button>
                     ))}
-                    {questions.length < questionTotal && <Button variant="outline" size="sm" className="m-3 w-[calc(100%-1.5rem)]" onClick={loadMoreQuestions} disabled={loadingMoreList !== ''}>{loadingMoreList === 'questions' ? '加载中…' : '加载更多提问'}</Button>}
                   </div>
+                  <MessageCenterListPagination
+                    currentPage={questionPage}
+                    totalItems={questionTotal}
+                    pageSize={listPageSize}
+                    disabled={loadingMoreList !== ''}
+                    onPageChange={(page) => void changeQuestionPage(page)}
+                  />
                 </CardContent>
               </Card>
 
