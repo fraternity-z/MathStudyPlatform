@@ -40,7 +40,7 @@ export interface SessionState {
   draftFirstTurnCompleted: boolean;
   loadingState: LoadingState;
   sendingState: LoadingState;
-  error: string | null;
+  error: SessionRequestError | null;
   historyRequestId: string | null;
   historySessionId: string | null;
   historySessionStatus: LearningSession['status'] | null;
@@ -49,7 +49,7 @@ export interface SessionState {
   reconcileSessionId: string | null;
   sessions: ChatSessionListItem[];
   sessionsLoadingState: LoadingState;
-  sessionsError: string | null;
+  sessionsError: SessionRequestError | null;
   sessionsRequestId: string | null;
   modeUpdateState: LoadingState;
   modeUpdateRequestId: string | null;
@@ -131,7 +131,11 @@ type SessionHistoryThunkConfig = { rejectValue: SessionRequestError };
 /**
  * 创建会话
  */
-export const createSessionAsync = createAsyncThunk(
+export const createSessionAsync = createAsyncThunk<
+  { session: LearningSession; welcomeMessage: SessionMessage; mode: SessionMode },
+  { topic?: string; mode?: SessionMode },
+  SessionHistoryThunkConfig
+>(
   'session/createSession',
   async (
     { topic, mode }: { topic?: string; mode?: SessionMode },
@@ -164,9 +168,7 @@ export const createSessionAsync = createAsyncThunk(
       return { session, welcomeMessage, mode: response.mode };
     } catch (error) {
       if (signal.aborted) throw error;
-      return rejectWithValue(
-        error instanceof Error ? error.message : '创建会话失败'
-      );
+      return rejectWithValue(toSessionRequestError(error, '创建会话失败'));
     }
   }
 );
@@ -182,15 +184,16 @@ export const fetchHistoryAsync = createAsyncThunk<
   'session/fetchHistory',
   async (
     { sessionId, limit, offset },
-    { rejectWithValue }
+    { rejectWithValue, signal }
   ) => {
     try {
       const response = offset === undefined
-        ? await sessionService.getLatestHistory(sessionId, limit)
-        : await sessionService.getHistory(sessionId, limit, offset);
+        ? await sessionService.getLatestHistory(sessionId, limit, signal)
+        : await sessionService.getHistory(sessionId, limit, offset, signal);
 
       return mapHistoryResponse(sessionId, response);
     } catch (error) {
+      if (signal.aborted) throw error;
       return rejectWithValue(toSessionRequestError(error, '获取历史失败'));
     }
   }
@@ -206,11 +209,12 @@ export const reconcileHistoryAsync = createAsyncThunk<
   SessionHistoryThunkConfig
 >(
   'session/reconcileHistory',
-  async ({ sessionId }, { rejectWithValue }) => {
+  async ({ sessionId }, { rejectWithValue, signal }) => {
     try {
-      const response = await sessionService.getLatestHistory(sessionId);
+      const response = await sessionService.getLatestHistory(sessionId, undefined, signal);
       return mapHistoryResponse(sessionId, response);
     } catch (error) {
+      if (signal.aborted) throw error;
       return rejectWithValue(toSessionRequestError(error, '同步历史失败'));
     }
   },
@@ -225,16 +229,20 @@ export const reconcileHistoryAsync = createAsyncThunk<
 /**
  * 获取会话列表
  */
-export const fetchSessionsAsync = createAsyncThunk(
+export const fetchSessionsAsync = createAsyncThunk<
+  { sessions: ChatSessionListItem[]; total: number },
+  { limit?: number; offset?: number; force?: boolean } | undefined,
+  SessionHistoryThunkConfig
+>(
   'session/fetchSessions',
   async (
     { limit, offset }: { limit?: number; offset?: number; force?: boolean } = {},
-    { rejectWithValue }
+    { rejectWithValue, signal }
   ) => {
     try {
       const response = await sessionService.getSessions(limit, offset, {
         withUserMessages: true,
-      });
+      }, signal);
 
       // 转换为前端格式
       const sessions: ChatSessionListItem[] = response.sessions.map((s) => ({
@@ -250,9 +258,8 @@ export const fetchSessionsAsync = createAsyncThunk(
 
       return { sessions, total: response.total };
     } catch (error) {
-      return rejectWithValue(
-        error instanceof Error ? error.message : '获取会话列表失败'
-      );
+      if (signal.aborted) throw error;
+      return rejectWithValue(toSessionRequestError(error, '获取会话列表失败'));
     }
   },
   {
@@ -267,16 +274,19 @@ export const fetchSessionsAsync = createAsyncThunk(
 /**
  * 结束会话
  */
-export const endSessionAsync = createAsyncThunk(
+export const endSessionAsync = createAsyncThunk<
+  string,
+  string,
+  SessionHistoryThunkConfig
+>(
   'session/endSession',
-  async (sessionId: string, { rejectWithValue }) => {
+  async (sessionId: string, { rejectWithValue, signal }) => {
     try {
-      await sessionService.endSession(sessionId);
+      await sessionService.endSession(sessionId, signal);
       return sessionId;
     } catch (error) {
-      return rejectWithValue(
-        error instanceof Error ? error.message : '结束会话失败'
-      );
+      if (signal.aborted) throw error;
+      return rejectWithValue(toSessionRequestError(error, '结束会话失败'));
     }
   }
 );
@@ -284,19 +294,22 @@ export const endSessionAsync = createAsyncThunk(
 /**
  * 更新会话模式
  */
-export const updateSessionModeAsync = createAsyncThunk(
+export const updateSessionModeAsync = createAsyncThunk<
+  { sessionId: string; mode: SessionMode },
+  { sessionId: string; mode: ChatMode },
+  SessionHistoryThunkConfig
+>(
   'session/updateSessionMode',
   async (
     { sessionId, mode }: { sessionId: string; mode: ChatMode },
-    { rejectWithValue }
+    { rejectWithValue, signal }
   ) => {
     try {
-      const response = await sessionService.updateSessionMode(sessionId, mode);
+      const response = await sessionService.updateSessionMode(sessionId, mode, signal);
       return { sessionId: response.session_id, mode: response.mode };
     } catch (error) {
-      return rejectWithValue(
-        error instanceof Error ? error.message : '更新模式失败'
-      );
+      if (signal.aborted) throw error;
+      return rejectWithValue(toSessionRequestError(error, '更新模式失败'));
     }
   },
   {
@@ -317,19 +330,27 @@ export const updateSessionModeAsync = createAsyncThunk(
 /**
  * 删除会话
  */
-export const deleteSessionAsync = createAsyncThunk(
+export const deleteSessionAsync = createAsyncThunk<
+  string,
+  string,
+  SessionHistoryThunkConfig
+>(
   'session/deleteSession',
-  async (sessionId: string, { rejectWithValue }) => {
+  async (sessionId: string, { rejectWithValue, signal }) => {
     try {
-      const response = await sessionService.deleteSession(sessionId);
+      const response = await sessionService.deleteSession(sessionId, signal);
       if (!response.success) {
-        return rejectWithValue(response.message);
+        return rejectWithValue(toSessionRequestError({
+          status: 409,
+          code: 'CONFLICT',
+          message: response.message || '会话状态已发生变化',
+          source: 'http',
+        }, '删除会话失败'));
       }
       return sessionId;
     } catch (error) {
-      return rejectWithValue(
-        error instanceof Error ? error.message : '删除会话失败'
-      );
+      if (signal.aborted) throw error;
+      return rejectWithValue(toSessionRequestError(error, '删除会话失败'));
     }
   }
 );
@@ -337,19 +358,27 @@ export const deleteSessionAsync = createAsyncThunk(
 /**
  * 批量删除会话
  */
-export const batchDeleteSessionsAsync = createAsyncThunk(
+export const batchDeleteSessionsAsync = createAsyncThunk<
+  string[],
+  string[],
+  SessionHistoryThunkConfig
+>(
   'session/batchDeleteSessions',
-  async (sessionIds: string[], { rejectWithValue }) => {
+  async (sessionIds: string[], { rejectWithValue, signal }) => {
     try {
-      const response = await sessionService.batchDeleteSessions(sessionIds);
+      const response = await sessionService.batchDeleteSessions(sessionIds, signal);
       if (!response.success) {
-        return rejectWithValue(response.message);
+        return rejectWithValue(toSessionRequestError({
+          status: 409,
+          code: 'CONFLICT',
+          message: response.message || '会话状态已发生变化',
+          source: 'http',
+        }, '批量删除会话失败'));
       }
       return sessionIds;
     } catch (error) {
-      return rejectWithValue(
-        error instanceof Error ? error.message : '批量删除会话失败'
-      );
+      if (signal.aborted) throw error;
+      return rejectWithValue(toSessionRequestError(error, '批量删除会话失败'));
     }
   }
 );
@@ -357,26 +386,38 @@ export const batchDeleteSessionsAsync = createAsyncThunk(
 /**
  * 取消当前任务
  */
-export const cancelCurrentTaskAsync = createAsyncThunk(
+export const cancelCurrentTaskAsync = createAsyncThunk<
+  string,
+  void,
+  SessionHistoryThunkConfig
+>(
   'session/cancelCurrentTask',
-  async (_, { getState, rejectWithValue }) => {
+  async (_, { getState, rejectWithValue, signal }) => {
     const state = getState() as { session: SessionState };
     const taskId = state.session.currentTaskId;
 
     if (!taskId) {
-      return rejectWithValue('没有正在进行的任务');
+      return rejectWithValue(toSessionRequestError({
+        code: 'CANCELLED',
+        message: '没有正在进行的任务',
+        source: 'ui',
+      }, '没有正在进行的任务'));
     }
 
     try {
-      const success = await sessionService.cancelTask(taskId);
+      const success = await sessionService.cancelTask(taskId, signal);
       if (!success) {
-        return rejectWithValue('取消任务失败');
+        return rejectWithValue(toSessionRequestError({
+          status: 404,
+          code: 'NOT_FOUND',
+          message: '任务不存在或已完成',
+          source: 'http',
+        }, '取消任务失败'));
       }
       return taskId;
     } catch (error) {
-      return rejectWithValue(
-        error instanceof Error ? error.message : '取消任务失败'
-      );
+      if (signal.aborted) throw error;
+      return rejectWithValue(toSessionRequestError(error, '取消任务失败'));
     }
   }
 );
@@ -560,7 +601,7 @@ const sessionSlice = createSlice({
     },
 
     // 设置错误信息
-    setError(state, action: PayloadAction<string>) {
+    setError(state, action: PayloadAction<SessionRequestError>) {
       state.error = action.payload;
       state.loadingState = 'error';
     },
@@ -649,7 +690,7 @@ const sessionSlice = createSlice({
           return;
         }
         state.loadingState = 'error';
-        state.error = action.payload as string;
+        state.error = action.payload ?? toSessionRequestError(action.error, '创建会话失败');
       });
 
     // 获取历史
@@ -674,6 +715,7 @@ const sessionSlice = createSlice({
         if (state.historyRequestId !== action.meta.requestId) return;
 
         state.loadingState = 'success';
+        state.error = null;
         state.messages = action.payload.messages;
         state.historyRequestId = null;
         state.historySessionId = action.payload.sessionId;
@@ -683,8 +725,13 @@ const sessionSlice = createSlice({
       .addCase(fetchHistoryAsync.rejected, (state, action) => {
         if (state.historyRequestId !== action.meta.requestId) return;
 
-        state.loadingState = 'error';
-        state.error = action.payload?.message ?? action.error.message ?? '获取历史失败';
+        if (action.meta.aborted) {
+          state.loadingState = 'idle';
+          state.error = null;
+        } else {
+          state.loadingState = 'error';
+          state.error = action.payload ?? toSessionRequestError(action.error, '获取历史失败');
+        }
         state.historyRequestId = null;
         state.historySessionId = null;
         state.historySessionStatus = null;
@@ -783,14 +830,20 @@ const sessionSlice = createSlice({
       .addCase(fetchSessionsAsync.rejected, (state, action) => {
         if (state.sessionsRequestId !== action.meta.requestId) return;
 
-        state.sessionsLoadingState = 'error';
-        state.sessionsError = action.payload as string;
+        state.sessionsLoadingState = action.meta.aborted ? 'idle' : 'error';
+        state.sessionsError = action.meta.aborted
+          ? null
+          : action.payload ?? toSessionRequestError(action.error, '获取会话列表失败');
         state.sessionsRequestId = null;
       });
 
     // 结束会话
     builder
+      .addCase(endSessionAsync.pending, (state) => {
+        state.error = null;
+      })
       .addCase(endSessionAsync.fulfilled, (state, action) => {
+        state.error = null;
         const sessionId = action.payload;
         if (state.currentSession?.id === sessionId) {
           state.currentSession.status = 'completed';
@@ -804,23 +857,36 @@ const sessionSlice = createSlice({
           session.status = 'completed';
           session.endedAt = new Date().toISOString();
         }
+      })
+      .addCase(endSessionAsync.rejected, (state, action) => {
+        state.error = action.meta.aborted
+          ? null
+          : action.payload ?? toSessionRequestError(action.error, '结束会话失败');
       });
 
     // 取消任务
     builder
+      .addCase(cancelCurrentTaskAsync.pending, (state) => {
+        state.error = null;
+      })
       .addCase(cancelCurrentTaskAsync.fulfilled, (state) => {
+        state.error = null;
         state.streamStatus = 'cancelled';
         state.currentTaskId = null;
       })
-      .addCase(cancelCurrentTaskAsync.rejected, (state) => {
+      .addCase(cancelCurrentTaskAsync.rejected, (state, action) => {
         // 即使取消失败，也重置状态
         state.streamStatus = 'idle';
+        state.error = action.meta.aborted || action.payload?.kind === 'cancelled'
+          ? null
+          : action.payload ?? toSessionRequestError(action.error, '取消任务失败');
       });
 
     // 更新会话模式：同一时刻只允许一个请求，并忽略已失效的响应。
     builder
       .addCase(updateSessionModeAsync.pending, (state, action) => {
         state.modeUpdateState = 'loading';
+        state.error = null;
         state.modeUpdateRequestId = action.meta.requestId;
         state.modeUpdateSessionId = action.meta.arg.sessionId;
       })
@@ -833,6 +899,7 @@ const sessionSlice = createSlice({
         }
 
         state.modeUpdateState = 'success';
+        state.error = null;
         state.modeUpdateRequestId = null;
         state.modeUpdateSessionId = null;
 
@@ -854,58 +921,81 @@ const sessionSlice = createSlice({
           return;
         }
 
-        state.modeUpdateState = 'error';
+        state.modeUpdateState = action.meta.aborted ? 'idle' : 'error';
+        state.error = action.meta.aborted
+          ? null
+          : action.payload ?? toSessionRequestError(action.error, '更新模式失败');
         state.modeUpdateRequestId = null;
         state.modeUpdateSessionId = null;
       });
 
     // 删除会话
-    builder.addCase(deleteSessionAsync.fulfilled, (state, action) => {
-      const sessionId = action.payload;
-      // 从列表中移除
-      state.sessions = state.sessions.filter((s) => s.id !== sessionId);
-      // 如果删除的是当前会话，清空当前会话
-      if (state.currentSession?.id === sessionId) {
-        state.currentSession = null;
-        state.messages = [];
-      }
-      if (state.historySessionId === sessionId) {
-        state.historySessionId = null;
-        state.historySessionStatus = null;
-      }
-      if (state.draftSessionId === sessionId) {
-        state.draftSessionId = null;
-        state.draftSessionTopic = null;
-        state.draftSessionMode = null;
-        state.draftSessionMaterialized = false;
-        state.draftFirstTurnCompleted = false;
-        state.messages = [];
-      }
-    });
+    builder
+      .addCase(deleteSessionAsync.pending, (state) => {
+        state.error = null;
+      })
+      .addCase(deleteSessionAsync.fulfilled, (state, action) => {
+        state.error = null;
+        const sessionId = action.payload;
+        // 从列表中移除
+        state.sessions = state.sessions.filter((s) => s.id !== sessionId);
+        // 如果删除的是当前会话，清空当前会话
+        if (state.currentSession?.id === sessionId) {
+          state.currentSession = null;
+          state.messages = [];
+        }
+        if (state.historySessionId === sessionId) {
+          state.historySessionId = null;
+          state.historySessionStatus = null;
+        }
+        if (state.draftSessionId === sessionId) {
+          state.draftSessionId = null;
+          state.draftSessionTopic = null;
+          state.draftSessionMode = null;
+          state.draftSessionMaterialized = false;
+          state.draftFirstTurnCompleted = false;
+          state.messages = [];
+        }
+      })
+      .addCase(deleteSessionAsync.rejected, (state, action) => {
+        state.error = action.meta.aborted
+          ? null
+          : action.payload ?? toSessionRequestError(action.error, '删除会话失败');
+      });
 
     // 批量删除会话
-    builder.addCase(batchDeleteSessionsAsync.fulfilled, (state, action) => {
-      const sessionIds = new Set(action.payload);
-      // 从列表中移除
-      state.sessions = state.sessions.filter((s) => !sessionIds.has(s.id));
-      // 如果删除的包含当前会话，清空当前会话
-      if (state.currentSession && sessionIds.has(state.currentSession.id)) {
-        state.currentSession = null;
-        state.messages = [];
-      }
-      if (state.historySessionId && sessionIds.has(state.historySessionId)) {
-        state.historySessionId = null;
-        state.historySessionStatus = null;
-      }
-      if (state.draftSessionId && sessionIds.has(state.draftSessionId)) {
-        state.draftSessionId = null;
-        state.draftSessionTopic = null;
-        state.draftSessionMode = null;
-        state.draftSessionMaterialized = false;
-        state.draftFirstTurnCompleted = false;
-        state.messages = [];
-      }
-    });
+    builder
+      .addCase(batchDeleteSessionsAsync.pending, (state) => {
+        state.error = null;
+      })
+      .addCase(batchDeleteSessionsAsync.fulfilled, (state, action) => {
+        state.error = null;
+        const sessionIds = new Set(action.payload);
+        // 从列表中移除
+        state.sessions = state.sessions.filter((s) => !sessionIds.has(s.id));
+        // 如果删除的包含当前会话，清空当前会话
+        if (state.currentSession && sessionIds.has(state.currentSession.id)) {
+          state.currentSession = null;
+          state.messages = [];
+        }
+        if (state.historySessionId && sessionIds.has(state.historySessionId)) {
+          state.historySessionId = null;
+          state.historySessionStatus = null;
+        }
+        if (state.draftSessionId && sessionIds.has(state.draftSessionId)) {
+          state.draftSessionId = null;
+          state.draftSessionTopic = null;
+          state.draftSessionMode = null;
+          state.draftSessionMaterialized = false;
+          state.draftFirstTurnCompleted = false;
+          state.messages = [];
+        }
+      })
+      .addCase(batchDeleteSessionsAsync.rejected, (state, action) => {
+        state.error = action.meta.aborted
+          ? null
+          : action.payload ?? toSessionRequestError(action.error, '批量删除会话失败');
+      });
   },
 });
 

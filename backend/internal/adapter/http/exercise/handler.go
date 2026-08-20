@@ -208,6 +208,7 @@ func (h *Handler) generate(w http.ResponseWriter, r *http.Request) {
 	}
 	defer releaseAILease(lease)
 	if h.limiter != nil && !h.limiter.Allow(r.Context(), principal.UserID) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(generationRateLimitWindow/time.Second)))
 		writeExerciseError(w, http.StatusTooManyRequests, "RATE_LIMITED", "AI 出题过于频繁，请稍后重试")
 		return
 	}
@@ -273,6 +274,7 @@ func (h *Handler) submit(w http.ResponseWriter, r *http.Request) {
 	}
 	defer releaseAILease(lease)
 	if strings.TrimSpace(answerText) == "" && h.ocrLimiter != nil && !h.ocrLimiter.Allow(r.Context(), principal.UserID) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(ocrRateLimitWindow/time.Second)))
 		writeExerciseError(w, http.StatusTooManyRequests, "OCR_RATE_LIMITED", "图片答案识别请求过于频繁，请稍后重试")
 		return
 	}

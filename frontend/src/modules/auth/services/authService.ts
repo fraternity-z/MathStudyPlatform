@@ -142,8 +142,8 @@ export const authService = {
     authTokenStorage.clear();
   },
 
-  async getCurrentUser(): Promise<UserInfo> {
-    const response = await apiClient.get<UserInfo>('/auth/me');
+  async getCurrentUser(signal?: AbortSignal): Promise<UserInfo> {
+    const response = await apiClient.get<UserInfo>('/auth/me', { signal });
     return response.data;
   },
 };

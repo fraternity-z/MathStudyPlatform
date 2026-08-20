@@ -3,6 +3,7 @@ import type { LoadingState } from '@/types';
 import { createFieldSelector } from '@/store/utils/sliceFactory';
 import { authService } from '@/modules/auth/services/authService';
 import { authTokenStorage } from '@/libs/auth/tokenStorage';
+import { isRequestCancelled, toAppError, type AppError } from '@/libs/http/appError';
 
 /**
  * 认证状态
@@ -18,7 +19,7 @@ export interface AuthState {
   } | null;
   isAuthenticated: boolean;
   loadingState: LoadingState;
-  error: string | null;
+  error: AppError | null;
   currentUserRequestId: string | null;
 }
 
@@ -105,19 +106,19 @@ const initialState: AuthState = {
 };
 
 // 异步 thunk：获取当前用户信息
-export const fetchCurrentUser = createAsyncThunk(
+export const fetchCurrentUser = createAsyncThunk<AuthUser, void, { rejectValue: AppError }>(
   'auth/fetchCurrentUser',
-  async (_, { rejectWithValue }) => {
+  async (_, { rejectWithValue, signal }) => {
     try {
-      const userInfo = await authService.getCurrentUser();
+      const userInfo = await authService.getCurrentUser(signal);
       return {
         id: userInfo.id,
         name: userInfo.username,
         email: userInfo.email,
         role: userInfo.role,
       };
-    } catch {
-      return rejectWithValue('获取用户信息失败');
+    } catch (error) {
+      return rejectWithValue(toAppError(error, '获取用户信息失败'));
     }
   }
 );
@@ -176,7 +177,7 @@ const authSlice = createSlice({
     },
 
     // 设置错误信息
-    setError(state, action: PayloadAction<string>) {
+    setError(state, action: PayloadAction<AppError>) {
       state.error = action.payload;
       state.loadingState = 'error';
     },
@@ -212,14 +213,27 @@ const authSlice = createSlice({
       .addCase(fetchCurrentUser.rejected, (state, action) => {
         if (state.currentUserRequestId !== action.meta.requestId) return;
 
-        state.token = null;
-        state.user = null;
-        state.isAuthenticated = false;
-        state.loadingState = 'error';
-        state.error = null;
         state.currentUserRequestId = null;
-        authTokenStorage.clear();
-        saveUserToCache(null);
+        const requestError = action.payload ?? toAppError(action.error, '获取用户信息失败');
+        if (action.meta.aborted || isRequestCancelled(requestError)) {
+          state.loadingState = state.user ? 'success' : 'idle';
+          state.error = null;
+          return;
+        }
+
+        if (requestError.kind === 'unauthenticated') {
+          state.token = null;
+          state.user = null;
+          state.isAuthenticated = false;
+          state.loadingState = 'error';
+          state.error = null;
+          authTokenStorage.clear();
+          saveUserToCache(null);
+          return;
+        }
+
+        state.loadingState = 'error';
+        state.error = requestError;
       });
   },
 });

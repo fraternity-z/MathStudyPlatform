@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -9,7 +9,13 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { User, Mail, School, Lock, ArrowLeft, Loader2, CheckCircle, XCircle } from 'lucide-react';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { RequestErrorNotice } from '@/components/feedback';
+import {
+  formatAppErrorDescription,
+  isRequestCancelled,
+  toAppError,
+  type AppError,
+} from '@/libs/http/apiClient';
 import { passwordChangeSchema, type PasswordChangeFormData } from '@/libs/validation/schemas';
 import { authService } from '@/modules/auth/services/authService';
 import { useAuth } from '@/modules/auth/hooks/useAuth';
@@ -26,12 +32,13 @@ export const ProfilePage: React.FC = () => {
   const [submitStatus, setSubmitStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [xidianStatus, setXidianStatus] = useState<XidianBindingStatus | null>(null);
   const [xidianLoading, setXidianLoading] = useState(false);
+  const [xidianStatusError, setXidianStatusError] = useState<AppError | null>(null);
   const [bindingModalOpen, setBindingModalOpen] = useState(false);
   const [captchaChallenge, setCaptchaChallenge] = useState<XidianCaptchaChallenge | null>(null);
   const [captchaLoading, setCaptchaLoading] = useState(false);
   const [bindingForm, setBindingForm] = useState({ username: '', password: '' });
   const [sliderValue, setSliderValue] = useState(0);
-  const [bindingError, setBindingError] = useState<string | null>(null);
+  const [bindingError, setBindingError] = useState<string | AppError | null>(null);
   const [bindingSubmitting, setBindingSubmitting] = useState(false);
   const [xidianActionStatus, setXidianActionStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
@@ -57,40 +64,38 @@ export const ProfilePage: React.FC = () => {
       reset();
       await handleLogout();
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error
-        ? error.message
-        : (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || '密码修改失败，请重试';
-      setSubmitStatus({ type: 'error', message: errorMessage });
+      if (!isRequestCancelled(error)) {
+        setSubmitStatus({
+          type: 'error',
+          message: formatAppErrorDescription(toAppError(error, '密码修改失败，请重试')),
+        });
+      }
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const parseXidianError = (error: unknown) => {
-    const errorData = (error as { response?: { data?: { message?: string; code?: string } } })?.response?.data;
-    return {
-      message: errorData?.message || getApiErrorMessage(error, '操作失败，请稍后重试'),
-      code: errorData?.code,
-    };
-  };
-
-  const loadXidianStatus = async () => {
+  const loadXidianStatus = useCallback(async (signal?: AbortSignal) => {
     if (!user?.id) return;
     setXidianLoading(true);
+    setXidianStatusError(null);
     try {
-      const status = await xidianService.getBindingStatus();
-      setXidianStatus(status);
+      const status = await xidianService.getBindingStatus(signal);
+      if (!signal?.aborted) setXidianStatus(status);
     } catch (error) {
-      setXidianActionStatus({ type: 'error', message: parseXidianError(error).message });
+      if (!signal?.aborted && !isRequestCancelled(error)) {
+        setXidianStatusError(toAppError(error, '西电账号绑定状态加载失败'));
+      }
     } finally {
-      setXidianLoading(false);
+      if (!signal?.aborted) setXidianLoading(false);
     }
-  };
+  }, [user?.id]);
 
   useEffect(() => {
-    loadXidianStatus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
+    const controller = new AbortController();
+    void loadXidianStatus(controller.signal);
+    return () => controller.abort();
+  }, [loadXidianStatus]);
 
   const handleOpenBinding = async () => {
     setBindingModalOpen(true);
@@ -102,7 +107,9 @@ export const ProfilePage: React.FC = () => {
       const challenge = await xidianService.startBinding();
       setCaptchaChallenge(challenge);
     } catch (error) {
-      setBindingError(parseXidianError(error).message);
+      if (!isRequestCancelled(error)) {
+        setBindingError(toAppError(error, '验证码加载失败，请稍后重试'));
+      }
     } finally {
       setCaptchaLoading(false);
     }
@@ -116,7 +123,9 @@ export const ProfilePage: React.FC = () => {
       setCaptchaChallenge(challenge);
       setSliderValue(0);
     } catch (error) {
-      setBindingError(parseXidianError(error).message);
+      if (!isRequestCancelled(error)) {
+        setBindingError(toAppError(error, '验证码加载失败，请稍后重试'));
+      }
     } finally {
       setCaptchaLoading(false);
     }
@@ -145,8 +154,9 @@ export const ProfilePage: React.FC = () => {
       setBindingModalOpen(false);
       setBindingForm({ username: '', password: '' });
     } catch (error) {
-      const parsed = parseXidianError(error);
-      setBindingError(parsed.message);
+      if (!isRequestCancelled(error)) {
+        setBindingError(toAppError(error, '西电账号绑定失败，请稍后重试'));
+      }
     } finally {
       setBindingSubmitting(false);
     }
@@ -159,7 +169,10 @@ export const ProfilePage: React.FC = () => {
       setXidianStatus({ is_bound: false });
       setXidianActionStatus({ type: 'success', message: '已解绑' });
     } catch (error) {
-      setXidianActionStatus({ type: 'error', message: parseXidianError(error).message });
+      if (!isRequestCancelled(error)) {
+        const appError = toAppError(error, '西电账号解绑失败，请稍后重试');
+        setXidianActionStatus({ type: 'error', message: formatAppErrorDescription(appError) });
+      }
     }
   };
 
@@ -259,17 +272,24 @@ export const ProfilePage: React.FC = () => {
                     </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2 self-end sm:self-auto">
-                  {isXidianBound ? (
+                  {!xidianStatusError && isXidianBound ? (
                     <Button variant="outline" size="sm" onClick={handleUnbind} className="whitespace-nowrap">
                       解绑
                     </Button>
-                  ) : (
+                  ) : !xidianStatusError ? (
                     <Button variant="outline" size="sm" onClick={handleOpenBinding} className="whitespace-nowrap">
                       绑定
                     </Button>
-                  )}
+                  ) : null}
                 </div>
             </div>
+            {xidianStatusError ? (
+              <RequestErrorNotice
+                error={xidianStatusError}
+                onRetry={() => void loadXidianStatus()}
+                onRefresh={() => void loadXidianStatus()}
+              />
+            ) : null}
             <p className="text-xs text-surface-500 dark:text-surface-400">
               绑定仅用于验证西电账号归属；平台不会保存西电密码或教务会话。
             </p>
@@ -451,12 +471,20 @@ export const ProfilePage: React.FC = () => {
             </div>
           </div>
 
-          {bindingError && (
-            <div className="flex items-center gap-2 rounded-lg bg-red-50 p-3 text-red-700 dark:bg-red-900/20 dark:text-red-400">
-              <XCircle className="h-4 w-4" />
-              <span className="text-sm">{bindingError}</span>
-            </div>
-          )}
+          {typeof bindingError === 'string' ? (
+            bindingError ? (
+              <div className="flex items-center gap-2 rounded-lg bg-red-50 p-3 text-red-700 dark:bg-red-900/20 dark:text-red-400">
+                <XCircle className="h-4 w-4" />
+                <span className="text-sm">{bindingError}</span>
+              </div>
+            ) : null
+          ) : bindingError ? (
+            <RequestErrorNotice
+              error={bindingError}
+              onRetry={() => void handleRefreshCaptcha()}
+              onRefresh={() => void handleRefreshCaptcha()}
+            />
+          ) : null}
 
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={() => setBindingModalOpen(false)} disabled={bindingSubmitting}>

@@ -6,14 +6,16 @@
  */
 
 import type React from 'react';
+import type { PluggableList } from 'unified';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { normalizeSafeExternalUrl } from '@/libs/utils/safeUrl';
+import { katexStrict } from '@/libs/math/katexStrict';
 
 export const REMARK_PLUGINS = [remarkGfm, remarkMath];
-export const REHYPE_PLUGINS = [rehypeKatex];
+export const REHYPE_PLUGINS: PluggableList = [[rehypeKatex, { strict: katexStrict }]];
 
 /**
  * 归一化 AI 输出，让 markdown / KaTeX 可正常渲染。

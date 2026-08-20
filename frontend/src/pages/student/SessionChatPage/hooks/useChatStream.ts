@@ -19,6 +19,11 @@ import {
 } from '@/modules/session/documentMessage';
 import type { SSEController, SSEError, SSEHandlers } from '@/libs/http/sseClient';
 import {
+  isRequestCancelled,
+  toAppError,
+  type AppError,
+} from '@/libs/http/appError';
+import {
   MAX_CHAT_DOCUMENTS,
   MAX_CHAT_IMAGES,
   MAX_CHAT_MESSAGE_BYTES,
@@ -48,7 +53,6 @@ interface UseChatStreamProps {
   onSessionMaterialized?: (sessionId: string) => void;
   onFirstTurnCompleted?: (sessionId: string) => void;
   onChatSettled?: (settlement: ChatSettlement) => void;
-  onCancelFailed?: () => void;
   onClearImages: () => void;
   /** 获取已解析的文档列表 */
   getParsedDocuments: () => ParsedDocument[];
@@ -63,9 +67,7 @@ export interface ChatSettlement {
   outcome: ChatSendOutcome;
   requestStarted: boolean;
   requestAccepted: boolean;
-  errorMessage?: string;
-  errorCode?: string;
-  errorStatus?: number;
+  error?: AppError;
   isFirstTurn: boolean;
 }
 
@@ -73,9 +75,7 @@ type FinishSend = (
   outcome: ChatSendOutcome,
   nextStreamStatus: StreamStatus,
   appendedMessage?: string,
-  errorMessage?: string,
-  errorCode?: string,
-  errorStatus?: number
+  error?: AppError
 ) => void;
 
 export const useChatStream = ({
@@ -89,7 +89,6 @@ export const useChatStream = ({
   onSessionMaterialized,
   onFirstTurnCompleted,
   onChatSettled,
-  onCancelFailed,
   onClearImages,
   getParsedDocuments,
   onClearFiles,
@@ -229,9 +228,7 @@ export const useChatStream = ({
         outcome: ChatSendOutcome,
         nextStreamStatus: StreamStatus,
         appendedMessage?: string,
-        errorMessage?: string,
-        errorCode?: string,
-        errorStatus?: number
+        error?: AppError
       ) => {
         if (settled || activeFinishRef.current !== finishSend) return;
         settled = true;
@@ -269,9 +266,7 @@ export const useChatStream = ({
             outcome,
             requestStarted,
             requestAccepted,
-            errorMessage,
-            errorCode,
-            errorStatus,
+            error,
             isFirstTurn: target.kind === 'draft',
           });
         }
@@ -283,7 +278,7 @@ export const useChatStream = ({
           'cancelled',
           'cancelled',
           terminalNote('已停止生成'),
-          '已停止生成'
+          toAppError({ code: 'CANCELLED', message: '已停止生成', source: 'ui' })
         );
       };
 
@@ -292,12 +287,19 @@ export const useChatStream = ({
 
         const streamController = sseControllerRef.current;
         if (!streamController) {
-          finishSend('cancelled', 'cancelled', undefined, '已取消发送');
+          finishSend(
+            'cancelled',
+            'cancelled',
+            undefined,
+            toAppError({ code: 'CANCELLED', message: '已取消发送', source: 'ui' })
+          );
           return true;
         }
 
         const taskId = streamController.getTaskId();
         if (!taskId) {
+          // task_info arrives asynchronously; keep the SSE open so its task ID
+          // can be cancelled on the server instead of only stopping locally.
           stopRequestedRef.current = true;
           return true;
         }
@@ -307,15 +309,18 @@ export const useChatStream = ({
         try {
           const cancelled = await sessionService.cancelTask(taskId);
           if (!cancelled) {
-            stopRequestedRef.current = false;
-            const streamFailure = pendingStreamFailure;
-            pendingStreamFailure = null;
-            if (streamFailure) {
-              streamFailure();
-            } else if (!settled && activeFinishRef.current === finishSend && activeRef.current) {
-              onCancelFailed?.();
+            // The task may have completed between the SSE event and this request.
+            // Treat that response as a successful local stop; the stream is no
+            // longer useful to the user and should not produce a false error toast.
+            stopConfirmed = true;
+            if (pendingStreamFailure) {
+              pendingStreamFailure = null;
+              finishCancelled();
+            } else if (!settled && activeFinishRef.current === finishSend) {
+              clearCancelFallback();
+              finishCancelled();
             }
-            return false;
+            return true;
           }
           stopConfirmed = true;
           if (pendingStreamFailure) {
@@ -331,6 +336,26 @@ export const useChatStream = ({
             }, CANCEL_EVENT_FALLBACK_MS);
           }
           return true;
+        } catch (error) {
+          const appError = toAppError(error, '取消任务失败');
+          if (isRequestCancelled(appError)) {
+            stopRequestedRef.current = false;
+            return false;
+          }
+          stopRequestedRef.current = false;
+          pendingStreamFailure = null;
+          if (!settled && activeFinishRef.current === finishSend && activeRef.current) {
+            // A failed cancel request must not leave the local stream in a
+            // permanent "generating" state. Preserve the structured error in
+            // the settlement so the page can show one standardized notice.
+            finishSend(
+              'error',
+              'error',
+              terminalNote('生成已中断'),
+              appError
+            );
+          }
+          return false;
         } finally {
           cancelPendingRef.current = false;
         }
@@ -447,9 +472,7 @@ export const useChatStream = ({
                 'error',
                 'error',
                 terminalNote('生成已中断'),
-                error.message,
-                error.code,
-                error.status
+                error
               );
             if (cancelPendingRef.current && stopRequestedRef.current) {
               pendingStreamFailure = finishError;
@@ -470,7 +493,11 @@ export const useChatStream = ({
                 'closed',
                 'error',
                 terminalNote('生成已中断'),
-                '生成已中断'
+                toAppError({
+                  code: 'CONNECTION_ERROR',
+                  message: '连接中断，请检查网络后重试',
+                  source: 'sse',
+                })
               );
             if (cancelPendingRef.current && stopRequestedRef.current) {
               pendingStreamFailure ??= finishClosed;
@@ -518,7 +545,7 @@ export const useChatStream = ({
           'error',
           'error',
           undefined,
-          error instanceof Error ? error.message : '消息发送失败'
+          toAppError(error, '消息发送失败')
         );
         return false;
       }
@@ -534,7 +561,6 @@ export const useChatStream = ({
       onSessionMaterialized,
       onFirstTurnCompleted,
       onChatSettled,
-      onCancelFailed,
       onClearImages,
       onClearFiles,
       getParsedDocuments,

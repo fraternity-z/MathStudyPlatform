@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import { Check, GripVertical, RefreshCw, ShieldCheck } from 'lucide-react';
 import { authService, type LoginCaptchaChallenge } from '@/modules/auth/services/authService';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import {
+  formatAppErrorDescription,
+  isRequestCancelled,
+  toAppError,
+} from '@/libs/http/apiClient';
 import { cn } from '@/libs/utils/cn';
 
 type CaptchaStatus = 'loading' | 'ready' | 'verifying' | 'verified' | 'error';
@@ -57,9 +61,10 @@ export function SliderCaptcha({ onTokenChange, resetKey = 0, disabled = false, c
     setPosition(0);
     positionRef.current = 0;
     if (loadError || !nextChallenge) {
+      if (isRequestCancelled(loadError)) return;
       setChallenge(null);
       setStatus('error');
-      setMessage(getApiErrorMessage(loadError, '安全验证加载失败'));
+      setMessage(formatAppErrorDescription(toAppError(loadError, '安全验证加载失败')));
       return;
     }
     setChallenge(nextChallenge);
@@ -100,9 +105,10 @@ export function SliderCaptcha({ onTokenChange, resetKey = 0, disabled = false, c
       setMessage('验证通过');
     } catch (error) {
       if (requestSequence !== requestSequenceRef.current) return;
+      if (isRequestCancelled(error)) return;
       onTokenChange(null);
       setStatus('error');
-      setMessage(getApiErrorMessage(error, '验证未通过，正在刷新'));
+      setMessage(formatAppErrorDescription(toAppError(error, '验证未通过，正在刷新')));
       void loadChallenge(true);
     }
   }, [challenge, disabled, loadChallenge, onTokenChange, status]);

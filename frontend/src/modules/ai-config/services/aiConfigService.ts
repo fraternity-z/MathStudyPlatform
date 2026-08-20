@@ -41,16 +41,16 @@ export const aiConfigService = {
   /**
    * 获取提供商列表
    */
-  async listProviders(includeInactive = false): Promise<ListResponse<LLMProvider>> {
+  async listProviders(includeInactive = false, signal?: AbortSignal): Promise<ListResponse<LLMProvider>> {
     try {
       const response = await apiClient.get<ListResponse<LLMProvider>>(
         `${BASE_PATH}/providers`,
-        { params: { include_inactive: includeInactive } }
+        { params: { include_inactive: includeInactive }, signal }
       );
       aiConfigLogger.debug('获取提供商列表成功', { total: response.data.total });
       return response.data;
     } catch (error) {
-      aiConfigLogger.error('获取提供商列表失败', error);
+      if (!signal?.aborted) aiConfigLogger.error('获取提供商列表失败', error);
       throw error;
     }
   },
@@ -235,7 +235,7 @@ export const aiConfigService = {
   /**
    * 获取模型列表
    */
-  async listModels(providerId?: string, includeInactive = false): Promise<ListResponse<LLMModel>> {
+  async listModels(providerId?: string, includeInactive = false, signal?: AbortSignal): Promise<ListResponse<LLMModel>> {
     try {
       const params: Record<string, unknown> = { include_inactive: includeInactive };
       if (providerId) {
@@ -243,12 +243,12 @@ export const aiConfigService = {
       }
       const response = await apiClient.get<ListResponse<LLMModel>>(
         `${BASE_PATH}/models`,
-        { params }
+        { params, signal }
       );
       aiConfigLogger.debug('获取模型列表成功', { total: response.data.total });
       return response.data;
     } catch (error) {
-      aiConfigLogger.error('获取模型列表失败', error);
+      if (!signal?.aborted) aiConfigLogger.error('获取模型列表失败', error);
       throw error;
     }
   },
@@ -339,15 +339,16 @@ export const aiConfigService = {
   /**
    * 获取智能体配置列表
    */
-  async listAgentConfigs(): Promise<ListResponse<AgentModelConfig>> {
+  async listAgentConfigs(signal?: AbortSignal): Promise<ListResponse<AgentModelConfig>> {
     try {
       const response = await apiClient.get<ListResponse<AgentModelConfig>>(
-        `${BASE_PATH}/agents`
+        `${BASE_PATH}/agents`,
+        { signal }
       );
       aiConfigLogger.debug('获取智能体配置列表成功', { total: response.data.total });
       return response.data;
     } catch (error) {
-      aiConfigLogger.error('获取智能体配置列表失败', error);
+      if (!signal?.aborted) aiConfigLogger.error('获取智能体配置列表失败', error);
       throw error;
     }
   },
@@ -355,14 +356,15 @@ export const aiConfigService = {
   /**
    * 获取智能体类型列表
    */
-  async listAgentTypes(): Promise<{ items: AgentTypeInfo[] }> {
+  async listAgentTypes(signal?: AbortSignal): Promise<{ items: AgentTypeInfo[] }> {
     try {
       const response = await apiClient.get<{ items: AgentTypeInfo[] }>(
-        `${BASE_PATH}/agents/types`
+        `${BASE_PATH}/agents/types`,
+        { signal }
       );
       return response.data;
     } catch (error) {
-      aiConfigLogger.error('获取智能体类型列表失败', error);
+      if (!signal?.aborted) aiConfigLogger.error('获取智能体类型列表失败', error);
       throw error;
     }
   },

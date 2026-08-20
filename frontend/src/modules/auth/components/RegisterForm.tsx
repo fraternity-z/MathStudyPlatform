@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { useForm, useWatch } from 'react-hook-form';
@@ -15,6 +15,7 @@ import {
   UserPlus,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { RequestErrorNotice } from '@/components/feedback';
 import { registerSchema, type RegisterFormData } from '@/libs/validation';
 import {
   FormDivider,
@@ -27,7 +28,12 @@ import {
 } from '@/libs/form';
 import { systemSettingService, type RegistrationSettings } from '@/modules/admin/services/systemSettingService';
 import { authService } from '@/modules/auth/services/authService';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import {
+  formatAppErrorDescription,
+  isRequestCancelled,
+  toAppError,
+  type AppError,
+} from '@/libs/http/apiClient';
 import { AuthFormLayout } from './AuthFormLayout';
 
 type UserRole = 'student' | 'teacher';
@@ -101,25 +107,30 @@ export const RegisterForm: React.FC<RegisterFormProps> = ({ onSwitchToLogin }) =
   const shouldReduceMotion = useReducedMotion();
   const [registrationStatus, setRegistrationStatus] = useState<RegistrationSettings | null>(null);
   const [isLoadingStatus, setIsLoadingStatus] = useState(true);
+  const [registrationError, setRegistrationError] = useState<AppError | null>(null);
   const [registerSuccess, setRegisterSuccess] = useState(false);
   const [registeredEmail, setRegisteredEmail] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
-  useEffect(() => {
-    const loadStatus = async () => {
-      try {
-        const status = await systemSettingService.getRegistrationStatus();
-        setRegistrationStatus(status);
-      } catch {
-        setRegistrationStatus({ allow_student: true, allow_teacher: true });
-      } finally {
-        setIsLoadingStatus(false);
+  const loadRegistrationStatus = useCallback(async () => {
+    setIsLoadingStatus(true);
+    setRegistrationError(null);
+    try {
+      const status = await systemSettingService.getRegistrationStatus();
+      setRegistrationStatus(status);
+    } catch (error) {
+      if (!isRequestCancelled(error)) {
+        setRegistrationError(toAppError(error, '注册设置加载失败'));
       }
-    };
-
-    loadStatus();
+    } finally {
+      setIsLoadingStatus(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadRegistrationStatus();
+  }, [loadRegistrationStatus]);
 
   const {
     register,
@@ -188,10 +199,12 @@ export const RegisterForm: React.FC<RegisterFormProps> = ({ onSwitchToLogin }) =
       setShowConfirmPassword(false);
       setRegisterSuccess(true);
     } catch (err) {
-      setError('root', {
-        type: 'manual',
-        message: getApiErrorMessage(err, '注册失败，请稍后重试'),
-      });
+      if (!isRequestCancelled(err)) {
+        setError('root', {
+          type: 'manual',
+          message: formatAppErrorDescription(toAppError(err, '注册失败，请稍后重试')),
+        });
+      }
     }
   };
 
@@ -209,6 +222,14 @@ export const RegisterForm: React.FC<RegisterFormProps> = ({ onSwitchToLogin }) =
         <Loader2 className="h-8 w-8 animate-spin text-secondary-600 dark:text-secondary-400" aria-hidden="true" />
         <span className="sr-only">正在加载注册设置</span>
       </div>
+    );
+  } else if (registrationError) {
+    content = (
+      <RequestErrorNotice
+        error={registrationError}
+        onRetry={() => void loadRegistrationStatus()}
+        onRefresh={() => void loadRegistrationStatus()}
+      />
     );
   } else if (registerSuccess) {
     content = (

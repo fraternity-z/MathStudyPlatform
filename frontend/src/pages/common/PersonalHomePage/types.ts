@@ -1,3 +1,5 @@
+import type { AppError } from '@/libs/http/appError';
+
 export type HomeRole = 'student' | 'teacher';
 
 export type HomeStatTone = 'blue' | 'violet' | 'emerald' | 'coral';
@@ -49,4 +51,10 @@ export interface PersonalHomeData {
   recentItems: HomeRecentItem[];
   affiliation: HomeAffiliation;
   failedSections: string[];
+  sectionErrors: HomeSectionError[];
+}
+
+export interface HomeSectionError {
+  section: string;
+  error: AppError;
 }

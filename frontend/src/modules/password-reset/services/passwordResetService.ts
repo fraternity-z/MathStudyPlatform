@@ -27,8 +27,8 @@ export const passwordResetService = {
     status?: string;
     page?: number;
     page_size?: number;
-  }): Promise<PasswordResetListResponse> {
-    const res = await apiClient.get<PasswordResetListResponse>('/admin/inbox', { params });
+  }, signal?: AbortSignal): Promise<PasswordResetListResponse> {
+    const res = await apiClient.get<PasswordResetListResponse>('/admin/inbox', { params, signal });
     return res.data;
   },
 

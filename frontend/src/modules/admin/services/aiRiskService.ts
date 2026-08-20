@@ -20,13 +20,13 @@ function compactParams(query: Record<string, unknown>): Record<string, unknown> 
 }
 
 export const aiRiskService = {
-  async getOverview(): Promise<AIRiskOverview> {
-    const response = await apiClient.get<AIRiskOverview>(`${BASE_PATH}/overview`);
+  async getOverview(signal?: AbortSignal): Promise<AIRiskOverview> {
+    const response = await apiClient.get<AIRiskOverview>(`${BASE_PATH}/overview`, { signal });
     return response.data;
   },
 
-  async getSettings(): Promise<AIRiskSettings> {
-    const response = await apiClient.get<AIRiskSettings>(`${BASE_PATH}/settings`);
+  async getSettings(signal?: AbortSignal): Promise<AIRiskSettings> {
+    const response = await apiClient.get<AIRiskSettings>(`${BASE_PATH}/settings`, { signal });
     return response.data;
   },
 
@@ -35,9 +35,10 @@ export const aiRiskService = {
     return response.data;
   },
 
-  async listStudents(query: AIStudentListQuery = {}): Promise<AIStudentListResponse> {
+  async listStudents(query: AIStudentListQuery = {}, signal?: AbortSignal): Promise<AIStudentListResponse> {
     const response = await apiClient.get<AIStudentListResponse>(`${BASE_PATH}/students`, {
       params: compactParams(query as Record<string, unknown>),
+      signal,
     });
     return response.data;
   },
@@ -53,9 +54,10 @@ export const aiRiskService = {
     return response.data;
   },
 
-  async listEvents(query: AIRiskEventListQuery = {}): Promise<AIRiskEventListResponse> {
+  async listEvents(query: AIRiskEventListQuery = {}, signal?: AbortSignal): Promise<AIRiskEventListResponse> {
     const response = await apiClient.get<AIRiskEventListResponse>(`${BASE_PATH}/events`, {
       params: compactParams(query as Record<string, unknown>),
+      signal,
     });
     return response.data;
   },

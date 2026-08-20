@@ -16,6 +16,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { MainLayout } from '@/components/layout/MainLayout';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
@@ -28,7 +29,7 @@ import {
   type DailyQuestionHistory,
   type DailyQuestionHistoryItem,
 } from '@/modules/daily-question/types/dailyQuestion';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 import { useSerialPolling } from '@/hooks/useSerialPolling';
 import { useShanghaiDate } from '@/modules/daily-question/hooks/useShanghaiDate';
 import { buildExerciseTutorLaunch } from './exerciseTutorLaunch';
@@ -129,8 +130,8 @@ export function DailyQuestionPage() {
   const [isLoadingAssignment, setIsLoadingAssignment] = useState(true);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [isPreparing, setIsPreparing] = useState(false);
-  const [assignmentError, setAssignmentError] = useState<string | null>(null);
-  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [assignmentError, setAssignmentError] = useState<AppError | null>(null);
+  const [historyError, setHistoryError] = useState<AppError | null>(null);
   const [resetKey, setResetKey] = useState(0);
   const [panelDismissed, setPanelDismissed] = useState(false);
   const loadedAssignmentKeyRef = useRef<string | null>(null);
@@ -152,6 +153,7 @@ export function DailyQuestionPage() {
     solutionError,
     error: exerciseError,
     errorType,
+    errorSource,
     loadQuestion,
     clearQuestion,
     submitAnswer,
@@ -187,7 +189,7 @@ export function DailyQuestionPage() {
         || activeDateRef.current !== requestDate
       ) return;
       setAssignment(null);
-      setAssignmentError(getApiErrorMessage(loadError, '读取每日一题失败，请稍后重试'));
+      setAssignmentError(toAppError(loadError, '读取每日一题失败，请稍后重试'));
     } finally {
       if (
         !signal?.aborted
@@ -212,7 +214,7 @@ export function DailyQuestionPage() {
       setHistory(nextHistory);
     } catch (loadError) {
       if (signal?.aborted || historyRequestRef.current !== requestID) return;
-      setHistoryError(getApiErrorMessage(loadError, '读取近期完成记录失败，请稍后重试'));
+      setHistoryError(toAppError(loadError, '读取近期完成记录失败，请稍后重试'));
     } finally {
       if (!signal?.aborted && historyRequestRef.current === requestID) {
         setIsLoadingHistory(false);
@@ -327,7 +329,7 @@ export function DailyQuestionPage() {
         || prepareRequestRef.current !== prepareID
         || activeDateRef.current !== requestDate
       ) return;
-      setAssignmentError(getApiErrorMessage(
+      setAssignmentError(toAppError(
         prepareError,
         isHistorical ? '恢复历史题目失败，请稍后重试' : '准备今日题目失败，请稍后重试',
       ));
@@ -451,14 +453,14 @@ export function DailyQuestionPage() {
           </div>
         ) : assignmentError ? (
           <Card className="border-red-200 dark:border-red-900">
-            <CardContent className="flex flex-col items-center gap-4 p-8 text-center">
-              <AlertCircle className="h-10 w-10 text-red-500" aria-hidden="true" />
-              <p className="text-surface-600 dark:text-surface-300">{assignmentError}</p>
+            <CardContent className="flex flex-col items-center gap-4 p-8">
+              <RequestErrorNotice
+                error={assignmentError}
+                onRetry={retryLoad}
+                onRefresh={retryLoad}
+                className="w-full max-w-xl"
+              />
               <div className="flex flex-wrap justify-center gap-3">
-                <Button variant="outline" onClick={retryLoad}>
-                  <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
-                  重试
-                </Button>
                 <Button onClick={() => navigate('/exercise')}>
                   进入智能刷题
                   <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
@@ -637,6 +639,7 @@ export function DailyQuestionPage() {
                     solutionError={solutionError}
                     error={exerciseError}
                     errorType={errorType}
+                    errorSource={errorSource}
                     onNextQuestion={handlePanelNext}
                     submitAnswer={submitAnswer}
                     onLoadSolution={loadSolution}
@@ -705,12 +708,6 @@ export function DailyQuestionPage() {
               <h2 className="text-lg font-semibold text-surface-900 dark:text-surface-100">最近 7 天</h2>
               <p className="mt-1 text-sm text-surface-500 dark:text-surface-400">连续完成 {Math.max(history.streakDays, assignment?.streakDays ?? 0)} 天</p>
             </div>
-            {historyError ? (
-              <Button variant="outline" size="sm" onClick={() => void loadHistory()}>
-                <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
-                重试记录
-              </Button>
-            ) : null}
           </div>
           {isLoadingHistory ? (
             <div className="flex min-h-24 items-center justify-center text-sm text-surface-500 dark:text-surface-400">
@@ -718,7 +715,11 @@ export function DailyQuestionPage() {
               正在加载完成记录
             </div>
           ) : historyError ? (
-            <p className="text-sm text-red-600 dark:text-red-400">{historyError}</p>
+            <RequestErrorNotice
+              error={historyError}
+              onRetry={() => void loadHistory()}
+              onRefresh={() => void loadHistory()}
+            />
           ) : (
             <div className="grid grid-cols-7 gap-1.5 sm:gap-3">
               {recentDates.map((date) => {

@@ -4,8 +4,9 @@ import { Modal } from '../../../../components/ui/Modal';
 import { Button } from '../../../../components/ui/Button';
 import { Input } from '../../../../components/ui/Input';
 import { Loader2, Check } from 'lucide-react';
-import { useAppDispatch, useAppSelector } from '@/store';
-import { updateResource } from '@/modules/resource/store/resourceSlice';
+import { RequestErrorNotice } from '@/components/feedback';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
+import { resourceService } from '@/modules/resource/services/resourceService';
 
 interface ResourceEditModalProps {
   resource: Resource | null;
@@ -14,9 +15,6 @@ interface ResourceEditModalProps {
 }
 
 export const ResourceEditModal = React.memo<ResourceEditModalProps>(({ resource, onClose, onSuccess }) => {
-  const dispatch = useAppDispatch();
-  const { actionLoading } = useAppSelector((state) => state.resource);
-
   const [formData, setFormData] = useState<ResourceUpdateRequest>({
     title: resource?.title || '',
     type: resource?.type || 'video',
@@ -29,6 +27,8 @@ export const ResourceEditModal = React.memo<ResourceEditModalProps>(({ resource,
     pages: resource?.pages || undefined,
     storage_type: resource?.storage_type || undefined,
   });
+  const [submitError, setSubmitError] = useState<AppError | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
 
   // 当 resource 变化时更新表单数据
   React.useEffect(() => {
@@ -51,8 +51,16 @@ export const ResourceEditModal = React.memo<ResourceEditModalProps>(({ resource,
   const handleSubmit = async () => {
     if (!resource || !formData.title?.trim()) return;
 
-    await dispatch(updateResource({ id: resource.id, data: formData }));
-    onSuccess();
+    setSubmitError(null);
+    setIsSaving(true);
+    try {
+      await resourceService.updateResource(resource.id, formData);
+      onSuccess();
+    } catch (error) {
+      setSubmitError(toAppError(error, '更新资源失败'));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   if (!resource) return null;
@@ -60,6 +68,9 @@ export const ResourceEditModal = React.memo<ResourceEditModalProps>(({ resource,
   return (
     <Modal isOpen={!!resource} onClose={onClose} title="编辑资源">
       <div className="space-y-4">
+        {submitError ? (
+          <RequestErrorNotice error={submitError} onDismiss={() => setSubmitError(null)} />
+        ) : null}
         <div>
           <label className="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-1">
             资源标题 *
@@ -175,8 +186,8 @@ export const ResourceEditModal = React.memo<ResourceEditModalProps>(({ resource,
           <Button variant="outline" onClick={onClose}>
             取消
           </Button>
-          <Button onClick={handleSubmit} disabled={actionLoading || !formData.title?.trim()}>
-            {actionLoading ? (
+          <Button onClick={handleSubmit} disabled={isSaving || !formData.title?.trim()}>
+            {isSaving ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                 保存中...

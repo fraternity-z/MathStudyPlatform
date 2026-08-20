@@ -17,7 +17,9 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { MarkdownContent } from '@/components/chat/MarkdownContent';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { isRequestCancelled, toAppError } from '@/libs/http/apiClient';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/appError';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { clearPortrait, fetchPortrait, generatePortrait } from '@/modules/student/store/studentPortraitSlice';
 import { studentPortraitService } from '@/modules/student/services/studentPortraitService';
@@ -33,7 +35,7 @@ type Props = {
   range: PortraitRangeType;
   insights: PortraitInsights | null;
   loading: boolean;
-  error: string | null;
+  error: AppError | null;
   onRetry: () => void;
 };
 
@@ -108,7 +110,7 @@ export function StudentPortraitInsights({ range, insights, loading, error, onRet
   const [reportExpanded, setReportExpanded] = useState(false);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [startingConceptId, setStartingConceptId] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<AppError | null>(null);
   const { portrait, loadingState, generating, clearing, error: aiError } = useAppSelector((state) => state.studentPortrait);
 
   useEffect(() => {
@@ -135,7 +137,9 @@ export function StudentPortraitInsights({ range, insights, loading, error, onRet
         try {
           await studentPortraitService.startAction(action.concept_id);
         } catch (error) {
-          setActionError(getApiErrorMessage(error, action.status === 'completed' ? '重新开始行动失败，请稍后重试' : '开始行动失败，请稍后重试'));
+          if (!isRequestCancelled(error)) {
+            setActionError(toAppError(error, action.status === 'completed' ? '重新开始行动失败，请稍后重试' : '开始行动失败，请稍后重试'));
+          }
           setStartingConceptId(null);
           return;
         }
@@ -191,10 +195,9 @@ export function StudentPortraitInsights({ range, insights, loading, error, onRet
       {loading ? (
         <Card><CardContent className="p-10 text-center text-surface-500">正在分析学习画像…</CardContent></Card>
       ) : error ? (
-        <Card className="border-red-200 dark:border-red-800">
-          <CardContent className="p-8 text-center">
-            <p className="text-red-600 dark:text-red-400">{error}</p>
-            <Button variant="outline" size="sm" className="mt-4" onClick={onRetry}>重新加载</Button>
+        <Card>
+          <CardContent className="p-6">
+            <RequestErrorNotice error={error} onRetry={onRetry} onRefresh={onRetry} />
           </CardContent>
         </Card>
       ) : insights ? (
@@ -321,7 +324,15 @@ export function StudentPortraitInsights({ range, insights, loading, error, onRet
                 </button>
               ))}
             </CardContent>
-            {actionError && <CardContent className="pt-0"><p className="text-sm text-red-600 dark:text-red-400">{actionError}</p></CardContent>}
+            {actionError ? (
+              <CardContent className="pt-0">
+                <RequestErrorNotice
+                  error={actionError}
+                  onRetry={() => void onRetry()}
+                  onRefresh={() => void onRetry()}
+                />
+              </CardContent>
+            ) : null}
           </Card>
 
           <p className="text-center text-xs text-surface-400 dark:text-surface-500">
@@ -384,12 +395,11 @@ export function StudentPortraitInsights({ range, insights, loading, error, onRet
         )}
         {aiError && (
           <CardContent>
-            <div className="flex flex-col gap-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-950/30 dark:text-red-400 sm:flex-row sm:items-center sm:justify-between">
-              <p>{aiError}</p>
-              <Button size="sm" variant="outline" onClick={() => void dispatch(fetchPortrait())}>
-                {loadingState === 'error' ? '重新加载' : '刷新状态'}
-              </Button>
-            </div>
+            <RequestErrorNotice
+              error={aiError}
+              onRetry={() => void dispatch(fetchPortrait())}
+              onRefresh={() => void dispatch(fetchPortrait())}
+            />
           </CardContent>
         )}
       </Card>

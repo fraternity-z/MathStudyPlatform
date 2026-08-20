@@ -15,6 +15,8 @@ import {
   type DashboardExportSections,
 } from '../../libs/export/dashboardExporter';
 import { logger } from '../../libs/utils/logger';
+import { useToast } from '@/components/ui/Toast';
+import { toAppErrorFeedback } from '@/libs/http/apiClient';
 import type { DashboardStats, TeacherAnalyticsData } from '@/modules/teacher/types/teacher';
 
 const log = logger.createContextLogger('DashboardExportModal');
@@ -64,6 +66,7 @@ export const DashboardExportModal: React.FC<DashboardExportModalProps> = ({
   analytics,
   timeRangeLabel,
 }) => {
+  const { toast } = useToast();
   const [format, setFormat] = useState<DashboardExportFormat>('csv');
   const [sections, setSections] = useState<DashboardExportSections>({
     overview: true,
@@ -91,7 +94,8 @@ export const DashboardExportModal: React.FC<DashboardExportModalProps> = ({
       onClose();
     } catch (err) {
       log.error('教学报告导出失败', err);
-      alert('导出失败，请稍后重试');
+      const feedback = toAppErrorFeedback(err, '导出失败，请稍后重试');
+      if (feedback) toast(feedback);
     } finally {
       setExporting(false);
     }

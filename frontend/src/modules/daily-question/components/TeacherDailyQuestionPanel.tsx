@@ -7,11 +7,12 @@ import {
   Target,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { RequestErrorNotice } from '@/components/feedback';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Input } from '@/components/ui/Input';
 import { Progress } from '@/components/ui/Progress';
 import { useToast } from '@/components/ui/Toast';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 import { PersonalizedQuestionPool } from './PersonalizedQuestionPool';
 import { UniformQuestionSchedule } from './UniformQuestionSchedule';
 import { dailyQuestionService } from '../services/dailyQuestionService';
@@ -47,8 +48,8 @@ export function TeacherDailyQuestionPanel({ classId }: TeacherDailyQuestionPanel
   const [isSendingReminder, setIsSendingReminder] = useState(false);
   const [isSavingAutoReminder, setIsSavingAutoReminder] = useState(false);
   const [isAutoReminderConfirmOpen, setIsAutoReminderConfirmOpen] = useState(false);
-  const [settingsError, setSettingsError] = useState<string | null>(null);
-  const [statisticsError, setStatisticsError] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState<AppError | null>(null);
+  const [statisticsError, setStatisticsError] = useState<AppError | null>(null);
   const settingsRequestRef = useRef(0);
   const statisticsRequestRef = useRef(0);
   const settingsMutationRef = useRef(false);
@@ -64,7 +65,7 @@ export function TeacherDailyQuestionPanel({ classId }: TeacherDailyQuestionPanel
       setSettings(nextSettings);
     } catch (loadError) {
       if (signal?.aborted || settingsRequestRef.current !== requestID) return;
-      setSettingsError(getApiErrorMessage(loadError, '每日一题设置加载失败'));
+      setSettingsError(toAppError(loadError, '每日一题设置加载失败'));
     } finally {
       if (!signal?.aborted && settingsRequestRef.current === requestID) {
         setIsLoadingSettings(false);
@@ -94,7 +95,7 @@ export function TeacherDailyQuestionPanel({ classId }: TeacherDailyQuestionPanel
       setStatistics(nextStatistics);
     } catch (loadError) {
       if (signal?.aborted || statisticsRequestRef.current !== requestID) return;
-      setStatisticsError(getApiErrorMessage(loadError, '每日一题统计加载失败'));
+      setStatisticsError(toAppError(loadError, '每日一题统计加载失败'));
     } finally {
       if (!signal?.aborted && statisticsRequestRef.current === requestID) {
         setIsLoadingStatistics(false);
@@ -117,6 +118,22 @@ export function TeacherDailyQuestionPanel({ classId }: TeacherDailyQuestionPanel
     await Promise.all([loadSettings(), loadStatistics()]);
   }, [loadSettings, loadStatistics]);
 
+  const notifyRequestError = useCallback((error: unknown, fallback: string) => {
+    const appError = toAppError(error, fallback);
+    if (appError.kind === 'cancelled' || appError.kind === 'rate_limited') return;
+    const details = [
+      appError.retryAfter !== undefined && appError.retryAfter > 0
+        ? `可在 ${appError.retryAfter} 秒后重试`
+        : '',
+      appError.requestId ? `请求编号：${appError.requestId}` : '',
+    ].filter(Boolean);
+    toast({
+      type: 'error',
+      title: appError.message,
+      description: details.length > 0 ? details.join('；') : undefined,
+    });
+  }, [toast]);
+
   const updateStrategy = async (strategy: DailyQuestionClassStrategy) => {
     if (settingsMutationRef.current || !settings) return;
     if (settings.strategy === strategy) return;
@@ -136,7 +153,7 @@ export function TeacherDailyQuestionPanel({ classId }: TeacherDailyQuestionPanel
           : `${nextSettings.effectiveDate} 起切换为${strategyLabel(nextSettings.strategy)}`,
       });
     } catch (saveError) {
-      toast({ type: 'error', title: getApiErrorMessage(saveError, '分配策略保存失败') });
+      notifyRequestError(saveError, '分配策略保存失败');
     } finally {
       settingsMutationRef.current = false;
       setIsSavingStrategy(false);
@@ -180,7 +197,7 @@ export function TeacherDailyQuestionPanel({ classId }: TeacherDailyQuestionPanel
         description: `今日累计提醒 ${nextReminderTotal} 人次。`,
       });
     } catch (reminderError) {
-      toast({ type: 'error', title: getApiErrorMessage(reminderError, '提醒发送失败') });
+      notifyRequestError(reminderError, '提醒发送失败');
     } finally {
       settingsMutationRef.current = false;
       setIsSendingReminder(false);
@@ -212,7 +229,7 @@ export function TeacherDailyQuestionPanel({ classId }: TeacherDailyQuestionPanel
           : '关闭后不再发送每日一题自动提醒。',
       });
     } catch (saveError) {
-      toast({ type: 'error', title: getApiErrorMessage(saveError, '自动提醒设置保存失败') });
+      notifyRequestError(saveError, '自动提醒设置保存失败');
     } finally {
       settingsMutationRef.current = false;
       setIsSavingAutoReminder(false);
@@ -233,12 +250,12 @@ export function TeacherDailyQuestionPanel({ classId }: TeacherDailyQuestionPanel
 
   if (settingsError && !settings) {
     return (
-      <div className="flex min-h-56 flex-col items-center justify-center gap-4 text-center">
-        <p className="text-sm text-red-600 dark:text-red-400">{settingsError}</p>
-        <Button variant="outline" onClick={() => void loadSettings()}>
-          <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
-          重新加载
-        </Button>
+      <div className="min-h-56 py-6">
+        <RequestErrorNotice
+          error={settingsError}
+          onRetry={() => void loadSettings()}
+          onRefresh={() => void loadSettings()}
+        />
       </div>
     );
   }
@@ -283,13 +300,11 @@ export function TeacherDailyQuestionPanel({ classId }: TeacherDailyQuestionPanel
       </div>
 
       {settingsError ? (
-        <div className="flex items-center justify-between gap-3 text-sm text-red-600 dark:text-red-400">
-          <span>{settingsError}</span>
-          <Button variant="ghost" size="sm" onClick={() => void loadSettings()}>
-            <RefreshCw className="mr-1.5 h-4 w-4" aria-hidden="true" />
-            重试设置
-          </Button>
-        </div>
+        <RequestErrorNotice
+          error={settingsError}
+          onRetry={() => void loadSettings()}
+          onRefresh={() => void loadSettings()}
+        />
       ) : null}
 
       <div>
@@ -388,13 +403,11 @@ export function TeacherDailyQuestionPanel({ classId }: TeacherDailyQuestionPanel
       ) : null}
 
       {statisticsError ? (
-        <div className="flex items-center justify-between gap-3 text-sm text-red-600 dark:text-red-400">
-          <span>{statisticsError}</span>
-          <Button variant="ghost" size="sm" onClick={() => void loadStatistics()}>
-            <RefreshCw className="mr-1.5 h-4 w-4" aria-hidden="true" />
-            重试统计
-          </Button>
-        </div>
+        <RequestErrorNotice
+          error={statisticsError}
+          onRetry={() => void loadStatistics()}
+          onRefresh={() => void loadStatistics()}
+        />
       ) : null}
 
       {isLoadingStatistics && !statistics ? (

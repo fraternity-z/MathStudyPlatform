@@ -1,5 +1,4 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import axios from 'axios';
 import {
   exerciseService,
   type ExerciseSolution,
@@ -8,7 +7,7 @@ import {
   type SubmitResult,
 } from '@/modules/exercise/services/exerciseService';
 import { logger } from '@/libs/utils/logger';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 import { uploadService } from '@/modules/upload/services/uploadService';
 import { validateAnswerImageFile } from '../utils/answerImageValidation';
 
@@ -64,89 +63,89 @@ interface PendingBoundSubmission {
   answerImageUrl?: string;
 }
 
-const getErrorCode = (err: unknown): string => {
-  if (!axios.isAxiosError(err)) return '';
-  const data = err.response?.data as { code?: unknown } | undefined;
-  return typeof data?.code === 'string' ? data.code.trim().toUpperCase() : '';
-};
+const withMessage = (error: AppError, message: string): AppError => ({
+  ...error,
+  message,
+});
 
-const getGenerationError = (err: unknown): { message: string; type: ExerciseErrorType } => {
-  if (!axios.isAxiosError(err)) {
-    return {
-      message: getApiErrorMessage(err, '生成题目失败，请稍后重试'),
-      type: 'unknown',
-    };
-  }
+const makeUiError = (message: string): AppError => ({
+  kind: 'validation',
+  message,
+  retryable: false,
+  source: 'ui',
+});
 
-  const code = getErrorCode(err);
+const getGenerationError = (err: unknown): { error: AppError; type: ExerciseErrorType } => {
+  const appError = toAppError(err, '生成题目失败，请稍后重试');
+  const code = appError.code?.trim().toUpperCase() ?? '';
   switch (code) {
     case 'AI_GENERATION_TIMEOUT':
       return {
-        message: 'AI 出题处理超时，请稍后重试',
+        error: withMessage(appError, 'AI 出题处理超时，请稍后重试'),
         type: 'generation_unavailable',
       };
     case 'MATH_SOLVER_TIMEOUT':
       return {
-        message: 'AI 题目验证超时，请稍后重试',
+        error: withMessage(appError, 'AI 题目验证超时，请稍后重试'),
         type: 'generation_unavailable',
       };
     case 'MATH_SOLVER_INVALID_RESPONSE':
       return {
-        message: 'AI 题目验证服务返回异常，请稍后重试',
+        error: withMessage(appError, 'AI 题目验证服务返回异常，请稍后重试'),
         type: 'generation_unavailable',
       };
     case 'MATH_SOLVER_UNAVAILABLE':
       return {
-        message: 'AI 题目验证服务暂不可用，请稍后重试',
+        error: withMessage(appError, 'AI 题目验证服务暂不可用，请稍后重试'),
         type: 'generation_unavailable',
       };
     case 'AI_GENERATION_UNAVAILABLE':
       return {
-        message: 'AI 出题服务暂不可用，请稍后重试',
+        error: withMessage(appError, 'AI 出题服务暂不可用，请稍后重试'),
         type: 'generation_unavailable',
       };
   }
 
-  const status = err.response?.status;
+  const status = appError.status;
   if (status === 404) {
     return {
-      message: '所选知识点不存在，请重新选择',
+      error: withMessage(appError, '所选知识点不存在，请重新选择'),
       type: 'knowledge_point_not_found',
     };
   }
   if (status === 429) {
     return {
-      message: 'AI 出题请求过于频繁，请稍后再试',
+      error: withMessage(appError, 'AI 出题请求过于频繁，请稍后再试'),
       type: 'generation_rate_limited',
     };
   }
   if (status === 503) {
     return {
-      message: 'AI 出题服务暂不可用，请稍后重试',
+      error: withMessage(appError, 'AI 出题服务暂不可用，请稍后重试'),
       type: 'generation_unavailable',
     };
   }
   if (status === 504) {
     return {
-      message: 'AI 出题处理超时，请稍后重试',
+      error: withMessage(appError, 'AI 出题处理超时，请稍后重试'),
       type: 'generation_unavailable',
     };
   }
   if (status === 502) {
     return {
-      message: 'AI 出题服务连接异常，请稍后重试',
+      error: withMessage(appError, 'AI 出题服务连接异常，请稍后重试'),
       type: 'generation_unavailable',
     };
   }
-  if (!err.response) {
+  if (appError.kind === 'network') {
     return {
-      message: '无法连接到服务器，请检查网络后重试',
+      error: withMessage(appError, '无法连接到服务器，请检查网络后重试'),
       type: 'network_error',
     };
   }
 
   return {
-    message: getApiErrorMessage(err, '生成题目失败，请稍后重试'),
+    error: appError,
     type: 'unknown',
   };
 };
@@ -154,110 +153,111 @@ const getGenerationError = (err: unknown): { message: string; type: ExerciseErro
 const getSubmissionError = (
   err: unknown,
   stage: SubmissionStage
-): { message: string; type: ExerciseErrorType } => {
-  const code = getErrorCode(err);
+): { error: AppError; type: ExerciseErrorType } => {
+  const appError = toAppError(err, '提交答案失败，请稍后重试');
+  const code = appError.code?.trim().toUpperCase() ?? '';
   switch (code) {
     case 'OCR_UNREADABLE':
       return {
-        message: '未能从图片中识别出有效答案，请重新拍摄或改用文字答案',
+        error: withMessage(appError, '未能从图片中识别出有效答案，请重新拍摄或改用文字答案'),
         type: 'answer_unreadable',
       };
     case 'OCR_UNAVAILABLE':
       return {
-        message: '图片识别服务暂不可用，请稍后重试或改用文字答案',
+        error: withMessage(appError, '图片识别服务暂不可用，请稍后重试或改用文字答案'),
         type: 'answer_service_unavailable',
       };
     case 'OCR_TIMEOUT':
       return {
-        message: '图片识别超时，请稍后重试',
+        error: withMessage(appError, '图片识别超时，请稍后重试'),
         type: 'answer_service_unavailable',
       };
     case 'OCR_RATE_LIMITED':
       return {
-        message: '图片识别请求过于频繁，请稍后重试',
+        error: withMessage(appError, '图片识别请求过于频繁，请稍后重试'),
         type: 'answer_rate_limited',
       };
     case 'RATE_LIMITED':
       return {
-        message:
+        error: withMessage(appError,
           stage === 'upload'
             ? '图片上传请求过于频繁，请稍后重试'
-            : '答案提交请求过于频繁，请稍后重试',
+            : '答案提交请求过于频繁，请稍后重试'),
         type: 'answer_rate_limited',
       };
     case 'ANSWER_PARSE_FAILED':
       return {
-        message: '答案格式无法安全解析，请检查输入或改用更清晰的图片后重试',
+        error: withMessage(appError, '答案格式无法安全解析，请检查输入或改用更清晰的图片后重试'),
         type: 'invalid_answer',
       };
     case 'MATH_UNSUPPORTED':
       return {
-        message: '当前题型暂不支持自动判定，请补充解题步骤或联系教师',
+        error: withMessage(appError, '当前题型暂不支持自动判定，请补充解题步骤或联系教师'),
         type: 'answer_unsupported',
       };
     case 'MATH_SOLVER_INVALID_RESPONSE':
       return {
-        message: '数学判题服务返回异常，请稍后重试',
+        error: withMessage(appError, '数学判题服务返回异常，请稍后重试'),
         type: 'answer_service_unavailable',
       };
     case 'MATH_SOLVER_UNAVAILABLE':
       return {
-        message: '数学判题服务暂不可用，请稍后重试',
+        error: withMessage(appError, '数学判题服务暂不可用，请稍后重试'),
         type: 'answer_service_unavailable',
       };
     case 'MATH_SOLVER_TIMEOUT':
       return {
-        message: '数学判题服务处理超时，请稍后重试',
+        error: withMessage(appError, '数学判题服务处理超时，请稍后重试'),
         type: 'answer_service_unavailable',
       };
     case 'EXERCISE_CHANGED':
       return {
-        message: '题目已更新，请重新加载后提交',
+        error: withMessage(appError, '题目已更新，请重新加载后提交'),
         type: 'exercise_changed',
       };
     case 'DAILY_ASSIGNMENT_INVALID':
     case 'DAILY_ASSIGNMENT_COMPLETED':
       return {
-        message: '每日一题状态已更新，正在同步最新任务',
+        error: withMessage(appError, '每日一题状态已更新，正在同步最新任务'),
         type: 'daily_assignment_stale',
       };
     case 'REVIEW_NOT_DUE':
       return {
-        message: '复习计划状态已变化，请返回错题本后重新进入',
+        error: withMessage(appError, '复习计划状态已变化，请返回错题本后重新进入'),
         type: 'review_not_due',
       };
     case 'REVIEW_TASK_STALE':
       return {
-        message: '复习任务已更新，请重新加载后继续',
+        error: withMessage(appError, '复习任务已更新，请重新加载后继续'),
         type: 'review_task_stale',
       };
     case 'MISTAKE_RECORD_ARCHIVED':
       return {
-        message: '这条错题记录已归档，请返回错题本',
+        error: withMessage(appError, '这条错题记录已归档，请返回错题本'),
         type: 'mistake_record_archived',
       };
     case 'SUBMISSION_ID_CONFLICT':
       return {
-        message: '提交状态已变化，请重新提交',
+        error: withMessage(appError, '提交状态已变化，请重新提交'),
         type: 'submission_conflict',
       };
     default:
       if (code.startsWith('MATH_')) {
         return {
-          message: '暂时无法可靠判定这份答案，请稍后重试',
+          error: withMessage(appError, '暂时无法可靠判定这份答案，请稍后重试'),
           type: 'answer_service_unavailable',
         };
       }
   }
 
-  if (axios.isAxiosError(err) && !err.response) {
+  if (appError.kind === 'network') {
     return {
-      message: '无法连接到服务器，请检查网络后重试',
+      error: withMessage(appError, '无法连接到服务器，请检查网络后重试'),
       type: 'network_error',
     };
   }
   return {
-    message: getApiErrorMessage(err, '提交答案失败，请稍后重试'),
+    error: appError,
     type: 'unknown',
   };
 };
@@ -279,8 +279,8 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
   const [submitResult, setSubmitResult] = useState<SubmitResult | null>(null);
   const [solution, setSolution] = useState<ExerciseSolution | null>(null);
   const [isLoadingSolution, setIsLoadingSolution] = useState(false);
-  const [solutionError, setSolutionError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [solutionError, setSolutionError] = useState<AppError | null>(null);
+  const [error, setError] = useState<AppError | null>(null);
   const [errorType, setErrorType] = useState<ExerciseErrorType | null>(null);
   const [errorSource, setErrorSource] = useState<ExerciseErrorSource | null>(null);
 
@@ -293,12 +293,27 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
   const submissionRequestRef = useRef(0);
   const solutionRequestRef = useRef(0);
   const pendingBoundSubmissionRef = useRef<PendingBoundSubmission | null>(null);
+  const loadControllerRef = useRef<AbortController | null>(null);
+  const generationControllerRef = useRef<AbortController | null>(null);
+  const submissionControllerRef = useRef<AbortController | null>(null);
+  const solutionControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => {
+    loadControllerRef.current?.abort();
+    generationControllerRef.current?.abort();
+    submissionControllerRef.current?.abort();
+    solutionControllerRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     pendingBoundSubmissionRef.current = null;
   }, [dailyAssignmentId, reviewTaskId, reviewTaskRevision, originalAttemptId]);
 
   const loadQuestion = useCallback((question: Question) => {
+    loadControllerRef.current?.abort();
+    generationControllerRef.current?.abort();
+    submissionControllerRef.current?.abort();
+    solutionControllerRef.current?.abort();
     questionVersionRef.current += 1;
     submissionRequestRef.current += 1;
     solutionRequestRef.current += 1;
@@ -318,6 +333,10 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
   }, []);
 
   const clearQuestion = useCallback(() => {
+    loadControllerRef.current?.abort();
+    generationControllerRef.current?.abort();
+    submissionControllerRef.current?.abort();
+    solutionControllerRef.current?.abort();
     questionVersionRef.current += 1;
     submissionRequestRef.current += 1;
     solutionRequestRef.current += 1;
@@ -336,12 +355,15 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
   }, []);
 
   const loadNextQuestion = useCallback(async (conceptId?: string, difficulty?: number) => {
+    loadControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadControllerRef.current = controller;
     setIsLoading(true);
     setError(null);
     setErrorType(null);
     setErrorSource(null);
     try {
-      const question = await exerciseService.fetchNextQuestion(conceptId, difficulty);
+      const question = await exerciseService.fetchNextQuestion(conceptId, difficulty, controller.signal);
       if (!question) {
         questionVersionRef.current += 1;
         pendingBoundSubmissionRef.current = null;
@@ -364,29 +386,25 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
       startTimeRef.current = Date.now();
       exerciseLogger.debug('Question loaded', { questionId: question.id });
     } catch (err) {
-      const msg = getApiErrorMessage(err, '加载题目失败，请稍后重试');
-      setError(msg);
+      const requestError = toAppError(err, '加载题目失败，请稍后重试');
+      if (controller.signal.aborted || requestError.kind === 'cancelled') return;
+      setError(requestError);
       setErrorSource('load');
-
-      // 识别错误类型
-      if (axios.isAxiosError(err)) {
-        const status = err.response?.status;
-        if (status === 403) {
-          setErrorType('not_enrolled');
-        } else if (status === 404) {
-          setErrorType('no_questions');
-        } else if (!err.response) {
-          setErrorType('network_error');
-        } else {
-          setErrorType('unknown');
-        }
+      if (requestError.status === 403 || requestError.kind === 'forbidden') {
+        setErrorType('not_enrolled');
+      } else if (requestError.status === 404 || requestError.kind === 'not_found') {
+        setErrorType('no_questions');
+      } else if (requestError.kind === 'network') {
+        setErrorType('network_error');
       } else {
         setErrorType('unknown');
       }
-
-      exerciseLogger.error('Failed to load question', { error: err });
+      exerciseLogger.error('Failed to load question', { error: requestError });
     } finally {
-      setIsLoading(false);
+      if (loadControllerRef.current === controller) {
+        loadControllerRef.current = null;
+        setIsLoading(false);
+      }
     }
   }, []);
 
@@ -399,19 +417,22 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
 
     const normalizedConceptId = conceptId.trim();
     if (!normalizedConceptId) {
-      setError('请选择知识点');
+      setError(makeUiError('请选择知识点'));
       setErrorType('invalid_generation_request');
       setErrorSource('generation');
       return;
     }
     if (!Number.isFinite(difficulty) || difficulty < 0 || difficulty > 1) {
-      setError('请选择有效难度');
+      setError(makeUiError('请选择有效难度'));
       setErrorType('invalid_generation_request');
       setErrorSource('generation');
       return;
     }
 
     generationInFlightRef.current = true;
+    generationControllerRef.current?.abort();
+    const controller = new AbortController();
+    generationControllerRef.current = controller;
     setIsGenerating(true);
     setError(null);
     setErrorType(null);
@@ -422,7 +443,7 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
         conceptId: normalizedConceptId,
         difficulty,
         questionType,
-      });
+      }, controller.signal);
       questionVersionRef.current += 1;
       pendingBoundSubmissionRef.current = null;
       setCurrentQuestion(question);
@@ -438,13 +459,17 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
       });
     } catch (err) {
       const generationError = getGenerationError(err);
-      setError(generationError.message);
+      if (controller.signal.aborted || generationError.error.kind === 'cancelled') return;
+      setError(generationError.error);
       setErrorType(generationError.type);
       setErrorSource('generation');
       exerciseLogger.error('Failed to generate question', { error: err });
     } finally {
       generationInFlightRef.current = false;
-      setIsGenerating(false);
+      if (generationControllerRef.current === controller) {
+        generationControllerRef.current = null;
+        setIsGenerating(false);
+      }
     }
   }, []);
 
@@ -454,7 +479,7 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
 
       const normalizedAnswer = answerText?.trim() ?? '';
       if (!normalizedAnswer && !answerImage) {
-        setError('请输入答案或上传答案图片');
+        setError(makeUiError('请输入答案或上传答案图片'));
         setErrorType('invalid_answer');
         setErrorSource('submission');
         return;
@@ -487,6 +512,9 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
       pendingBoundSubmissionRef.current = pendingBoundSubmission;
       let submissionStage: SubmissionStage = normalizedAnswer ? 'grading' : 'upload';
       submissionInFlightRef.current = true;
+      submissionControllerRef.current?.abort();
+      const controller = new AbortController();
+      submissionControllerRef.current = controller;
       setError(null);
       setErrorType(null);
       setErrorSource(null);
@@ -498,7 +526,7 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
         if (!normalizedAnswer && answerImage) {
           const validation = validateAnswerImageFile(answerImage);
           if (!validation.valid) {
-            setError(validation.error ?? '答案图片不符合上传要求');
+            setError(makeUiError(validation.error ?? '答案图片不符合上传要求'));
             setErrorType('invalid_answer');
             setErrorSource('submission');
             return;
@@ -506,7 +534,7 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
 
           if (!answerImageUrl) {
             setSubmitPhase('uploading');
-            const uploaded = await uploadService.uploadImage(answerImage);
+            const uploaded = await uploadService.uploadImage(answerImage, undefined, controller.signal);
             answerImageUrl = uploaded.url.trim();
             if (!answerImageUrl) {
               throw new Error('图片上传失败，请稍后重试');
@@ -534,7 +562,7 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
           ...(normalizedAnswer ? { answerText: normalizedAnswer } : {}),
           ...(answerImageUrl ? { answerImageUrl } : {}),
           timeSpentSeconds,
-        });
+        }, controller.signal);
         if (questionVersionRef.current !== submittedQuestionVersion) {
           exerciseLogger.info('Discarded stale answer result', {
             questionId: submittedQuestion.id,
@@ -550,6 +578,8 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
           gradingStatus: result.gradingStatus,
         });
       } catch (err) {
+        const requestError = toAppError(err, '提交答案失败，请稍后重试');
+        if (controller.signal.aborted || requestError.kind === 'cancelled') return;
         if (questionVersionRef.current !== submittedQuestionVersion) {
           exerciseLogger.info('Discarded stale answer error', {
             questionId: submittedQuestion.id,
@@ -566,7 +596,7 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
         ) {
           pendingBoundSubmissionRef.current = null;
         }
-        setError(submissionError.message);
+        setError(submissionError.error);
         setErrorType(submissionError.type);
         setErrorSource('submission');
         exerciseLogger.error('Failed to submit answer', {
@@ -577,6 +607,9 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
         if (submissionRequestRef.current === submissionRequest) {
           submissionInFlightRef.current = false;
           setSubmitPhase('idle');
+        }
+        if (submissionControllerRef.current === controller) {
+          submissionControllerRef.current = null;
         }
       }
     },
@@ -591,6 +624,9 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
     const solutionRequest = solutionRequestRef.current + 1;
     solutionRequestRef.current = solutionRequest;
     solutionInFlightRef.current = true;
+    solutionControllerRef.current?.abort();
+    const controller = new AbortController();
+    solutionControllerRef.current = controller;
     setIsLoadingSolution(true);
     setSolutionError(null);
     try {
@@ -612,12 +648,15 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
           : undefined,
         solutionOriginalAttemptId,
         solutionAttemptId,
+        controller.signal,
       );
       if (questionVersionRef.current !== requestedQuestionVersion) return;
       setSolution(nextSolution);
     } catch (err) {
       if (questionVersionRef.current !== requestedQuestionVersion) return;
-      setSolutionError(getApiErrorMessage(err, '获取题目解析失败，请稍后重试'));
+      const requestError = toAppError(err, '获取题目解析失败，请稍后重试');
+      if (controller.signal.aborted || requestError.kind === 'cancelled') return;
+      setSolutionError(requestError);
       exerciseLogger.error('Failed to load solution', {
         questionId: requestedQuestion.id,
         error: err,
@@ -626,6 +665,9 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
       if (solutionRequestRef.current === solutionRequest) {
         solutionInFlightRef.current = false;
         setIsLoadingSolution(false);
+      }
+      if (solutionControllerRef.current === controller) {
+        solutionControllerRef.current = null;
       }
     }
   }, [

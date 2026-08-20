@@ -90,8 +90,8 @@ export const qaThreadService = {
     return data;
   },
 
-  async acknowledgeRead(id: string, throughMessageId: string): Promise<void> {
-    await apiClient.put(`${BASE}/${id}/read`, { through_message_id: throughMessageId });
+  async acknowledgeRead(id: string, throughMessageId: string, signal?: AbortSignal): Promise<void> {
+    await apiClient.put(`${BASE}/${id}/read`, { through_message_id: throughMessageId }, { signal });
   },
 
   async create(body: {

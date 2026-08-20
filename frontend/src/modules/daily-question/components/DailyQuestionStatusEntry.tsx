@@ -7,6 +7,8 @@ import {
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/appError';
 import {
   getDailyQuestionPresentation,
   type DailyQuestionAssignment,
@@ -16,7 +18,7 @@ import {
 interface DailyQuestionStatusEntryProps {
   assignment: DailyQuestionAssignment | null;
   loading: boolean;
-  error?: string | null;
+  error?: AppError | null;
 }
 
 const toneBadge = {
@@ -30,7 +32,7 @@ const toneBadge = {
 function getStatusHint(
   assignment: DailyQuestionAssignment | null,
   loading: boolean,
-  error?: string | null,
+  error?: AppError | null,
 ): string {
   if (loading) return '正在同步今日任务';
   if (error || !assignment) return '进入每日一题页面后可重试';
@@ -80,9 +82,17 @@ export function DailyQuestionStatusEntry({
         </div>
       </CardHeader>
       <CardContent className="space-y-4 p-5">
-        <p className="text-sm leading-6 text-surface-600 dark:text-surface-400">
-          {loading ? '正在读取今天的固定题目状态。' : error || presentation.description}
-        </p>
+        {error ? (
+          <RequestErrorNotice
+            error={error}
+            onRetry={() => navigate('/daily-question')}
+            onRefresh={error.kind === 'conflict' ? () => navigate('/daily-question') : undefined}
+          />
+        ) : (
+          <p className="text-sm leading-6 text-surface-600 dark:text-surface-400">
+            {loading ? '正在读取今天的固定题目状态。' : presentation.description}
+          </p>
+        )}
         <Button
           type="button"
           className="w-full gap-2"

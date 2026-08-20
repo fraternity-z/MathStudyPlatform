@@ -15,6 +15,8 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
 import { cn } from '@/libs/utils/cn';
 import type { LoadingState } from '@/types/common';
 import type {
@@ -26,7 +28,7 @@ import type {
 interface OperationsPanelProps {
   data: SystemStatusResponse | null;
   loading: LoadingState;
-  error: string | null;
+  error: AppError | null;
   autoRefresh: boolean;
   resetting: boolean;
   onAutoRefreshChange: (enabled: boolean) => void;
@@ -322,13 +324,16 @@ function OperationsPanelSkeleton() {
   );
 }
 
-function OperationsUnavailable({ error, onRefresh }: { error: string | null; onRefresh: () => void }) {
+function OperationsUnavailable({ error, onRefresh }: { error: AppError | null; onRefresh: () => void }) {
+  if (error) {
+    return <RequestErrorNotice error={error} onRetry={onRefresh} onRefresh={onRefresh} />;
+  }
   return (
     <div className="flex min-h-80 flex-col items-center justify-center rounded-lg border border-dashed border-surface-300 bg-white px-6 text-center dark:border-surface-700 dark:bg-surface-900">
       <AlertTriangle className="h-8 w-8 text-amber-500" aria-hidden="true" />
       <h2 className="mt-4 text-lg font-semibold text-surface-950 dark:text-surface-50">运维数据暂不可用</h2>
       <p className="mt-2 max-w-md text-sm text-surface-500 dark:text-surface-400">
-        {error || '当前无法获取服务状态，请稍后重试。'}
+        当前无法获取服务状态，请稍后重试。
       </p>
       <Button type="button" variant="outline" className="mt-5" onClick={onRefresh}>
         <RefreshCw className="mr-2 h-4 w-4" />

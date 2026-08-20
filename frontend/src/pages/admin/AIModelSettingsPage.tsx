@@ -9,13 +9,14 @@ import { AdminLayout } from '@/modules/admin/components/AdminLayout';
 import { Card, CardContent } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/Tabs';
+import { useToast } from '../../components/ui/Toast';
+import { RequestErrorNotice } from '@/components/feedback';
 import {
   Brain,
   Bot,
   Plus,
   RefreshCw,
   Loader2,
-  AlertCircle,
   CheckCircle,
   Server,
 } from 'lucide-react';
@@ -48,9 +49,11 @@ import {
   selectProvidersError,
   selectModels,
   selectModelsLoading,
+  selectModelsError,
   selectAgentConfigs,
   selectAgentTypes,
   selectAgentConfigsLoading,
+  selectAgentConfigsError,
 } from '@/modules/ai-config/store/aiConfigSlice';
 import type {
   LLMProvider,
@@ -62,9 +65,11 @@ import type {
   ModelCreateSimple,
   ModelsUpdateResponse,
 } from '@/modules/ai-config/types/aiConfig';
+import { getAdminErrorToast } from '@/modules/admin/utils/errorFeedback';
 
 export const AIModelSettingsPage: React.FC = () => {
   const dispatch = useAppDispatch();
+  const { toast } = useToast();
 
   // Redux 状态 (添加防御性默认值)
   const providers = useAppSelector(selectProviders) ?? [];
@@ -72,9 +77,11 @@ export const AIModelSettingsPage: React.FC = () => {
   const providersError = useAppSelector(selectProvidersError) ?? null;
   const models = useAppSelector(selectModels);
   const modelsLoading = useAppSelector(selectModelsLoading) ?? 'idle';
+  const modelsError = useAppSelector(selectModelsError) ?? null;
   const agentConfigs = useAppSelector(selectAgentConfigs) ?? [];
   const agentTypes = useAppSelector(selectAgentTypes) ?? [];
   const agentConfigsLoading = useAppSelector(selectAgentConfigsLoading) ?? 'idle';
+  const agentConfigsError = useAppSelector(selectAgentConfigsError) ?? null;
 
   // 本地状态
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -83,10 +90,20 @@ export const AIModelSettingsPage: React.FC = () => {
 
   // 初始化加载数据
   useEffect(() => {
-    dispatch(fetchProviders(true));
-    dispatch(fetchModels({ includeInactive: true }));
-    dispatch(fetchAgentConfigs());
-    dispatch(fetchAgentTypes());
+    let requests: Array<{ abort: () => void }> = [];
+    // Defer dispatch so StrictMode's probe mount is cleaned up before requests begin.
+    const timer = window.setTimeout(() => {
+      requests = [
+        dispatch(fetchProviders(true)),
+        dispatch(fetchModels({ includeInactive: true })),
+        dispatch(fetchAgentConfigs()),
+        dispatch(fetchAgentTypes()),
+      ];
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      requests.forEach((request) => request.abort());
+    };
   }, [dispatch]);
 
   // 刷新数据
@@ -135,18 +152,28 @@ export const AIModelSettingsPage: React.FC = () => {
   // 删除提供商
   const handleDeleteProvider = async (provider: LLMProvider) => {
     if (window.confirm(`确定要删除渠道 "${provider.name}" 吗？这将同时删除所有关联的模型。`)) {
-      await dispatch(deleteProvider(provider.id)).unwrap();
+      try {
+        await dispatch(deleteProvider(provider.id)).unwrap();
+      } catch (error) {
+        const feedback = getAdminErrorToast(error, '删除渠道失败');
+        if (feedback) toast(feedback);
+      }
     }
   };
 
   // 切换提供商状态
   const handleToggleProviderActive = async (provider: LLMProvider) => {
-    await dispatch(
-      updateProvider({
-        id: provider.id,
-        data: { is_active: !provider.is_active },
-      })
-    ).unwrap();
+    try {
+      await dispatch(
+        updateProvider({
+          id: provider.id,
+          data: { is_active: !provider.is_active },
+        })
+      ).unwrap();
+    } catch (error) {
+      const feedback = getAdminErrorToast(error, '更新渠道状态失败');
+      if (feedback) toast(feedback);
+    }
   };
 
   // 测试连接
@@ -175,7 +202,12 @@ export const AIModelSettingsPage: React.FC = () => {
 
   // 设置默认模型
   const handleSetDefaultModel = async (modelId: string) => {
-    await dispatch(setDefaultModel(modelId)).unwrap();
+    try {
+      await dispatch(setDefaultModel(modelId)).unwrap();
+    } catch (error) {
+      const feedback = getAdminErrorToast(error, '设置默认模型失败');
+      if (feedback) toast(feedback);
+    }
   };
 
   // 更新智能体配置
@@ -304,10 +336,12 @@ export const AIModelSettingsPage: React.FC = () => {
 
         {/* 错误提示 */}
         {providersError && (
-          <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg flex items-center gap-3 text-red-600 dark:text-red-400">
-            <AlertCircle className="w-5 h-5" />
-            <span>{providersError}</span>
-          </div>
+          <RequestErrorNotice
+            error={providersError}
+            onRetry={() => { void dispatch(fetchProviders(true)); }}
+            onRefresh={() => { void dispatch(fetchProviders(true)); }}
+            className="mb-6"
+          />
         )}
 
         {/* 主要内容 */}
@@ -325,6 +359,13 @@ export const AIModelSettingsPage: React.FC = () => {
 
           {/* 渠道管理 Tab */}
           <TabsContent value="channels" className="space-y-4">
+            {modelsError ? (
+              <RequestErrorNotice
+                error={modelsError}
+                onRetry={() => { void dispatch(fetchModels({ includeInactive: true })); }}
+                onRefresh={() => { void dispatch(fetchModels({ includeInactive: true })); }}
+              />
+            ) : null}
             {isLoading ? (
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="w-8 h-8 animate-spin text-primary-600" />
@@ -367,6 +408,20 @@ export const AIModelSettingsPage: React.FC = () => {
 
           {/* 智能体配置 Tab */}
           <TabsContent value="agents">
+            {agentConfigsError ? (
+              <RequestErrorNotice
+                error={agentConfigsError}
+                onRetry={() => {
+                  void dispatch(fetchAgentConfigs());
+                  void dispatch(fetchAgentTypes());
+                }}
+                onRefresh={() => {
+                  void dispatch(fetchAgentConfigs());
+                  void dispatch(fetchAgentTypes());
+                }}
+                className="mb-4"
+              />
+            ) : null}
             <AgentConfigPanel
               agentTypes={agentTypes}
               agentConfigs={agentConfigs}

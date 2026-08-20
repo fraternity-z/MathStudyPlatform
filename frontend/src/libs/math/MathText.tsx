@@ -2,6 +2,7 @@ import * as React from 'react';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import { cn } from '../utils/cn';
+import { katexStrict } from './katexStrict';
 
 type MathTextSegment =
   | { type: 'text'; value: string }
@@ -71,6 +72,7 @@ const MathSegment: React.FC<{ expression: string; block: boolean }> = ({ express
         displayMode: block,
         throwOnError: false,
         output: 'htmlAndMathml',
+        strict: katexStrict,
         trust: false,
       });
     } catch {

@@ -24,7 +24,10 @@ export const knowledgeService = {
    * @param filters - 筛选条件（可选）
    * @returns 知识图谱数据
    */
-  async getKnowledgeGraph(filters?: KnowledgeGraphFilters): Promise<KnowledgeGraphData> {
+  async getKnowledgeGraph(
+    filters?: KnowledgeGraphFilters,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeGraphData> {
     try {
       const params: Record<string, string> = {};
 
@@ -40,7 +43,7 @@ export const knowledgeService = {
 
       const response = await apiClient.get<KnowledgeGraphResponse>(
         `${BASE_PATH}/knowledge-graph`,
-        { params }
+        { params, signal }
       );
 
       knowledgeLogger.info('知识图谱数据获取成功', {
@@ -50,7 +53,7 @@ export const knowledgeService = {
 
       return response.data;
     } catch (error) {
-      knowledgeLogger.error('知识图谱数据获取失败', error);
+      if (!signal?.aborted) knowledgeLogger.error('知识图谱数据获取失败', error);
       throw error;
     }
   },
@@ -60,14 +63,15 @@ export const knowledgeService = {
    *
    * 从后端动态获取所有不重复的章节名称
    */
-  async getChapters(): Promise<string[]> {
+  async getChapters(signal?: AbortSignal): Promise<string[]> {
     try {
       const response = await apiClient.get<{ chapters: string[] }>(
         `${BASE_PATH}/chapters`,
+        { signal },
       );
       return response.data.chapters;
     } catch (error) {
-      knowledgeLogger.error('章节列表获取失败', error);
+      if (!signal?.aborted) knowledgeLogger.error('章节列表获取失败', error);
       throw error;
     }
   },

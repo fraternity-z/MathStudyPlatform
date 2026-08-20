@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { MainLayout } from '../../components/layout/MainLayout';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
@@ -12,7 +13,7 @@ import { ArrowLeft, Save, Loader2, Plus, Trash2, Edit } from 'lucide-react';
 import { questionService } from '@/modules/question/services/questionService';
 import type { Question, QuestionCreateData, QuestionUpdateData } from '@/modules/question/types/question';
 import { useToast } from '../../components/ui/Toast';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 
 // 表单验证 Schema
 const questionSchema = z.object({
@@ -77,6 +78,10 @@ export const QuestionEditPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [, setQuestion] = useState<Question | null>(null);
   const [groups, setGroups] = useState<string[]>([]);
+  const [loadError, setLoadError] = useState<AppError | null>(null);
+  const [groupsError, setGroupsError] = useState<AppError | null>(null);
+  const [groupsReloadKey, setGroupsReloadKey] = useState(0);
+  const loadRequestRef = useRef(0);
 
   const {
     register,
@@ -109,9 +114,13 @@ export const QuestionEditPage: React.FC = () => {
 
   // 加载题目数据（编辑模式）
   const loadQuestion = useCallback(async (questionId: string) => {
+    const requestID = loadRequestRef.current + 1;
+    loadRequestRef.current = requestID;
     setLoading(true);
+    setLoadError(null);
     try {
       const data = await questionService.getQuestion(questionId);
+      if (loadRequestRef.current !== requestID) return;
       setQuestion(data);
 
       // 填充表单
@@ -130,26 +139,48 @@ export const QuestionEditPage: React.FC = () => {
         estimatedTimeSeconds: data.meta.estimatedTimeSeconds,
       });
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error && 'response' in error
-        ? (error as { response?: { data?: { detail?: string } } }).response?.data?.detail || '加载题目失败'
-        : '加载题目失败';
-      toast({ type: 'error', title: errorMessage });
-      navigate(exitPath);
+      if (loadRequestRef.current === requestID) {
+        setLoadError(toAppError(error, '加载题目失败'));
+      }
     } finally {
-      setLoading(false);
+      if (loadRequestRef.current === requestID) setLoading(false);
     }
-  }, [reset, toast, navigate, exitPath]);
+  }, [reset]);
 
   useEffect(() => {
     if (!isNew && id) {
-      loadQuestion(id);
+      void loadQuestion(id);
     }
+    return () => { loadRequestRef.current += 1; };
   }, [id, isNew, loadQuestion]);
 
   // 加载分组列表
   useEffect(() => {
-    questionService.getGroups().then(setGroups).catch(() => {});
-  }, []);
+    let active = true;
+    setGroupsError(null);
+    questionService.getGroups().then((nextGroups) => {
+      if (active) setGroups(nextGroups);
+    }).catch((error: unknown) => {
+      if (active) setGroupsError(toAppError(error, '题目分组加载失败'));
+    });
+    return () => { active = false; };
+  }, [groupsReloadKey]);
+
+  const notifyRequestError = useCallback((requestError: unknown, fallback: string) => {
+    const appError = toAppError(requestError, fallback);
+    if (appError.kind === 'cancelled' || appError.kind === 'rate_limited') return;
+    const details = [
+      appError.retryAfter !== undefined && appError.retryAfter > 0
+        ? `可在 ${appError.retryAfter} 秒后重试`
+        : '',
+      appError.requestId ? `请求编号：${appError.requestId}` : '',
+    ].filter(Boolean);
+    toast({
+      type: 'error',
+      title: appError.message,
+      description: details.length > 0 ? details.join('；') : undefined,
+    });
+  }, [toast]);
 
   const onSubmit = async (data: QuestionFormData) => {
     setSaving(true);
@@ -189,7 +220,7 @@ export const QuestionEditPage: React.FC = () => {
           : exitPath,
       );
     } catch (error: unknown) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '保存失败') });
+      notifyRequestError(error, '保存失败');
     } finally {
       setSaving(false);
     }
@@ -256,6 +287,23 @@ export const QuestionEditPage: React.FC = () => {
     );
   }
 
+  if (loadError) {
+    return (
+      <MainLayout>
+        <div className="container mx-auto max-w-2xl px-6 py-20">
+          <RequestErrorNotice
+            error={loadError}
+            onRetry={id ? () => void loadQuestion(id) : undefined}
+            onRefresh={id ? () => void loadQuestion(id) : undefined}
+          />
+          <Button variant="outline" className="mt-4" onClick={() => navigate(exitPath)}>
+            返回题库
+          </Button>
+        </div>
+      </MainLayout>
+    );
+  }
+
   return (
     <MainLayout>
       <div className="container mx-auto px-6 py-8 max-w-5xl">
@@ -286,6 +334,16 @@ export const QuestionEditPage: React.FC = () => {
             )}
           </div>
         </div>
+
+        {groupsError ? (
+          <RequestErrorNotice
+            error={groupsError}
+            onRetry={() => setGroupsReloadKey((key) => key + 1)}
+            onRefresh={() => setGroupsReloadKey((key) => key + 1)}
+            onDismiss={() => setGroupsError(null)}
+            className="mb-6"
+          />
+        ) : null}
 
         <form onSubmit={handleSubmit(onSubmit)}>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

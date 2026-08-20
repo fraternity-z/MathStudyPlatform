@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useToast } from '@/components/ui/Toast';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, toAppErrorFeedback, type AppError } from '@/libs/http/apiClient';
 import {
   archiveMistake,
   fetchMistakes,
@@ -90,7 +90,7 @@ export function useMistakeBook(
   const [mistakes, setMistakes] = useState<MistakeRecord[]>([]);
   const [pagination, setPagination] = useState<PaginationInfo>(initialPagination);
   const [mistakesLoading, setMistakesLoading] = useState<LoadingState>('idle');
-  const [mistakesError, setMistakesError] = useState<string | null>(null);
+  const [mistakesError, setMistakesError] = useState<AppError | null>(null);
   const [resolvedRequestKey, setResolvedRequestKey] = useState('');
   const [reloadVersion, setReloadVersion] = useState(0);
   const [archivingIds, setArchivingIds] = useState<string[]>([]);
@@ -144,7 +144,7 @@ export function useMistakeBook(
       .catch((error: unknown) => {
         if (controller.signal.aborted || requestIdRef.current !== requestId) return;
         setMistakesLoading('error');
-        setMistakesError(getApiErrorMessage(error, '获取错题列表失败'));
+        setMistakesError(toAppError(error, '获取错题列表失败'));
       });
 
     return () => controller.abort();
@@ -183,10 +183,8 @@ export function useMistakeBook(
       return true;
     } catch (error) {
       if (!mountedRef.current) return false;
-      toast({
-        type: 'error',
-        title: getApiErrorMessage(error, '归档错题失败'),
-      });
+      const feedback = toAppErrorFeedback(error, '归档错题失败');
+      if (feedback) toast(feedback);
       return false;
     } finally {
       if (mountedRef.current) {

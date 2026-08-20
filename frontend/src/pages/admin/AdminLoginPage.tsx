@@ -9,8 +9,10 @@ import { setCredentials } from '@/modules/auth/store/authSlice';
 import { Shield, Lock, User, AlertCircle } from 'lucide-react';
 import { logger } from '../../libs/utils/logger';
 import { authService } from '@/modules/auth/services/authService';
-import { getApiErrorMessage } from '../../libs/http/apiClient';
 import { LoginCaptchaModal } from '@/modules/auth/components/LoginCaptchaModal';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
+import { isAdminRequestCancelled, toAdminAppError } from '@/modules/admin/utils/errorFeedback';
 
 const adminLogger = logger.createContextLogger('AdminLogin');
 
@@ -24,13 +26,13 @@ export const AdminLoginPage: React.FC = () => {
   const dispatch = useDispatch();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState<string | AppError | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [pendingLogin, setPendingLogin] = useState<PendingAdminLogin | null>(null);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setError(null);
     setPendingLogin({ username, password });
   };
 
@@ -65,9 +67,16 @@ export const AdminLoginPage: React.FC = () => {
       // 跳转到管理员控制台
       navigate('/admin/dashboard');
     } catch (err) {
-      const errorMessage = getApiErrorMessage(err, '登录失败，请稍后重试');
-      setError(errorMessage);
-      adminLogger.security('Admin login failed', { username: credentials.username, error: errorMessage });
+      if (!isAdminRequestCancelled(err)) {
+        const appError = toAdminAppError(err, '登录失败，请稍后重试');
+        setError(appError);
+        adminLogger.security('Admin login failed', {
+          username: credentials.username,
+          kind: appError.kind,
+          status: appError.status,
+          requestId: appError.requestId,
+        });
+      }
     } finally {
       setIsLoading(false);
     }
@@ -107,12 +116,13 @@ export const AdminLoginPage: React.FC = () => {
           <CardContent>
             <form onSubmit={handleLogin} className="space-y-4">
               {/* 错误提示 */}
-              {error && (
+              {typeof error === 'string' && (
                 <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400">
                   <AlertCircle className="w-4 h-4 shrink-0" />
                   <span className="text-sm">{error}</span>
                 </div>
               )}
+              {error && typeof error !== 'string' ? <RequestErrorNotice error={error} /> : null}
 
               {/* 用户名 */}
               <div>

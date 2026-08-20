@@ -10,6 +10,7 @@ import {
   type PendingMessageAttachment,
 } from '@/modules/message-center/MessageAttachmentPicker';
 import type { MessageAttachment } from '@/modules/message-center/attachmentTypes';
+import type { AppErrorFeedback } from '@/libs/http/apiClient';
 
 interface SpeechRecognitionResultLike {
   readonly length: number;
@@ -54,6 +55,7 @@ interface MessageComposerProps {
   onAttachmentsChange: (attachments: MessageAttachment[]) => void;
   onUploadingChange?: (uploading: boolean) => void;
   onError?: (message: string) => void;
+  onFeedback?: (feedback: AppErrorFeedback) => void;
   onSend: () => void | Promise<void>;
   placeholder: string;
   sendLabel?: string;
@@ -80,6 +82,7 @@ export function MessageComposer({
   onAttachmentsChange,
   onUploadingChange,
   onError,
+  onFeedback,
   onSend,
   placeholder,
   sendLabel = '发送',
@@ -178,6 +181,7 @@ export function MessageComposer({
           onChange={onAttachmentsChange}
           onUploadingChange={onUploadingChange}
           onError={onError}
+          onFeedback={onFeedback}
           onPendingChange={setPendingAttachments}
           disabled={disabled}
         />

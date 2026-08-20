@@ -5,7 +5,7 @@
  */
 
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 import { logout } from '@/modules/auth/store/authSlice';
 import { studentPortraitService } from '@/modules/student/services/studentPortraitService';
 import type { PortraitRangeType, StudentPortrait } from '@/modules/student/types/studentPortrait';
@@ -19,7 +19,7 @@ interface StudentPortraitState {
   loadingState: 'idle' | 'loading' | 'success' | 'error';
   generating: boolean;
   clearing: boolean;
-  error: string | null;
+  error: AppError | null;
   fetchRequestId: string | null;
   generateRequestId: string | null;
   clearRequestId: string | null;
@@ -44,35 +44,52 @@ const initialState: StudentPortraitState = {
 // 异步 Thunks
 // =============================================================================
 
-export const fetchPortrait = createAsyncThunk(
+type PortraitThunkConfig = { rejectValue: AppError };
+
+export const fetchPortrait = createAsyncThunk<
+  StudentPortrait,
+  void,
+  PortraitThunkConfig
+>(
   'studentPortrait/fetch',
-  async (_, { rejectWithValue }) => {
+  async (_, { rejectWithValue, signal }) => {
     try {
-      return await studentPortraitService.getPortrait();
+      return await studentPortraitService.getPortrait(signal);
     } catch (error) {
-      return rejectWithValue(getApiErrorMessage(error, '获取画像失败'));
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '获取画像失败'));
     }
   }
 );
 
-export const generatePortrait = createAsyncThunk(
+export const generatePortrait = createAsyncThunk<
+  Awaited<ReturnType<typeof studentPortraitService.generatePortrait>>,
+  PortraitRangeType,
+  PortraitThunkConfig
+>(
   'studentPortrait/generate',
-  async (range: PortraitRangeType, { rejectWithValue }) => {
+  async (range, { rejectWithValue, signal }) => {
     try {
-      return await studentPortraitService.generatePortrait(range);
+      return await studentPortraitService.generatePortrait(range, signal);
     } catch (error) {
-      return rejectWithValue(getApiErrorMessage(error, '生成画像失败'));
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '生成画像失败'));
     }
   }
 );
 
-export const clearPortrait = createAsyncThunk(
+export const clearPortrait = createAsyncThunk<
+  Awaited<ReturnType<typeof studentPortraitService.clearPortrait>>,
+  void,
+  PortraitThunkConfig
+>(
   'studentPortrait/clear',
-  async (_, { rejectWithValue }) => {
+  async (_, { rejectWithValue, signal }) => {
     try {
-      return await studentPortraitService.clearPortrait();
+      return await studentPortraitService.clearPortrait(signal);
     } catch (error) {
-      return rejectWithValue(getApiErrorMessage(error, '清除画像失败'));
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '清除画像失败'));
     }
   }
 );
@@ -103,8 +120,8 @@ const studentPortraitSlice = createSlice({
       .addCase(fetchPortrait.rejected, (state, action) => {
         if (state.fetchRequestId !== action.meta.requestId) return;
 
-        state.loadingState = 'error';
-        state.error = action.payload as string;
+        state.loadingState = action.meta.aborted ? 'idle' : 'error';
+        state.error = action.meta.aborted || !action.payload ? null : action.payload;
         state.fetchRequestId = null;
       });
 
@@ -134,7 +151,7 @@ const studentPortraitSlice = createSlice({
         if (state.generateRequestId !== action.meta.requestId) return;
 
         state.generating = false;
-        state.error = action.payload as string;
+        state.error = action.meta.aborted || !action.payload ? null : action.payload;
         state.generateRequestId = null;
       });
 
@@ -163,7 +180,7 @@ const studentPortraitSlice = createSlice({
         if (state.clearRequestId !== action.meta.requestId) return;
 
         state.clearing = false;
-        state.error = action.payload as string;
+        state.error = action.meta.aborted || !action.payload ? null : action.payload;
         state.clearRequestId = null;
       });
 

@@ -21,6 +21,8 @@ import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
 import { useToast } from '@/components/ui/Toast';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
 import { AgentTypeDisplayNames } from '@/modules/ai-config/types/aiConfig';
 import type {
   AgentModelConfig,
@@ -30,6 +32,7 @@ import type {
   UpdateAgentConfigRequest,
 } from '@/modules/ai-config/types/aiConfig';
 import { buildLogicalModelOptions, resolveAgentModelKey } from './agentModelOptions';
+import { isAdminRequestCancelled, toAdminAppError } from '@/modules/admin/utils/errorFeedback';
 
 interface AgentConfigPanelProps {
   agentTypes: AgentTypeInfo[];
@@ -77,7 +80,7 @@ export const AgentConfigPanel: React.FC<AgentConfigPanelProps> = ({
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
   const [formData, setFormData] = useState<Record<string, AgentConfigFormData>>({});
   const [savingAgent, setSavingAgent] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | AppError | null>(null);
 
   // 初始化表单数据
   useEffect(() => {
@@ -160,12 +163,9 @@ export const AgentConfigPanel: React.FC<AgentConfigPanelProps> = ({
         description: `${getAgentDisplayName(agentType)}已使用 ${data.model_key}`,
       });
     } catch (err: unknown) {
-      const message = typeof err === 'string'
-        ? err
-        : err instanceof Error
-          ? err.message
-          : '保存智能体配置失败';
-      setError(message);
+      if (!isAdminRequestCancelled(err)) {
+        setError(toAdminAppError(err, '保存智能体配置失败'));
+      }
     } finally {
       setSavingAgent(null);
     }
@@ -183,12 +183,9 @@ export const AgentConfigPanel: React.FC<AgentConfigPanelProps> = ({
           [agentType]: { ...defaultFormData },
         }));
       } catch (err: unknown) {
-        const message = typeof err === 'string'
-          ? err
-          : err instanceof Error
-            ? err.message
-            : '重置智能体配置失败';
-        setError(message);
+        if (!isAdminRequestCancelled(err)) {
+          setError(toAdminAppError(err, '重置智能体配置失败'));
+        }
       } finally {
         setSavingAgent(null);
       }
@@ -222,11 +219,12 @@ export const AgentConfigPanel: React.FC<AgentConfigPanelProps> = ({
   return (
     <div className="space-y-4">
       {/* 错误提示 */}
-      {error && (
+      {typeof error === 'string' && (
         <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-600 dark:text-red-400 text-sm">
           {error}
         </div>
       )}
+      {error && typeof error !== 'string' ? <RequestErrorNotice error={error} /> : null}
 
       {/* 智能体列表 */}
       {agentTypes.map((agentType) => {

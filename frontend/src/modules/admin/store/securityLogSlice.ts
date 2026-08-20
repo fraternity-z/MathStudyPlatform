@@ -15,6 +15,7 @@ import type {
   SecurityLogDeleteRequest,
   SecurityLogExportRequest,
 } from '@/modules/admin/types/securityLog';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 
 // =============================================================================
 // 状态类型
@@ -42,7 +43,7 @@ interface SecurityLogState {
   queryParams: SecurityLogQueryParams;
 
   // 错误信息
-  error: string | null;
+  error: AppError | null;
 }
 
 // =============================================================================
@@ -76,14 +77,14 @@ const initialState: SecurityLogState = {
  */
 export const fetchSecurityLogs = createAsyncThunk(
   'securityLog/fetchLogs',
-  async (params: SecurityLogQueryParams | undefined, { getState, rejectWithValue }) => {
+  async (params: SecurityLogQueryParams | undefined, { getState, rejectWithValue, signal }) => {
     try {
       const state = getState() as { securityLog: SecurityLogState };
       const queryParams = params || state.securityLog.queryParams;
-      return await securityLogService.getLogs(queryParams);
+      return await securityLogService.getLogs(queryParams, signal);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '获取安全日志失败';
-      return rejectWithValue(message);
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '获取安全日志失败'));
     }
   },
   {
@@ -99,12 +100,12 @@ export const fetchSecurityLogs = createAsyncThunk(
  */
 export const fetchSecurityLogStats = createAsyncThunk(
   'securityLog/fetchStats',
-  async (_, { rejectWithValue }) => {
+  async (_, { rejectWithValue, signal }) => {
     try {
-      return await securityLogService.getStats();
+      return await securityLogService.getStats(signal);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '获取统计数据失败';
-      return rejectWithValue(message);
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '获取统计数据失败'));
     }
   }
 );
@@ -122,8 +123,7 @@ export const deleteSecurityLogs = createAsyncThunk(
       dispatch(fetchSecurityLogStats());
       return result;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '删除日志失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '删除日志失败'));
     }
   }
 );
@@ -140,8 +140,7 @@ export const exportSecurityLogs = createAsyncThunk(
       securityLogService.downloadExportedFile(result);
       return result;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '导出日志失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '导出日志失败'));
     }
   }
 );
@@ -212,8 +211,12 @@ const securityLogSlice = createSlice({
         state.hasMore = action.payload.has_more;
       })
       .addCase(fetchSecurityLogs.rejected, (state, action) => {
+        if (action.meta.aborted) {
+          state.loading = state.groups.length ? 'succeeded' : 'idle';
+          return;
+        }
         state.loading = 'failed';
-        state.error = action.payload as string;
+        state.error = action.payload as AppError;
       })
 
       // 获取统计
@@ -224,8 +227,9 @@ const securityLogSlice = createSlice({
         state.statsLoading = 'succeeded';
         state.stats = action.payload;
       })
-      .addCase(fetchSecurityLogStats.rejected, (state) => {
-        state.statsLoading = 'failed';
+      .addCase(fetchSecurityLogStats.rejected, (state, action) => {
+        state.statsLoading = action.meta.aborted ? 'idle' : 'failed';
+        if (!action.meta.aborted && action.payload) state.error = action.payload as AppError;
       })
 
       // 删除日志
@@ -238,7 +242,7 @@ const securityLogSlice = createSlice({
       })
       .addCase(deleteSecurityLogs.rejected, (state, action) => {
         state.deleteLoading = false;
-        state.error = action.payload as string;
+        state.error = action.payload as AppError;
       })
 
       // 导出日志
@@ -250,7 +254,7 @@ const securityLogSlice = createSlice({
       })
       .addCase(exportSecurityLogs.rejected, (state, action) => {
         state.exportLoading = false;
-        state.error = action.payload as string;
+        state.error = action.payload as AppError;
       });
   },
 });

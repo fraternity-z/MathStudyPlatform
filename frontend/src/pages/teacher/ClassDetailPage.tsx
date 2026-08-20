@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { MainLayout } from '../../components/layout/MainLayout';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
@@ -8,6 +9,7 @@ import { Progress } from '../../components/ui/Progress';
 import { Input } from '../../components/ui/Input';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/Tabs';
 import { Modal } from '../../components/ui/Modal';
+import { useToast } from '@/components/ui/Toast';
 import {
   Table,
   TableHeader,
@@ -31,6 +33,7 @@ import { teacherService } from '@/modules/teacher/services/teacherService';
 import type { ClassInfo, ClassStudent } from '@/modules/classroom/types/classroom';
 import type { ClassAnalyticsData } from '@/modules/teacher/types/teacher';
 import { TeacherDailyQuestionPanel } from '@/modules/daily-question/components/TeacherDailyQuestionPanel';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 
 const classDetailTabs = new Set(['students', 'mastery', 'errors', 'daily-question']);
 
@@ -41,6 +44,7 @@ function normalizeClassDetailTab(value: string | null): string {
 export const ClassDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const [searchTerm, setSearchTerm] = useState('');
   const requestedTab = searchParams.get('tab');
@@ -48,36 +52,51 @@ export const ClassDetailPage: React.FC = () => {
   const [classInfo, setClassInfo] = useState<ClassInfo | null>(null);
   const [students, setStudents] = useState<ClassStudent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [errorMessage, setErrorMessage] = useState('');
+  const [requestError, setRequestError] = useState<AppError | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [isDisbandOpen, setIsDisbandOpen] = useState(false);
   const [isDisbanding, setIsDisbanding] = useState(false);
   const [classAnalytics, setClassAnalytics] = useState<ClassAnalyticsData | null>(null);
 
   useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
     const loadClassDetail = async () => {
       if (!id) return;
       setIsLoading(true);
-      try {
-        const [detailResponse, analyticsResponse] = await Promise.allSettled([
-          classService.getTeacherClassDetail(id),
-          teacherService.getClassAnalytics(id),
-        ]);
-        if (detailResponse.status === 'fulfilled') {
-          setClassInfo(detailResponse.value.class_info);
-          setStudents(detailResponse.value.students);
-        }
-        if (analyticsResponse.status === 'fulfilled') {
-          setClassAnalytics(analyticsResponse.value);
-        }
-        setErrorMessage('');
-      } catch {
-        setErrorMessage('班级信息加载失败，请稍后重试');
-      } finally {
-        setIsLoading(false);
+      setRequestError(null);
+      const [detailResponse, analyticsResponse] = await Promise.allSettled([
+        classService.getTeacherClassDetail(id, controller.signal),
+        teacherService.getClassAnalytics(id, controller.signal),
+      ]);
+      if (!active || controller.signal.aborted) return;
+
+      if (detailResponse.status === 'fulfilled') {
+        setClassInfo(detailResponse.value.class_info);
+        setStudents(detailResponse.value.students);
+      } else {
+        setClassInfo(null);
+        setStudents([]);
       }
+      if (analyticsResponse.status === 'fulfilled') {
+        setClassAnalytics(analyticsResponse.value);
+      } else {
+        setClassAnalytics(null);
+      }
+      const failed = detailResponse.status === 'rejected'
+        ? detailResponse.reason
+        : analyticsResponse.status === 'rejected'
+          ? analyticsResponse.reason
+          : null;
+      if (failed) setRequestError(toAppError(failed, '班级信息加载失败，请稍后重试'));
+      setIsLoading(false);
     };
-    loadClassDetail();
-  }, [id]);
+    void loadClassDetail();
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [id, reloadKey]);
 
   useEffect(() => {
     const nextTab = normalizeClassDetailTab(requestedTab);
@@ -112,26 +131,42 @@ export const ClassDetailPage: React.FC = () => {
   const hasStudentRows = filteredStudents.length > 0;
   const hasAnyRows = Boolean(teacherRow) || hasStudentRows;
 
+  const notifyRequestError = (error: unknown, fallback: string) => {
+    const appError = toAppError(error, fallback);
+    if (appError.kind === 'cancelled' || appError.kind === 'rate_limited') return;
+    const details = [
+      appError.retryAfter !== undefined && appError.retryAfter > 0
+        ? `可在 ${appError.retryAfter} 秒后重试`
+        : '',
+      appError.requestId ? `请求编号：${appError.requestId}` : '',
+    ].filter(Boolean);
+    toast({
+      type: 'error',
+      title: appError.message,
+      description: details.length > 0 ? details.join('；') : undefined,
+    });
+  };
+
   const handleRemoveStudent = async (studentId: string) => {
     if (!id) return;
     try {
       await classService.removeStudent(id, studentId);
       setStudents((prev) => prev.filter((student) => student.id !== studentId));
-    } catch {
-      setErrorMessage('移除学生失败，请稍后重试');
+    } catch (error) {
+      notifyRequestError(error, '移除学生失败，请稍后重试');
     }
   };
 
   const handleDisbandClass = async () => {
     if (!id) return;
     setIsDisbanding(true);
-    setErrorMessage('');
+    setRequestError(null);
     try {
       await classService.disbandClass(id);
       setIsDisbandOpen(false);
       navigate('/teacher/classes');
-    } catch {
-      setErrorMessage('解散班级失败，请稍后重试');
+    } catch (error) {
+      notifyRequestError(error, '解散班级失败，请稍后重试');
     } finally {
       setIsDisbanding(false);
     }
@@ -177,6 +212,15 @@ export const ClassDetailPage: React.FC = () => {
             </div>
           </div>
         </div>
+
+        {requestError ? (
+          <RequestErrorNotice
+            error={requestError}
+            onRetry={() => setReloadKey((key) => key + 1)}
+            onRefresh={() => setReloadKey((key) => key + 1)}
+            className="mb-6"
+          />
+        ) : null}
 
         {/* 统计卡片 */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
@@ -273,9 +317,6 @@ export const ClassDetailPage: React.FC = () => {
                 </CardHeader>
                 <CardContent>
                   <TabsContent value="students" className="mt-0">
-                  {errorMessage && (
-                    <p className="mb-4 text-sm text-red-500">{errorMessage}</p>
-                  )}
                   <Table>
                     <TableHeader>
                       <TableRow>

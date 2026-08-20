@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { MainLayout } from '../../components/layout/MainLayout';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import {
@@ -12,12 +13,12 @@ import {
   Calendar,
   ChevronDown,
   Loader2,
-  AlertCircle,
 } from 'lucide-react';
 import { cn } from '../../libs/utils/cn';
 import { teacherService } from '@/modules/teacher/services/teacherService';
 import { DashboardExportModal } from './DashboardExportModal';
 import type { DashboardStats, TeacherAnalyticsData } from '@/modules/teacher/types/teacher';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 
 const TIME_RANGE_OPTIONS = [
   { label: '今日', value: 'today' },
@@ -32,42 +33,57 @@ export const TeacherDashboardPage: React.FC = () => {
   const [analyticsData, setAnalyticsData] = useState<TeacherAnalyticsData | null>(null);
   const [dashLoading, setDashLoading] = useState(true);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [dashboardError, setDashboardError] = useState<AppError | null>(null);
+  const [analyticsError, setAnalyticsError] = useState<AppError | null>(null);
+  const [dashboardReloadKey, setDashboardReloadKey] = useState(0);
+  const [analyticsReloadKey, setAnalyticsReloadKey] = useState(0);
   const [exportOpen, setExportOpen] = useState(false);
 
   const timeRangeLabel = TIME_RANGE_OPTIONS.find((o) => o.value === timeRange)?.label ?? timeRange;
 
   // Dashboard stats 只加载一次
   useEffect(() => {
+    const controller = new AbortController();
+    setDashLoading(true);
+    setDashboardError(null);
     teacherService
-      .getDashboardStats()
-      .then(setDashboardStats)
-      .catch(() => setError('获取工作台数据失败'))
-      .finally(() => setDashLoading(false));
-  }, []);
+      .getDashboardStats(controller.signal)
+      .then((data) => {
+        if (!controller.signal.aborted) setDashboardStats(data);
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setDashboardError(toAppError(error, '获取工作台数据失败'));
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setDashLoading(false);
+      });
+    return () => controller.abort();
+  }, [dashboardReloadKey]);
 
   // Analytics 随 timeRange 变化
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
 
     const fetchAnalytics = async () => {
-      if (!cancelled) setAnalyticsLoading(true);
+      setAnalyticsLoading(true);
+      setAnalyticsError(null);
       try {
-        const data = await teacherService.getAnalytics(timeRange);
-        if (!cancelled) setAnalyticsData(data);
-      } catch {
-        if (!cancelled) setError('获取分析数据失败');
+        const data = await teacherService.getAnalytics(timeRange, controller.signal);
+        if (!controller.signal.aborted) setAnalyticsData(data);
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setAnalyticsError(toAppError(error, '获取分析数据失败'));
+        }
       } finally {
-        if (!cancelled) setAnalyticsLoading(false);
+        if (!controller.signal.aborted) setAnalyticsLoading(false);
       }
     };
 
-    fetchAnalytics();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [timeRange]);
+    void fetchAnalytics();
+    return () => controller.abort();
+  }, [analyticsReloadKey, timeRange]);
 
   return (
     <MainLayout>
@@ -103,13 +119,22 @@ export const TeacherDashboardPage: React.FC = () => {
           </div>
         </div>
 
-        {/* 错误提示 */}
-        {error && (
-          <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-600 dark:text-red-400 flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            {error}
-          </div>
-        )}
+        {dashboardError ? (
+          <RequestErrorNotice
+            error={dashboardError}
+            onRetry={() => setDashboardReloadKey((key) => key + 1)}
+            onRefresh={() => setDashboardReloadKey((key) => key + 1)}
+            className="mb-4"
+          />
+        ) : null}
+        {analyticsError ? (
+          <RequestErrorNotice
+            error={analyticsError}
+            onRetry={() => setAnalyticsReloadKey((key) => key + 1)}
+            onRefresh={() => setAnalyticsReloadKey((key) => key + 1)}
+            className="mb-6"
+          />
+        ) : null}
 
         {/* 统计卡片 */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">

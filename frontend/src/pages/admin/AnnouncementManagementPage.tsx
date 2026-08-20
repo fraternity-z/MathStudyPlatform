@@ -12,7 +12,8 @@ import {
 import { AdminLayout } from '@/modules/admin/components/AdminLayout';
 import { Button } from '@/components/ui/Button';
 import { useToast } from '@/components/ui/Toast';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
 import { formatDateOrFallback } from '@/libs/utils/dateFormat';
 import { announcementService } from '@/modules/announcement/announcementService';
 import { AnnouncementEditorModal } from '@/modules/announcement/AnnouncementEditorModal';
@@ -21,6 +22,11 @@ import type {
   SaveAnnouncementRequest,
   SystemAnnouncement,
 } from '@/modules/announcement/types';
+import {
+  getAdminErrorToast,
+  isAdminRequestCancelled,
+  toAdminAppError,
+} from '@/modules/admin/utils/errorFeedback';
 
 const audienceLabels: Record<AnnouncementAudience, string> = {
   student: '学生',
@@ -50,7 +56,7 @@ export function AnnouncementManagementPage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isMutating, setIsMutating] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<AppError | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<SystemAnnouncement | null>(null);
   const loadGenerationRef = useRef(0);
@@ -61,7 +67,7 @@ export function AnnouncementManagementPage() {
     const response = await announcementService.listForAdmin(signal);
     if (!signal?.aborted && mountedRef.current && generation === loadGenerationRef.current) {
       setItems(response.items);
-      setError('');
+      setError(null);
     }
   }, []);
 
@@ -71,7 +77,9 @@ export function AnnouncementManagementPage() {
     void loadItems(controller.signal)
       .catch((loadError) => {
         if (!controller.signal.aborted) {
-          setError(getApiErrorMessage(loadError, '获取公告列表失败'));
+          if (!isAdminRequestCancelled(loadError)) {
+            setError(toAdminAppError(loadError, '获取公告列表失败'));
+          }
         }
       })
       .finally(() => {
@@ -91,7 +99,8 @@ export function AnnouncementManagementPage() {
     try {
       await loadItems();
     } catch (refreshError) {
-      toast({ type: 'error', title: '刷新失败', description: getApiErrorMessage(refreshError) });
+      const feedback = getAdminErrorToast(refreshError, '刷新公告失败', '刷新失败');
+      if (feedback) toast(feedback);
     } finally {
       if (mountedRef.current) setIsRefreshing(false);
     }
@@ -128,11 +137,12 @@ export function AnnouncementManagementPage() {
       setEditing(null);
       toast({ type: 'success', title: editing ? '公告已更新' : '公告已发布' });
     } catch (saveError) {
-      toast({
-        type: 'error',
-        title: editing ? '更新失败' : '发布失败',
-        description: getApiErrorMessage(saveError),
-      });
+      const feedback = getAdminErrorToast(
+        saveError,
+        editing ? '更新公告失败' : '发布公告失败',
+        editing ? '更新失败' : '发布失败',
+      );
+      if (feedback) toast(feedback);
     } finally {
       if (mountedRef.current) setIsSaving(false);
     }
@@ -149,7 +159,8 @@ export function AnnouncementManagementPage() {
       await loadItems();
       toast({ type: 'success', title: announcement.is_active ? '公告已停用' : '公告已启用' });
     } catch (toggleError) {
-      toast({ type: 'error', title: '状态更新失败', description: getApiErrorMessage(toggleError) });
+      const feedback = getAdminErrorToast(toggleError, '更新公告状态失败', '状态更新失败');
+      if (feedback) toast(feedback);
     } finally {
       if (mountedRef.current) setIsMutating(false);
     }
@@ -166,7 +177,8 @@ export function AnnouncementManagementPage() {
       }
       toast({ type: 'success', title: '公告已删除' });
     } catch (deleteError) {
-      toast({ type: 'error', title: '删除失败', description: getApiErrorMessage(deleteError) });
+      const feedback = getAdminErrorToast(deleteError, '删除公告失败', '删除失败');
+      if (feedback) toast(feedback);
     } finally {
       if (mountedRef.current) setIsMutating(false);
     }
@@ -205,9 +217,11 @@ export function AnnouncementManagementPage() {
         </header>
 
         {error ? (
-          <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
-            {error}
-          </div>
+          <RequestErrorNotice
+            error={error}
+            onRetry={() => void handleRefresh()}
+            onRefresh={() => void handleRefresh()}
+          />
         ) : null}
 
         <div className="overflow-hidden rounded-lg border border-surface-200 bg-white dark:border-surface-800 dark:bg-surface-900">

@@ -31,11 +31,27 @@ import {
   type DataImportResponse,
   type DatabaseMonitorResponse,
 } from '@/modules/admin/services/systemSettingService';
-import { getApiErrorMessage } from '../../libs/http/apiClient';
 import { base64ToBlob, downloadBlob } from '@/libs/utils/download';
 import { useSerialPolling } from '@/hooks/useSerialPolling';
 import { EmailSettingsPanel } from '@/modules/email/components/EmailSettingsPanel';
 import { StorageSettingsCard } from '@/modules/admin/components/StorageSettingsCard';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
+import { isAdminRequestCancelled, toAdminAppError } from '@/modules/admin/utils/errorFeedback';
+
+type SettingsFeedbackError = string | AppError;
+
+const SettingsErrorNotice: React.FC<{
+  error: SettingsFeedbackError;
+  onRetry?: () => void;
+}> = ({ error, onRetry }) => typeof error === 'string' ? (
+  <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-red-600 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400">
+    <AlertCircle className="h-4 w-4 shrink-0" />
+    <span className="text-sm">{error}</span>
+  </div>
+) : (
+  <RequestErrorNotice error={error} onRetry={onRetry} onRefresh={onRetry} />
+);
 
 export const SystemSettingsPage: React.FC = () => {
   return (
@@ -98,27 +114,34 @@ const RegistrationControlCard: React.FC = () => {
   });
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<SettingsFeedbackError | null>(null);
   const [success, setSuccess] = useState('');
 
   // 加载配置
-  useEffect(() => {
-    const loadSettings = async () => {
+  const loadSettings = useCallback(async (signal?: AbortSignal) => {
+      setIsLoading(true);
+      setError(null);
       try {
-        const data = await systemSettingService.getRegistrationSettings();
+        const data = await systemSettingService.getRegistrationSettings(signal);
+        if (signal?.aborted) return;
         setSettings(data);
-      } catch {
-        setError('加载注册配置失败');
+      } catch (loadError) {
+        if (signal?.aborted || isAdminRequestCancelled(loadError)) return;
+        setError(toAdminAppError(loadError, '加载注册配置失败'));
       } finally {
-        setIsLoading(false);
+        if (!signal?.aborted) setIsLoading(false);
       }
-    };
-    loadSettings();
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadSettings(controller.signal);
+    return () => controller.abort();
+  }, [loadSettings]);
 
   // 切换开关
   const handleToggle = async (type: 'student' | 'teacher') => {
-    setError('');
+    setError(null);
     setSuccess('');
     setIsSaving(true);
 
@@ -133,10 +156,10 @@ const RegistrationControlCard: React.FC = () => {
       setSettings(updated);
       setSuccess('注册配置已更新');
       setTimeout(() => setSuccess(''), 3000);
-    } catch {
-      setError('更新注册配置失败');
-      // 恢复原状态
-      setSettings(settings);
+    } catch (saveError) {
+      if (!isAdminRequestCancelled(saveError)) {
+        setError(toAdminAppError(saveError, '更新注册配置失败'));
+      }
     } finally {
       setIsSaving(false);
     }
@@ -170,12 +193,7 @@ const RegistrationControlCard: React.FC = () => {
       </CardHeader>
       <CardContent className="space-y-4">
         {/* 错误提示 */}
-        {error && (
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span className="text-sm">{error}</span>
-          </div>
-        )}
+        {error ? <SettingsErrorNotice error={error} onRetry={() => void loadSettings()} /> : null}
 
         {/* 成功提示 */}
         {success && (
@@ -261,27 +279,34 @@ const GeneralInfoCard: React.FC = () => {
   });
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<SettingsFeedbackError | null>(null);
   const [success, setSuccess] = useState('');
 
   // 加载配置
-  useEffect(() => {
-    const loadSettings = async () => {
+  const loadSettings = useCallback(async (signal?: AbortSignal) => {
+      setIsLoading(true);
+      setError(null);
       try {
-        const data = await systemSettingService.getGeneralSettings();
+        const data = await systemSettingService.getGeneralSettings(signal);
+        if (signal?.aborted) return;
         setSettings(data);
-      } catch {
-        setError('加载基本信息失败');
+      } catch (loadError) {
+        if (signal?.aborted || isAdminRequestCancelled(loadError)) return;
+        setError(toAdminAppError(loadError, '加载基本信息失败'));
       } finally {
-        setIsLoading(false);
+        if (!signal?.aborted) setIsLoading(false);
       }
-    };
-    loadSettings();
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadSettings(controller.signal);
+    return () => controller.abort();
+  }, [loadSettings]);
 
   // 保存
   const handleSave = async () => {
-    setError('');
+    setError(null);
     setSuccess('');
 
     if (!settings.system_name.trim()) {
@@ -299,7 +324,7 @@ const GeneralInfoCard: React.FC = () => {
       setSuccess('基本信息已更新');
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
-      setError(getApiErrorMessage(err, '更新基本信息失败'));
+      if (!isAdminRequestCancelled(err)) setError(toAdminAppError(err, '更新基本信息失败'));
     } finally {
       setIsSaving(false);
     }
@@ -327,12 +352,7 @@ const GeneralInfoCard: React.FC = () => {
       </CardHeader>
       <CardContent className="space-y-4">
         {/* 错误提示 */}
-        {error && (
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span className="text-sm">{error}</span>
-          </div>
-        )}
+        {error ? <SettingsErrorNotice error={error} onRetry={() => void loadSettings()} /> : null}
 
         {/* 成功提示 */}
         {success && (
@@ -394,12 +414,12 @@ const ChangePasswordCard: React.FC = () => {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<SettingsFeedbackError | null>(null);
   const [success, setSuccess] = useState('');
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
+    setError(null);
     setSuccess('');
 
     const passwordResult = passwordSchema.safeParse(newPassword);
@@ -428,7 +448,9 @@ const ChangePasswordCard: React.FC = () => {
       setConfirmPassword('');
       await handleLogout();
     } catch (err) {
-      setError(getApiErrorMessage(err, '密码修改失败，请稍后重试'));
+      if (!isAdminRequestCancelled(err)) {
+        setError(toAdminAppError(err, '密码修改失败，请稍后重试'));
+      }
     } finally {
       setIsLoading(false);
     }
@@ -446,12 +468,7 @@ const ChangePasswordCard: React.FC = () => {
       <CardContent>
         <form onSubmit={handleChangePassword} className="space-y-4">
           {/* 错误提示 */}
-          {error && (
-            <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span className="text-sm">{error}</span>
-            </div>
-          )}
+          {error ? <SettingsErrorNotice error={error} /> : null}
 
           {/* 成功提示 */}
           {success && (
@@ -517,25 +534,32 @@ const SanitizedDataExchangeCard: React.FC = () => {
   const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isLoadingTables, setIsLoadingTables] = useState(true);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<SettingsFeedbackError | null>(null);
   const [success, setSuccess] = useState('');
   const [importResult, setImportResult] = useState<DataImportResponse | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    const load = async () => {
+  const loadTables = useCallback(async (signal?: AbortSignal) => {
+      setIsLoadingTables(true);
+      setError(null);
       try {
-        const data = await systemSettingService.getExportableTables();
+        const data = await systemSettingService.getExportableTables(signal);
+        if (signal?.aborted) return;
         setExportableTables(data.tables);
         setSelectedTables(new Set(data.tables.map((t) => t.name)));
-      } catch {
-        setError('加载表列表失败');
+      } catch (loadError) {
+        if (signal?.aborted || isAdminRequestCancelled(loadError)) return;
+        setError(toAdminAppError(loadError, '加载表列表失败'));
       } finally {
-        setIsLoadingTables(false);
+        if (!signal?.aborted) setIsLoadingTables(false);
       }
-    };
-    load();
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadTables(controller.signal);
+    return () => controller.abort();
+  }, [loadTables]);
 
   const toggleTable = (name: string) => {
     setSelectedTables((prev) => {
@@ -559,7 +583,7 @@ const SanitizedDataExchangeCard: React.FC = () => {
       setError('请至少选择一张表');
       return;
     }
-    setError('');
+    setError(null);
     setSuccess('');
     setImportResult(null);
     setIsExporting(true);
@@ -570,7 +594,7 @@ const SanitizedDataExchangeCard: React.FC = () => {
       setSuccess(`脱敏数据导出成功，共 ${result.total_records} 条记录`);
       setTimeout(() => setSuccess(''), 5000);
     } catch (err) {
-      setError(getApiErrorMessage(err, '脱敏数据导出失败'));
+      if (!isAdminRequestCancelled(err)) setError(toAdminAppError(err, '脱敏数据导出失败'));
     } finally {
       setIsExporting(false);
     }
@@ -579,7 +603,7 @@ const SanitizedDataExchangeCard: React.FC = () => {
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setError('');
+    setError(null);
     setSuccess('');
     setImportResult(null);
     setIsImporting(true);
@@ -594,7 +618,7 @@ const SanitizedDataExchangeCard: React.FC = () => {
         setError('交换完成但存在未处理的数据，请查看明细');
       }
     } catch (err) {
-      setError(getApiErrorMessage(err, '脱敏数据导入失败'));
+      if (!isAdminRequestCancelled(err)) setError(toAdminAppError(err, '脱敏数据导入失败'));
     } finally {
       setIsImporting(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -635,12 +659,7 @@ const SanitizedDataExchangeCard: React.FC = () => {
             目标库需预先具备关联账号和基础数据；完整备份与恢复请按部署文档使用 pg_dump / pg_restore。
           </p>
         </div>
-        {error && (
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span className="text-sm">{error}</span>
-          </div>
-        )}
+        {error ? <SettingsErrorNotice error={error} onRetry={() => void loadTables()} /> : null}
         {success && (
           <div className="flex items-center gap-2 p-3 rounded-lg bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400">
             <CheckCircle className="w-4 h-4 shrink-0" />
@@ -734,7 +753,7 @@ const DatabaseMonitorCard: React.FC = () => {
   const [monitorData, setMonitorData] = useState<DatabaseMonitorResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<AppError | null>(null);
 
   const loadMonitor = useCallback(async (showRefreshing = false, signal?: AbortSignal) => {
     if (showRefreshing) setIsRefreshing(true);
@@ -742,10 +761,10 @@ const DatabaseMonitorCard: React.FC = () => {
       const data = await systemSettingService.getDatabaseMonitor(signal);
       if (signal?.aborted) return;
       setMonitorData(data);
-      setError('');
-    } catch {
-      if (signal?.aborted) return;
-      setError('加载监控数据失败');
+      setError(null);
+    } catch (loadError) {
+      if (signal?.aborted || isAdminRequestCancelled(loadError)) return;
+      setError(toAdminAppError(loadError, '加载监控数据失败'));
     } finally {
       if (!signal?.aborted) {
         setIsLoading(false);
@@ -802,10 +821,11 @@ const DatabaseMonitorCard: React.FC = () => {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span className="text-sm">{error}</span>
-          </div>
+          <RequestErrorNotice
+            error={error}
+            onRetry={() => void loadMonitor(true)}
+            onRefresh={() => void loadMonitor(true)}
+          />
         </CardContent>
       </Card>
     );
@@ -836,6 +856,13 @@ const DatabaseMonitorCard: React.FC = () => {
         </div>
       </CardHeader>
       <CardContent className="space-y-6">
+        {error ? (
+          <RequestErrorNotice
+            error={error}
+            onRetry={() => void loadMonitor(true)}
+            onRefresh={() => void loadMonitor(true)}
+          />
+        ) : null}
         {/* 数据库概览 */}
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
           <div className="p-3 rounded-lg bg-surface-50 dark:bg-surface-800">

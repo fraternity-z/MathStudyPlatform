@@ -6,6 +6,7 @@
 
 import React, { useState, useCallback, useRef } from 'react';
 import { Modal } from '../../../../components/ui/Modal';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Button } from '../../../../components/ui/Button';
 import {
   Upload,
@@ -29,6 +30,7 @@ import { logger } from '../../../../libs/utils/logger';
 import { ImportPreviewTable } from './ImportPreviewTable';
 import type { ParsedQuestion, ImportStep, ImportResult } from '@/modules/question/types/questionImport';
 import type { QuestionCreateData } from '@/modules/question/types/question';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 import {
   SUPPORTED_IMPORT_EXTENSIONS,
   MAX_IMPORT_FILE_SIZE,
@@ -69,6 +71,7 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
   const [aiParsingIds, setAiParsingIds] = useState<Set<string>>(new Set());
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [requestError, setRequestError] = useState<AppError | null>(null);
   const [fileWarnings, setFileWarnings] = useState<string[]>([]);
 
   // 重置状态
@@ -80,6 +83,7 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
     setAiParsingIds(new Set());
     setImportResult(null);
     setError(null);
+    setRequestError(null);
     setFileWarnings([]);
   };
 
@@ -110,6 +114,7 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
 
     setFile(f);
     setError(null);
+    setRequestError(null);
     setStep('parsing');
 
     try {
@@ -252,7 +257,7 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
       log.info('AI 识别完成', { count: response.questions.length });
     } catch (err) {
       log.error('AI 识别失败', err);
-      setError('AI 识别失败，请稍后重试。本地解析结果已保留。');
+      setRequestError(toAppError(err, 'AI 识别失败，请稍后重试。本地解析结果已保留。'));
     } finally {
       setAiParsingIds(new Set());
     }
@@ -266,6 +271,7 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
 
     setStep('importing');
     setError(null);
+    setRequestError(null);
 
     try {
       // 转换为 QuestionCreateData 格式
@@ -313,7 +319,7 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
       log.info('导入完成', { success: totalSuccess, failed: totalFailed });
     } catch (err) {
       log.error('导入失败', err);
-      setError('导入失败，请稍后重试');
+      setRequestError(toAppError(err, '导入失败，请稍后重试'));
       setStep('preview');
     }
   };
@@ -348,7 +354,6 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
         />
       </div>
 
-      {/* 错误提示 */}
       {error && (
         <div className="flex items-start gap-2 p-3 bg-red-50 dark:bg-red-900/20 rounded-lg text-red-600 dark:text-red-400 text-sm">
           <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
@@ -505,6 +510,13 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
       className={step === 'preview' ? 'max-w-4xl' : 'max-w-lg'}
     >
       <div className="relative z-10">
+        {requestError ? (
+          <RequestErrorNotice
+            error={requestError}
+            onDismiss={() => setRequestError(null)}
+            className="mb-4"
+          />
+        ) : null}
         {step === 'upload' && renderUploadStep()}
         {step === 'parsing' && renderParsingStep()}
         {step === 'preview' && renderPreviewStep()}
@@ -514,4 +526,3 @@ export const QuestionImportModal: React.FC<QuestionImportModalProps> = ({
     </Modal>
   );
 };
-

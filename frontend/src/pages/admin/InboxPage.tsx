@@ -18,6 +18,9 @@ import type {
   PasswordResetRequestItem,
   PasswordResetReviewResponse,
 } from '@/modules/password-reset/types/passwordReset';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
+import { isAdminRequestCancelled, toAdminAppError } from '@/modules/admin/utils/errorFeedback';
 
 type TabFilter = 'all' | 'pending' | 'approved' | 'rejected';
 
@@ -32,6 +35,7 @@ export const InboxPage: React.FC = () => {
   const [total, setTotal] = useState(0);
   const [pendingCount, setPendingCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<AppError | null>(null);
   const [tab, setTab] = useState<TabFilter>('all');
   const [page, setPage] = useState(1);
   const pageSize = 15;
@@ -42,32 +46,39 @@ export const InboxPage: React.FC = () => {
   const [rejectReason, setRejectReason] = useState('');
   const [reviewing, setReviewing] = useState(false);
   const [reviewResult, setReviewResult] = useState<PasswordResetReviewResponse | null>(null);
+  const [reviewError, setReviewError] = useState<AppError | null>(null);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
+    setLoadError(null);
     try {
       const res = await passwordResetService.listRequests({
         status: tab === 'all' ? undefined : tab,
         page,
         page_size: pageSize,
-      });
+      }, signal);
+      if (signal?.aborted) return;
       setItems(res.items);
       setTotal(res.total);
       setPendingCount(res.pending_count);
-    } catch {
-      // 静默处理
+    } catch (error) {
+      if (signal?.aborted || isAdminRequestCancelled(error)) return;
+      setLoadError(toAdminAppError(error, '加载密码重置申请失败'));
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [tab, page]);
 
   useEffect(() => {
-    fetchData();
+    const controller = new AbortController();
+    void fetchData(controller.signal);
+    return () => controller.abort();
   }, [fetchData]);
 
   const handleReview = async () => {
     if (!reviewTarget) return;
     setReviewing(true);
+    setReviewError(null);
     try {
       const res = await passwordResetService.review(reviewTarget.id, {
         action: reviewAction,
@@ -75,8 +86,10 @@ export const InboxPage: React.FC = () => {
       });
       setReviewResult(res);
       await fetchData();
-    } catch {
-      setReviewResult({ success: false, message: '操作失败，请稍后重试', temp_password: null });
+    } catch (error) {
+      if (!isAdminRequestCancelled(error)) {
+        setReviewError(toAdminAppError(error, '审批操作失败，请稍后重试'));
+      }
     } finally {
       setReviewing(false);
     }
@@ -86,6 +99,7 @@ export const InboxPage: React.FC = () => {
     setReviewTarget(null);
     setRejectReason('');
     setReviewResult(null);
+    setReviewError(null);
   };
 
   const openReview = (item: PasswordResetRequestItem, action: 'approve' | 'reject') => {
@@ -93,6 +107,7 @@ export const InboxPage: React.FC = () => {
     setReviewAction(action);
     setRejectReason('');
     setReviewResult(null);
+    setReviewError(null);
   };
 
   const tabs: { key: TabFilter; label: string }[] = [
@@ -179,6 +194,12 @@ export const InboxPage: React.FC = () => {
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="w-6 h-6 animate-spin text-primary-600" />
               </div>
+            ) : loadError ? (
+              <RequestErrorNotice
+                error={loadError}
+                onRetry={() => void fetchData()}
+                onRefresh={() => void fetchData()}
+              />
             ) : items.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 text-surface-400">
                 <Inbox className="w-12 h-12 mb-3" />
@@ -262,7 +283,13 @@ export const InboxPage: React.FC = () => {
           onClose={closeReviewModal}
           title={reviewResult ? '审批结果' : (reviewAction === 'approve' ? '确认通过' : '拒绝申请')}
         >
-          {reviewResult ? (
+          {reviewError ? (
+            <RequestErrorNotice
+              error={reviewError}
+              onRetry={() => void handleReview()}
+              onRefresh={() => void fetchData()}
+            />
+          ) : reviewResult ? (
             <div className="space-y-4 text-center">
               <p className="text-sm text-surface-700 dark:text-surface-300">{reviewResult.message}</p>
               {reviewResult.temp_password ? (

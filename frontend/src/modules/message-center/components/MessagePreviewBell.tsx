@@ -4,11 +4,11 @@ import {
   ChevronRight,
   Loader2,
   MessageSquare,
-  RefreshCw,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/libs/utils/cn';
 import { formatRelativeTime } from '@/libs/utils/dateFormat';
+import { RequestErrorNotice } from '@/components/feedback';
 import type { MessagePreviewItem } from '@/modules/message-center/services/messageCenterService';
 import { useMessageCenterSummary } from '@/modules/message-center/components/useMessageCenterSummary';
 
@@ -143,25 +143,14 @@ export const MessagePreviewBell: React.FC<MessagePreviewBellProps> = ({ cacheKey
             </span>
           </div>
 
-          {error && summary && (
-            <div
-              role="status"
-              aria-live="polite"
-              className="flex items-center justify-between bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/40 dark:text-red-300"
-            >
-              <span>刷新失败，正在显示上次结果</span>
-              <button
-                type="button"
-                onClick={retry}
-                disabled={isRefreshing}
-                title="重试"
-                aria-label="重新加载消息"
-                className="grid h-6 w-6 place-items-center rounded-md hover:bg-red-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 disabled:opacity-50 dark:hover:bg-red-900/50"
-              >
-                <RefreshCw className={cn('h-3.5 w-3.5', isRefreshing && 'animate-spin')} />
-              </button>
-            </div>
-          )}
+          {error && summary ? (
+            <RequestErrorNotice
+              error={error}
+              onRetry={isRefreshing ? undefined : retry}
+              onRefresh={isRefreshing ? undefined : retry}
+              className="rounded-none border-x-0 border-t-0 px-3 py-2 text-xs"
+            />
+          ) : null}
 
           {isLoading ? (
             <div className="grid h-24 place-items-center" role="status" aria-live="polite">
@@ -169,18 +158,12 @@ export const MessagePreviewBell: React.FC<MessagePreviewBellProps> = ({ cacheKey
               <span className="sr-only">正在加载消息</span>
             </div>
           ) : error && !summary ? (
-            <div className="flex h-28 flex-col items-center justify-center gap-2 px-3 text-center" role="alert">
-              <span className="text-sm text-surface-600 dark:text-surface-300">消息加载失败</span>
-              <button
-                type="button"
-                onClick={retry}
-                disabled={isRefreshing}
-                className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-sm font-medium text-primary-600 hover:bg-primary-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 disabled:opacity-50 dark:hover:bg-primary-950/30"
-              >
-                <RefreshCw className={cn('h-3.5 w-3.5', isRefreshing && 'animate-spin')} />
-                重试
-              </button>
-            </div>
+            <RequestErrorNotice
+              error={error}
+              onRetry={isRefreshing ? undefined : retry}
+              onRefresh={isRefreshing ? undefined : retry}
+              className="rounded-none border-x-0 border-t-0 px-3 py-4"
+            />
           ) : items.length ? (
             <div>
               {items.map((item) => {

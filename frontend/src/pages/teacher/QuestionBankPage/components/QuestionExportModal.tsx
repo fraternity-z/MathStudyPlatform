@@ -12,6 +12,8 @@ import { Download, FileJson, FileText, Loader2 } from 'lucide-react';
 import { exportQuestions } from '../../../../libs/export/questionExporter';
 import { questionService } from '@/modules/question/services/questionService';
 import { logger } from '../../../../libs/utils/logger';
+import { useToast } from '@/components/ui/Toast';
+import { toAppError } from '@/libs/http/apiClient';
 import type { Question, QuestionListParams } from '@/modules/question/types/question';
 import type { ExportFormat, ExportOptions } from '@/modules/question/types/questionImport';
 
@@ -64,6 +66,7 @@ export const QuestionExportModal: React.FC<QuestionExportModalProps> = ({
   filterParams,
   total,
 }) => {
+  const { toast } = useToast();
   const [format, setFormat] = useState<ExportFormat>('json');
   const [includeAnswers, setIncludeAnswers] = useState(true);
   const [includeHints, setIncludeHints] = useState(false);
@@ -107,7 +110,14 @@ export const QuestionExportModal: React.FC<QuestionExportModalProps> = ({
       onClose();
     } catch (err) {
       log.error('导出失败', err);
-      alert('导出失败，请稍后重试');
+      const appError = toAppError(err, '导出失败，请稍后重试');
+      if (appError.kind !== 'cancelled' && appError.kind !== 'rate_limited') {
+        toast({
+          type: 'error',
+          title: appError.message,
+          description: appError.requestId ? `请求编号：${appError.requestId}` : undefined,
+        });
+      }
     } finally {
       setExporting(false);
     }

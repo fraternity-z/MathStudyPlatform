@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  AlertCircle,
   Check,
   Copy,
   Loader2,
@@ -9,9 +8,15 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Modal } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import {
+  isRequestCancelled,
+  toAppError,
+  toAppErrorFeedback,
+  type AppError,
+} from '@/libs/http/apiClient';
 import { formatDateOrFallback } from '@/libs/utils/dateFormat';
 import {
   wechatService,
@@ -32,11 +37,11 @@ export function WechatBindingSection({ userId }: WechatBindingSectionProps) {
   const { toast } = useToast();
   const [status, setStatus] = useState<WechatBindingStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
-  const [statusError, setStatusError] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<AppError | null>(null);
   const [bindingOpen, setBindingOpen] = useState(false);
   const [ticket, setTicket] = useState<WechatBindingTicket | null>(null);
   const [ticketLoading, setTicketLoading] = useState(false);
-  const [ticketError, setTicketError] = useState<string | null>(null);
+  const [ticketError, setTicketError] = useState<AppError | null>(null);
   const [checkMessage, setCheckMessage] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -51,8 +56,8 @@ export function WechatBindingSection({ userId }: WechatBindingSectionProps) {
       const nextStatus = await wechatService.getBindingStatus(signal);
       if (!signal?.aborted) setStatus(nextStatus);
     } catch (error) {
-      if (!signal?.aborted) {
-        setStatusError(getApiErrorMessage(error, '公众号绑定状态加载失败'));
+      if (!signal?.aborted && !isRequestCancelled(error)) {
+        setStatusError(toAppError(error, '公众号绑定状态加载失败'));
       }
     } finally {
       if (!signal?.aborted) setStatusLoading(false);
@@ -86,7 +91,9 @@ export function WechatBindingSection({ userId }: WechatBindingSectionProps) {
       setTicket(await wechatService.createBindingTicket());
     } catch (error) {
       setTicket(null);
-      setTicketError(getApiErrorMessage(error, '绑定命令生成失败，请稍后重试'));
+      if (!isRequestCancelled(error)) {
+        setTicketError(toAppError(error, '绑定命令生成失败，请稍后重试'));
+      }
     } finally {
       setTicketLoading(false);
     }
@@ -137,7 +144,9 @@ export function WechatBindingSection({ userId }: WechatBindingSectionProps) {
         setCheckMessage('尚未检测到绑定，请发送命令后再次检查。');
       }
     } catch (error) {
-      setTicketError(getApiErrorMessage(error, '绑定状态检查失败，请稍后重试'));
+      if (!isRequestCancelled(error)) {
+        setTicketError(toAppError(error, '绑定状态检查失败，请稍后重试'));
+      }
     } finally {
       setChecking(false);
     }
@@ -156,11 +165,8 @@ export function WechatBindingSection({ userId }: WechatBindingSectionProps) {
       setUnbindOpen(false);
       toast({ type: 'success', title: '微信公众号已解绑' });
     } catch (error) {
-      toast({
-        type: 'error',
-        title: '解绑失败',
-        description: getApiErrorMessage(error, '请稍后重试'),
-      });
+      const feedback = toAppErrorFeedback(error, '微信公众号解绑失败，请稍后重试');
+      if (feedback) toast(feedback);
     } finally {
       setUnbinding(false);
     }
@@ -203,22 +209,26 @@ export function WechatBindingSection({ userId }: WechatBindingSectionProps) {
         <div className="flex shrink-0 items-center gap-2 self-end sm:self-auto">
           {statusLoading ? (
             <Loader2 className="h-4 w-4 animate-spin text-surface-400" aria-label="正在加载公众号绑定状态" />
-          ) : statusError ? (
-            <Button variant="outline" size="sm" onClick={() => void loadStatus()}>
-              <RefreshCw className="mr-1.5 h-4 w-4" />
-              重试
-            </Button>
-          ) : status?.available && status.is_bound ? (
+          ) : !statusError && status?.available && status.is_bound ? (
             <Button variant="outline" size="sm" onClick={() => setUnbindOpen(true)}>
               解绑
             </Button>
-          ) : status?.available ? (
+          ) : !statusError && status?.available ? (
             <Button variant="outline" size="sm" onClick={openBinding}>
               绑定
             </Button>
           ) : null}
         </div>
       </div>
+
+      {statusError ? (
+        <RequestErrorNotice
+          error={statusError}
+          onRetry={() => void loadStatus()}
+          onRefresh={() => void loadStatus()}
+          className="mt-3"
+        />
+      ) : null}
 
       <Modal
         isOpen={bindingOpen}
@@ -259,12 +269,13 @@ export function WechatBindingSection({ userId }: WechatBindingSectionProps) {
             </>
           ) : null}
 
-          {ticketError && (
-            <div className="flex items-start gap-2 rounded-md bg-red-50 p-3 text-red-700 dark:bg-red-900/20 dark:text-red-400" role="alert">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span className="text-sm">{ticketError}</span>
-            </div>
-          )}
+          {ticketError ? (
+            <RequestErrorNotice
+              error={ticketError}
+              onRetry={() => void generateTicket()}
+              onRefresh={() => void generateTicket()}
+            />
+          ) : null}
           {checkMessage && (
             <div className="rounded-md bg-blue-50 p-3 text-sm text-blue-700 dark:bg-blue-900/20 dark:text-blue-300" role="status">
               {checkMessage}

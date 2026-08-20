@@ -33,13 +33,13 @@ export const adminUserService = {
   /**
    * 获取账户统计数据
    */
-  async getAccountStats(): Promise<UserAccountStats> {
+  async getAccountStats(signal?: AbortSignal): Promise<UserAccountStats> {
     try {
-      const response = await apiClient.get<UserAccountStats>(`${BASE_PATH}/stats`);
+      const response = await apiClient.get<UserAccountStats>(`${BASE_PATH}/stats`, { signal });
       adminUserLogger.debug('获取账户统计成功', response.data);
       return response.data;
     } catch (error) {
-      adminUserLogger.error('获取账户统计失败', error);
+      if (!signal?.aborted) adminUserLogger.error('获取账户统计失败', error);
       throw error;
     }
   },
@@ -47,7 +47,7 @@ export const adminUserService = {
   /**
    * 获取用户列表
    */
-  async listUsers(query: UserListQuery = {}): Promise<UserListResponse> {
+  async listUsers(query: UserListQuery = {}, signal?: AbortSignal): Promise<UserListResponse> {
     try {
       const params: Record<string, unknown> = {};
 
@@ -57,14 +57,14 @@ export const adminUserService = {
       if (query.role && query.role !== 'all') params.role = query.role;
       if (query.status && query.status !== 'all') params.status = query.status;
 
-      const response = await apiClient.get<UserListResponse>(BASE_PATH, { params });
+      const response = await apiClient.get<UserListResponse>(BASE_PATH, { params, signal });
       adminUserLogger.debug('获取用户列表成功', {
         total: response.data.total,
         page: response.data.page,
       });
       return response.data;
     } catch (error) {
-      adminUserLogger.error('获取用户列表失败', error);
+      if (!signal?.aborted) adminUserLogger.error('获取用户列表失败', error);
       throw error;
     }
   },

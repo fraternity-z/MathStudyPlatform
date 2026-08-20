@@ -1,6 +1,9 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { AlertTriangle, RefreshCw, Home, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button } from './ui/Button';
+import { logger } from '@/libs/utils/logger';
+
+const log = logger.createContextLogger('ErrorBoundary');
 
 interface Props {
   children: ReactNode;
@@ -41,14 +44,10 @@ export class ErrorBoundary extends Component<Props, State> {
     // 调用外部错误处理回调
     this.props.onError?.(error, errorInfo);
 
-    // 在开发环境下打印错误信息
-    if (import.meta.env.DEV) {
-      console.error('ErrorBoundary caught an error:', error);
-      console.error('Component stack:', errorInfo.componentStack);
-    }
-
-    // TODO: 在生产环境中，可以将错误上报到错误监控服务
-    // reportErrorToService(error, errorInfo);
+    log.error('render failed', {
+      error,
+      componentStack: errorInfo.componentStack,
+    });
   }
 
   handleReload = (): void => {
@@ -106,7 +105,9 @@ export class ErrorBoundary extends Component<Props, State> {
                   </span>
                 </div>
                 <p className="text-sm text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-900 rounded-lg p-3 font-mono break-all">
-                  {this.state.error?.message || '未知错误'}
+                  {import.meta.env.DEV
+                    ? this.state.error?.message || '未知错误'
+                    : '页面暂时无法显示，请重试或刷新页面'}
                 </p>
               </div>
 

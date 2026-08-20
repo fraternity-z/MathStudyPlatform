@@ -3,10 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import { BookOpen, Home, Users, AlertCircle, Wifi } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
 import type { ExerciseErrorType } from '../hooks/exerciseViewModel';
 
 interface EmptyExerciseStateProps {
   errorType: ExerciseErrorType;
+  requestError?: AppError | null;
   errorMessage?: string;
   onRetry?: () => void;
 }
@@ -22,10 +25,32 @@ const actionButtonClass = 'w-full whitespace-nowrap sm:w-auto';
  */
 export const EmptyExerciseState: React.FC<EmptyExerciseStateProps> = ({
   errorType,
+  requestError,
   errorMessage,
   onRetry,
 }) => {
   const navigate = useNavigate();
+
+  const standardError = requestError && (
+    requestError.kind === 'network'
+    || requestError.kind === 'timeout'
+    || requestError.kind === 'not_found'
+    || requestError.kind === 'conflict'
+    || requestError.kind === 'rate_limited'
+    || requestError.kind === 'unavailable'
+    || requestError.kind === 'server'
+    || requestError.kind === 'unknown'
+  ) ? requestError : null;
+
+  if (standardError) {
+    return (
+      <RequestErrorNotice
+        error={standardError}
+        onRetry={onRetry}
+        onRefresh={standardError.kind === 'conflict' ? onRetry : undefined}
+      />
+    );
+  }
 
   // 根据错误类型渲染不同的内容
   const renderContent = () => {

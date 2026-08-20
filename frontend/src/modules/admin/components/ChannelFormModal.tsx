@@ -11,6 +11,8 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { useToast } from '@/components/ui/Toast';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
 import {
   getAllPresetModels,
   getProviderPreset,
@@ -52,6 +54,7 @@ import {
   type KeyStrategy,
   uniqueTrimmed,
 } from './channelFormUtils';
+import { isAdminRequestCancelled, toAdminAppError } from '@/modules/admin/utils/errorFeedback';
 
 interface ChannelFormModalProps {
   editingProvider?: LLMProvider | null;
@@ -124,7 +127,7 @@ export const ChannelFormModal: React.FC<ChannelFormModalProps> = ({
   const [errorSection, setErrorSection] = useState<ChannelEditorSectionId | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | AppError | null>(null);
   const [connectionNotice, setConnectionNotice] = useState<string | null>(null);
   const [batchCreatedCount, setBatchCreatedCount] = useState(0);
 
@@ -225,7 +228,7 @@ export const ChannelFormModal: React.FC<ChannelFormModalProps> = ({
     target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  const showSectionError = (message: string, section: ChannelEditorSectionId) => {
+  const showSectionError = (message: string | AppError, section: ChannelEditorSectionId) => {
     setError(message);
     setErrorSection(section);
     navigateToSection(section);
@@ -282,8 +285,13 @@ export const ChannelFormModal: React.FC<ChannelFormModalProps> = ({
       } else {
         showSectionError(result.message || '未从上游获取到模型', 'models');
       }
-    } catch {
-      showSectionError('获取模型列表失败，请检查地址和密钥', 'models');
+    } catch (fetchError) {
+      if (!isAdminRequestCancelled(fetchError)) {
+        showSectionError(
+          toAdminAppError(fetchError, '获取模型列表失败，请检查地址和密钥'),
+          'models',
+        );
+      }
     } finally {
       setIsFetchingModels(false);
     }
@@ -452,17 +460,16 @@ export const ChannelFormModal: React.FC<ChannelFormModalProps> = ({
             created += 1;
           }
         } catch (batchError) {
-          const detail = typeof batchError === 'string'
-            ? batchError
-            : batchError instanceof Error
-              ? batchError.message
-              : '批量创建失败';
+          const appError = toAdminAppError(batchError, '批量创建失败');
           const completed = batchCreatedCount + created;
           if (created > 0) {
             setApiKey(credentialKeys.slice(created).join('\n'));
             setBatchCreatedCount(completed);
           }
-          throw new Error(`已创建 ${completed}/${batchTotal} 个渠道，重试只会处理剩余密钥。${detail}`);
+          throw {
+            ...appError,
+            message: `已创建 ${completed}/${batchTotal} 个渠道，重试只会处理剩余密钥。${appError.message}`,
+          } satisfies AppError;
         }
       } else {
         await onSubmit({
@@ -488,13 +495,9 @@ export const ChannelFormModal: React.FC<ChannelFormModalProps> = ({
       });
       onClose();
     } catch (submitError) {
-      setError(
-        typeof submitError === 'string'
-          ? submitError
-          : submitError instanceof Error
-            ? submitError.message
-            : '保存渠道失败'
-      );
+      if (!isAdminRequestCancelled(submitError)) {
+        setError(toAdminAppError(submitError, '保存渠道失败'));
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -600,12 +603,13 @@ export const ChannelFormModal: React.FC<ChannelFormModalProps> = ({
           >
             {(error || connectionNotice) && (
               <div className="mx-auto mb-5 max-w-7xl space-y-3">
-                {error && (
+                {typeof error === 'string' && (
                   <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
                     <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
                     <span>{error}</span>
                   </div>
                 )}
+                {error && typeof error !== 'string' ? <RequestErrorNotice error={error} /> : null}
                 {connectionNotice && (
                   <div className="rounded-md border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-700 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-300">
                     {connectionNotice}

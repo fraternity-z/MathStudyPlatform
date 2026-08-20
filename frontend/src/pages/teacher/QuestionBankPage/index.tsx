@@ -1,10 +1,10 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MainLayout } from '../../../components/layout/MainLayout';
-import { Card, CardContent } from '../../../components/ui/Card';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Button } from '../../../components/ui/Button';
 import { Pagination } from '../../../components/ui/Pagination';
-import { Plus, Download, Upload, AlertCircle } from 'lucide-react';
+import { Plus, Download, Upload } from 'lucide-react';
 import { useQuestionBank } from './hooks/useQuestionBank';
 import { QuestionStatsCards } from './components/QuestionStatsCards';
 import { QuestionFilters } from './components/QuestionFilters';
@@ -65,15 +65,29 @@ export const QuestionBankPage: React.FC = () => {
         )}
 
         {qb.error && (
-          <Card className="mb-4 border-red-200 dark:border-red-800">
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2 text-red-600 dark:text-red-400">
-                <AlertCircle className="h-5 w-5" />
-                <span>{qb.error}</span>
-              </div>
-            </CardContent>
-          </Card>
+          <RequestErrorNotice
+            error={qb.error}
+            onRetry={() => void qb.loadQuestions()}
+            onRefresh={() => void qb.loadQuestions()}
+            className="mb-4"
+          />
         )}
+        {qb.statsError ? (
+          <RequestErrorNotice
+            error={qb.statsError}
+            onRetry={() => void qb.loadStats()}
+            onRefresh={() => void qb.loadStats()}
+            className="mb-4"
+          />
+        ) : null}
+        {qb.groupsError ? (
+          <RequestErrorNotice
+            error={qb.groupsError}
+            onRetry={() => void qb.loadGroups()}
+            onRefresh={() => void qb.loadGroups()}
+            className="mb-4"
+          />
+        ) : null}
 
         <QuestionTable
           questions={qb.questions} loading={qb.loading}

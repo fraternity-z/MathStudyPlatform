@@ -6,6 +6,8 @@ import { Input } from '../../components/ui/Input';
 import { Select } from '../../components/ui/Select';
 import { Badge } from '../../components/ui/Badge';
 import { VirtualTable, type VirtualTableColumn } from '../../components/ui/VirtualTable';
+import { RequestErrorNotice } from '@/components/feedback';
+import { useToast } from '@/components/ui/Toast';
 import {
   Search,
   Filter,
@@ -17,7 +19,6 @@ import {
   Download,
   Upload,
   Loader2,
-  AlertCircle,
 } from 'lucide-react';
 import { adminUserService } from '@/modules/admin/services/adminUserService';
 import { UserFormModal } from '@/modules/admin/components/UserFormModal';
@@ -30,28 +31,35 @@ import type {
   UserStatus,
 } from '@/modules/admin/types/adminUsers';
 import { accountManagementReducer, initialState } from './accountManagementReducer';
+import {
+  getAdminErrorToast,
+  isAdminRequestCancelled,
+  toAdminAppError,
+} from '@/modules/admin/utils/errorFeedback';
 
 export const AccountManagementPage: React.FC = () => {
+  const { toast } = useToast();
   // 使用 useReducer 管理所有状态
   const [state, dispatch] = useReducer(accountManagementReducer, initialState);
 
   // 加载统计数据
-  const loadStats = useCallback(async () => {
+  const loadStats = useCallback(async (signal?: AbortSignal) => {
     dispatch({ type: 'SET_STATS_LOADING', payload: true });
     dispatch({ type: 'SET_STATS_ERROR', payload: null });
     try {
-      const data = await adminUserService.getAccountStats();
+      const data = await adminUserService.getAccountStats(signal);
+      if (signal?.aborted) return;
       dispatch({ type: 'SET_STATS', payload: data });
     } catch (error) {
-      dispatch({ type: 'SET_STATS_ERROR', payload: '加载统计数据失败' });
-      console.error('加载统计数据失败:', error);
+      if (signal?.aborted || isAdminRequestCancelled(error)) return;
+      dispatch({ type: 'SET_STATS_ERROR', payload: toAdminAppError(error, '加载统计数据失败') });
     } finally {
-      dispatch({ type: 'SET_STATS_LOADING', payload: false });
+      if (!signal?.aborted) dispatch({ type: 'SET_STATS_LOADING', payload: false });
     }
   }, []);
 
   // 加载用户列表
-  const loadUsers = useCallback(async () => {
+  const loadUsers = useCallback(async (signal?: AbortSignal) => {
     dispatch({ type: 'SET_USERS_LOADING', payload: true });
     dispatch({ type: 'SET_USERS_ERROR', payload: null });
     try {
@@ -62,7 +70,8 @@ export const AccountManagementPage: React.FC = () => {
         role: state.filters.roleFilter,
         status: state.filters.statusFilter,
       };
-      const data = await adminUserService.listUsers(query);
+      const data = await adminUserService.listUsers(query, signal);
+      if (signal?.aborted) return;
       dispatch({
         type: 'SET_USERS',
         payload: {
@@ -72,24 +81,30 @@ export const AccountManagementPage: React.FC = () => {
         },
       });
     } catch (error) {
-      dispatch({ type: 'SET_USERS_ERROR', payload: '加载用户列表失败' });
-      console.error('加载用户列表失败:', error);
+      if (signal?.aborted || isAdminRequestCancelled(error)) return;
+      dispatch({ type: 'SET_USERS_ERROR', payload: toAdminAppError(error, '加载用户列表失败') });
     } finally {
-      dispatch({ type: 'SET_USERS_LOADING', payload: false });
+      if (!signal?.aborted) dispatch({ type: 'SET_USERS_LOADING', payload: false });
     }
   }, [state.pagination.currentPage, state.pagination.pageSize, state.filters.searchTerm, state.filters.roleFilter, state.filters.statusFilter]);
 
   // 初始加载
   useEffect(() => {
-    loadStats();
+    const controller = new AbortController();
+    void loadStats(controller.signal);
+    return () => controller.abort();
   }, [loadStats]);
 
   // 加载用户列表（带防抖）
   useEffect(() => {
+    const controller = new AbortController();
     const timer = setTimeout(() => {
-      loadUsers();
+      void loadUsers(controller.signal);
     }, 300);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [loadUsers]);
 
   // 处理状态更新（锁定/解锁）
@@ -99,17 +114,17 @@ export const AccountManagementPage: React.FC = () => {
     try {
       const response = await adminUserService.updateUserStatus(user.id, newStatus);
       if (response.email_notification) {
-        alert(response.message);
+        toast({ type: 'success', title: '账户状态已更新', description: response.message });
       }
       // 刷新数据
       await Promise.all([loadStats(), loadUsers()]);
     } catch (error) {
-      console.error('更新用户状态失败:', error);
-      alert('更新用户状态失败');
+      const feedback = getAdminErrorToast(error, '更新用户状态失败');
+      if (feedback) toast(feedback);
     } finally {
       dispatch({ type: 'SET_ACTION_LOADING', payload: null });
     }
-  }, [loadStats, loadUsers]);
+  }, [loadStats, loadUsers, toast]);
 
   // 处理删除
   const handleDelete = useCallback(async (user: UserItem) => {
@@ -122,12 +137,12 @@ export const AccountManagementPage: React.FC = () => {
       // 刷新数据
       await Promise.all([loadStats(), loadUsers()]);
     } catch (error) {
-      console.error('删除用户失败:', error);
-      alert('删除用户失败');
+      const feedback = getAdminErrorToast(error, '删除用户失败');
+      if (feedback) toast(feedback);
     } finally {
       dispatch({ type: 'SET_ACTION_LOADING', payload: null });
     }
-  }, [loadStats, loadUsers]);
+  }, [loadStats, loadUsers, toast]);
 
   // 处理导出
   const handleExport = async () => {
@@ -140,8 +155,8 @@ export const AccountManagementPage: React.FC = () => {
       });
       downloadBlob(blob, `users_export_${new Date().toISOString().slice(0, 10)}.csv`);
     } catch (error) {
-      console.error('导出失败:', error);
-      alert('导出失败，请重试');
+      const feedback = getAdminErrorToast(error, '导出用户失败', '导出失败');
+      if (feedback) toast(feedback);
     } finally {
       dispatch({ type: 'SET_EXPORT_LOADING', payload: false });
     }
@@ -357,6 +372,15 @@ export const AccountManagementPage: React.FC = () => {
           </div>
         </div>
 
+        {state.errors.stats ? (
+          <RequestErrorNotice
+            error={state.errors.stats}
+            onRetry={() => void loadStats()}
+            onRefresh={() => void loadStats()}
+            className="mb-6"
+          />
+        ) : null}
+
         {/* 统计卡片 */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <Card>
@@ -366,10 +390,7 @@ export const AccountManagementPage: React.FC = () => {
                   <Loader2 className="w-6 h-6 animate-spin text-surface-400" />
                 </div>
               ) : state.errors.stats ? (
-                <div className="flex items-center text-red-500">
-                  <AlertCircle className="w-4 h-4 mr-2" />
-                  <span className="text-sm">{state.errors.stats}</span>
-                </div>
+                <div className="text-sm text-surface-500 dark:text-surface-400">暂不可用</div>
               ) : (
                 <>
                   <div className="text-2xl font-bold text-surface-900 dark:text-surface-100">
@@ -387,9 +408,7 @@ export const AccountManagementPage: React.FC = () => {
                   <Loader2 className="w-6 h-6 animate-spin text-surface-400" />
                 </div>
               ) : state.errors.stats ? (
-                <div className="flex items-center text-red-500">
-                  <AlertCircle className="w-4 h-4 mr-2" />
-                </div>
+                <div className="text-sm text-surface-500 dark:text-surface-400">暂不可用</div>
               ) : (
                 <>
                   <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
@@ -407,9 +426,7 @@ export const AccountManagementPage: React.FC = () => {
                   <Loader2 className="w-6 h-6 animate-spin text-surface-400" />
                 </div>
               ) : state.errors.stats ? (
-                <div className="flex items-center text-red-500">
-                  <AlertCircle className="w-4 h-4 mr-2" />
-                </div>
+                <div className="text-sm text-surface-500 dark:text-surface-400">暂不可用</div>
               ) : (
                 <>
                   <div className="text-2xl font-bold text-red-600 dark:text-red-400">
@@ -478,11 +495,11 @@ export const AccountManagementPage: React.FC = () => {
                 <span className="ml-3 text-surface-500">加载中...</span>
               </div>
             ) : state.errors.users ? (
-              <div className="flex flex-col items-center justify-center py-12">
-                <AlertCircle className="w-12 h-12 text-red-500 mb-4" />
-                <p className="text-red-500 mb-4">{state.errors.users}</p>
-                <Button onClick={loadUsers}>重试</Button>
-              </div>
+              <RequestErrorNotice
+                error={state.errors.users}
+                onRetry={() => void loadUsers()}
+                onRefresh={() => void loadUsers()}
+              />
             ) : state.data.users.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12">
                 <p className="text-surface-500 dark:text-surface-400">暂无用户数据</p>

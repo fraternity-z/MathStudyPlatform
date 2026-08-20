@@ -336,6 +336,7 @@ func (h *Handler) allowUpload(w http.ResponseWriter, r *http.Request, principal 
 	if h.limiter == nil || h.limiter.Allow(r.Context(), uploadRateKey(r, principal)) {
 		return true
 	}
+	w.Header().Set("Retry-After", "60")
 	writeUploadError(w, http.StatusTooManyRequests, "RATE_LIMITED", "上传过于频繁，请稍后重试")
 	return false
 }

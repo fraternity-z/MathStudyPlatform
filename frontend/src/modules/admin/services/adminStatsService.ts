@@ -28,15 +28,15 @@ export const adminStatsService = {
   /**
    * 获取概览统计数据
    */
-  async getOverview(): Promise<OverviewStats> {
+  async getOverview(signal?: AbortSignal): Promise<OverviewStats> {
     try {
-      const response = await apiClient.get<OverviewStats>(`${BASE_PATH}/overview`);
+      const response = await apiClient.get<OverviewStats>(`${BASE_PATH}/overview`, { signal });
       statsLogger.debug('获取概览统计成功', {
         total_users: response.data.total_users,
       });
       return response.data;
     } catch (error) {
-      statsLogger.error('获取概览统计失败', error);
+      if (!signal?.aborted) statsLogger.error('获取概览统计失败', error);
       throw error;
     }
   },
@@ -68,18 +68,18 @@ export const adminStatsService = {
    * 获取最近活动列表
    * @param limit 返回数量限制
    */
-  async getRecentActivities(limit: number = 10): Promise<RecentActivitiesResponse> {
+  async getRecentActivities(limit: number = 10, signal?: AbortSignal): Promise<RecentActivitiesResponse> {
     try {
       const response = await apiClient.get<RecentActivitiesResponse>(
         `${BASE_PATH}/recent-activities`,
-        { params: { limit } }
+        { params: { limit }, signal }
       );
       statsLogger.debug('获取最近活动成功', {
         count: response.data.items.length,
       });
       return response.data;
     } catch (error) {
-      statsLogger.error('获取最近活动失败', { limit, error });
+      if (!signal?.aborted) statsLogger.error('获取最近活动失败', { limit, error });
       throw error;
     }
   },
@@ -99,7 +99,7 @@ export const adminStatsService = {
       });
       return response.data;
     } catch (error) {
-      statsLogger.error('获取系统状态失败', error);
+      if (!signal?.aborted) statsLogger.error('获取系统状态失败', error);
       throw error;
     }
   },

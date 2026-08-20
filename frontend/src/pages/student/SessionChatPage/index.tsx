@@ -57,12 +57,43 @@ import { useImageUpload } from './hooks/useImageUpload';
 import { useFileUpload } from './hooks/useFileUpload';
 import { CHAT_MODES, QUICK_ACTIONS } from './constants.tsx';
 import type { ExerciseTutorLaunchState } from '../exerciseTutorLaunch';
-import { useToast } from '@/components/ui/Toast';
+import { useToast, type ToastOptions } from '@/components/ui/Toast';
 import {
   isDefinitiveDraftIdentityError,
   isSessionNotFoundError,
-  type SessionRequestError,
 } from '@/modules/session/errors';
+import {
+  formatAppErrorDescription,
+  toAppError,
+  toAppErrorFeedback,
+} from '@/libs/http/appError';
+
+function formatChatErrorDescription(
+  message: string,
+  error: ChatSettlement['error']
+): string {
+  if (error) {
+    return formatAppErrorDescription({ ...error, message: message || error.message });
+  }
+  return message;
+}
+
+function showSessionRequestError(
+  toast: (options: ToastOptions) => string,
+  error: unknown,
+  fallback: string,
+  onRefresh?: () => void,
+): void {
+  const appError = toAppError(error, fallback);
+  const feedback = toAppErrorFeedback(appError, fallback);
+  if (!feedback) return;
+  toast({
+    ...feedback,
+    ...(appError.kind === 'conflict' && onRefresh
+      ? { action: { label: '刷新数据', onClick: onRefresh } }
+      : {}),
+  });
+}
 
 export const SessionChatPage: React.FC = () => {
   const { sessionId } = useParams<{ sessionId?: string }>();
@@ -211,22 +242,14 @@ export const SessionChatPage: React.FC = () => {
     if (nextValue !== currentValue) setInputValue(nextValue);
   }, []);
 
-  const handleCancelFailed = useCallback(() => {
-    toast({
-      type: 'error',
-      title: '停止生成失败',
-      description: '回复仍可能继续生成，请稍后重试',
-    });
-  }, [toast]);
+  const refreshSessionList = useCallback(() => {
+    void dispatch(fetchSessionsAsync({ force: true }));
+  }, [dispatch]);
 
   const handleInputChange = useCallback((value: string) => {
     inputValueRef.current = value;
     setInputValue(value);
   }, []);
-
-  const refreshSessionList = useCallback(() => {
-    void dispatch(fetchSessionsAsync({ force: true }));
-  }, [dispatch]);
 
   const recoverMissingSession = useCallback((missingSessionId: string) => {
     settlementAttemptRef.current += 1;
@@ -248,9 +271,7 @@ export const SessionChatPage: React.FC = () => {
       outcome,
       requestStarted,
       requestAccepted,
-      errorMessage,
-      errorCode,
-      errorStatus,
+      error: settlementError,
       isFirstTurn,
     } = settlement;
     const settlementAttempt = ++settlementAttemptRef.current;
@@ -263,9 +284,6 @@ export const SessionChatPage: React.FC = () => {
       return;
     }
 
-    const settlementError: SessionRequestError | undefined = errorMessage || errorCode || errorStatus
-      ? { message: errorMessage ?? '消息发送失败', code: errorCode, status: errorStatus }
-      : undefined;
     if (
       isFirstTurn &&
       settledSessionId &&
@@ -274,7 +292,10 @@ export const SessionChatPage: React.FC = () => {
       toast({
         type: 'error',
         title: '首次会话无法继续',
-        description: errorMessage ?? '旧草稿已结束，输入和附件已保留，请重新发送',
+        description: formatChatErrorDescription(
+          settlementError?.message ?? '旧草稿已结束，输入和附件已保留，请重新发送',
+          settlementError
+        ),
       });
       discardDraftRecovery(settledSessionId);
       return;
@@ -287,18 +308,37 @@ export const SessionChatPage: React.FC = () => {
       toast({
         type: 'error',
         title: '会话已失效',
-        description: '原会话已不存在，输入和附件已保留',
+        description: formatChatErrorDescription(
+          '原会话已不存在，输入和附件已保留',
+          settlementError
+        ),
       });
       recoverMissingSession(settledSessionId);
       return;
     }
-    toast({
-      type: outcome === 'cancelled' ? 'info' : 'error',
-      title: outcome === 'cancelled' ? '已停止生成' : '消息发送未完成',
-      description: errorMessage ?? (requestAccepted
-        ? '已保留当前生成内容，可以继续输入新问题'
-        : '输入和附件已保留，请再次发送'),
-    });
+    if (outcome === 'cancelled') {
+      toast({
+        type: 'info',
+        title: '已停止生成',
+        description: formatChatErrorDescription(
+          settlementError?.message ?? '已保留当前生成内容，可以继续输入新问题',
+          settlementError,
+        ),
+      });
+    } else {
+      const feedback = toAppErrorFeedback(
+        settlementError,
+        requestAccepted ? '生成未完成，已保留当前内容' : '消息发送未完成，请再次发送',
+      );
+      if (feedback) {
+        toast({
+          ...feedback,
+          ...(settlementError?.kind === 'conflict'
+            ? { action: { label: '刷新数据', onClick: refreshSessionList } }
+            : {}),
+        });
+      }
+    }
 
     if (requestAccepted) {
       if (settledSessionId) refreshSessionList();
@@ -363,7 +403,6 @@ export const SessionChatPage: React.FC = () => {
     onSessionMaterialized: handleSessionMaterialized,
     onFirstTurnCompleted: handleFirstTurnCompleted,
     onChatSettled: handleChatSettled,
-    onCancelFailed: handleCancelFailed,
     onClearImages: clearImages,
     getParsedDocuments,
     onClearFiles: clearFiles,
@@ -509,13 +548,15 @@ export const SessionChatPage: React.FC = () => {
             if (
               pageActiveRef.current &&
               updateSessionModeAsync.rejected.match(result) &&
-              !result.meta.condition
+              !result.meta.condition &&
+              !result.meta.aborted
             ) {
-              toast({
-                type: 'error',
-                title: '切换模式失败',
-                description: typeof result.payload === 'string' ? result.payload : '请稍后重试',
-              });
+              showSessionRequestError(
+                toast,
+                result.payload ?? result.error,
+                '切换模式失败',
+                refreshSessionList,
+              );
             }
           });
         return;
@@ -557,19 +598,21 @@ export const SessionChatPage: React.FC = () => {
       const result = await dispatch(deleteSessionAsync(targetSessionId));
       setDeletingSessionId(null);
 
-      if (!deleteSessionAsync.fulfilled.match(result)) {
-        toast({
-          type: 'error',
-          title: '删除会话失败',
-          description: typeof result.payload === 'string' ? result.payload : '请稍后重试',
-        });
+      if (deleteSessionAsync.rejected.match(result) && !result.meta.aborted) {
+        showSessionRequestError(
+          toast,
+          result.payload ?? result.error,
+          '删除会话失败',
+          refreshSessionList,
+        );
         return;
       }
+      if (!deleteSessionAsync.fulfilled.match(result)) return;
       if (!isDraftSession && sessionId === targetSessionId) {
         resetToDraft();
       }
     },
-    [dispatch, interactionBusy, isDraftSession, resetToDraft, sessionId, toast]
+    [dispatch, interactionBusy, isDraftSession, refreshSessionList, resetToDraft, sessionId, toast]
   );
 
   // 批量删除会话
@@ -580,21 +623,23 @@ export const SessionChatPage: React.FC = () => {
     const result = await dispatch(batchDeleteSessionsAsync(selectedSessionIds));
     setIsBatchDeleting(false);
 
-    if (!batchDeleteSessionsAsync.fulfilled.match(result)) {
-      toast({
-        type: 'error',
-        title: '批量删除失败',
-        description: typeof result.payload === 'string' ? result.payload : '请稍后重试',
-      });
+    if (batchDeleteSessionsAsync.rejected.match(result) && !result.meta.aborted) {
+      showSessionRequestError(
+        toast,
+        result.payload ?? result.error,
+        '批量删除失败',
+        refreshSessionList,
+      );
       return;
     }
+    if (!batchDeleteSessionsAsync.fulfilled.match(result)) return;
     setSelectedSessionIds([]);
     setIsSelectMode(false);
 
     if (!isDraftSession && sessionId && selectedSessionIds.includes(sessionId)) {
       resetToDraft();
     }
-  }, [interactionBusy, selectedSessionIds, dispatch, isDraftSession, resetToDraft, sessionId, toast]);
+  }, [interactionBusy, selectedSessionIds, dispatch, isDraftSession, refreshSessionList, resetToDraft, sessionId, toast]);
 
   // 切换选择模式
   const handleToggleSelectMode = useCallback(() => {
@@ -635,6 +680,7 @@ export const SessionChatPage: React.FC = () => {
           isBatchDeleting={isBatchDeleting}
           loading={sessionsLoadingState === 'loading'}
           error={sessionsError}
+          onRetry={refreshSessionList}
           interactionDisabled={interactionBusy}
           onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
           onNewSession={handleNewSession}
@@ -676,6 +722,11 @@ export const SessionChatPage: React.FC = () => {
             streamingMessageId={streamingMessageId}
             isLoading={isLoading}
             error={error}
+            onRetry={() => {
+              if (sessionId && sessionId !== 'new') {
+                void dispatch(fetchHistoryAsync({ sessionId }));
+              }
+            }}
             messagesContainerRef={messagesContainerRef}
           />
 

@@ -12,6 +12,9 @@ import {
 } from 'lucide-react';
 import { adminUserService } from '@/modules/admin/services/adminUserService';
 import { downloadBlob } from '@/libs/utils/download';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
+import { isAdminRequestCancelled, toAdminAppError } from '@/modules/admin/utils/errorFeedback';
 import type { UserImportResponse, UserImportResult } from '@/modules/admin/types/adminUsers';
 
 interface ImportUsersModalProps {
@@ -28,7 +31,7 @@ export const ImportUsersModal: React.FC<ImportUsersModalProps> = ({
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<UserImportResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | AppError | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -67,8 +70,9 @@ export const ImportUsersModal: React.FC<ImportUsersModalProps> = ({
         onSuccess();
       }
     } catch (err) {
-      setError('导入失败，请检查文件格式后重试');
-      console.error('导入失败:', err);
+      if (!isAdminRequestCancelled(err)) {
+        setError(toAdminAppError(err, '导入失败，请检查文件格式后重试'));
+      }
     } finally {
       setLoading(false);
     }
@@ -162,11 +166,12 @@ export const ImportUsersModal: React.FC<ImportUsersModalProps> = ({
         </div>
 
         {/* 错误提示 */}
-        {error && (
+        {typeof error === 'string' && (
           <div className="p-3 text-sm text-red-600 bg-red-50 dark:bg-red-900/20 dark:text-red-400 rounded-lg">
             {error}
           </div>
         )}
+        {error && typeof error !== 'string' ? <RequestErrorNotice error={error} /> : null}
 
         {/* 导入结果 */}
         {result && (

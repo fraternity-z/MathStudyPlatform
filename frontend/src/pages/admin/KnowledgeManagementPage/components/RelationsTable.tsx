@@ -4,17 +4,21 @@ import { Badge } from '@/components/ui/Badge';
 import { Plus, Edit, Trash2, Loader2 } from 'lucide-react';
 import { RELATION_TYPE_LABELS } from '@/modules/admin/types/knowledgeAdmin';
 import type { KnowledgeRelationAdmin } from '@/modules/admin/types/knowledgeAdmin';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
 
 interface RelationsTableProps {
   relations: KnowledgeRelationAdmin[];
   loading: boolean;
+  error: AppError | null;
+  onRetry: () => void;
   onAddRelation: () => void;
   onEditRelation: (relation: KnowledgeRelationAdmin) => void;
   onDeleteRelation: (id: string, name: string) => void;
 }
 
 export const RelationsTable = React.memo<RelationsTableProps>(
-  ({ relations, loading, onAddRelation, onEditRelation, onDeleteRelation }) => {
+  ({ relations, loading, error, onRetry, onAddRelation, onEditRelation, onDeleteRelation }) => {
     return (
       <div className="space-y-4">
         {/* 关系操作栏 */}
@@ -31,6 +35,8 @@ export const RelationsTable = React.memo<RelationsTableProps>(
             <Loader2 className="h-6 w-6 animate-spin text-primary-500" />
             <span className="ml-2 text-surface-500">加载中...</span>
           </div>
+        ) : error ? (
+          <RequestErrorNotice error={error} onRetry={onRetry} onRefresh={onRetry} />
         ) : relations.length === 0 ? (
           <div className="text-center py-12 text-surface-400">暂无知识关系数据</div>
         ) : (

@@ -14,11 +14,12 @@ import type { EChartsOption } from 'echarts';
 echarts.use([BarChart, EchartsPieChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, CanvasRenderer]);
 import { MainLayout } from '../../components/layout/MainLayout';
 import { withErrorBoundary } from '../../components/withErrorBoundary';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
 import { Progress } from '../../components/ui/Progress';
 import { Select } from '../../components/ui/Select';
-import { apiClient, getApiErrorMessage } from '@/libs/http/apiClient';
+import { apiClient, toAppError, type AppError } from '@/libs/http/apiClient';
 import { StudentPortraitInsights } from '@/modules/student/components/StudentPortraitInsights';
 import { studentPortraitService } from '@/modules/student/services/studentPortraitService';
 import type { PortraitInsights, PortraitRangeType } from '@/modules/student/types/studentPortrait';
@@ -111,12 +112,14 @@ const AnalyticsPageInner: React.FC = () => {
   const [classRanking, setClassRanking] = useState<ClassRankingResponse | null>(null);
   const [portraitInsights, setPortraitInsights] = useState<PortraitInsights | null>(null);
   const [portraitLoading, setPortraitLoading] = useState(true);
-  const [portraitError, setPortraitError] = useState<string | null>(null);
+  const [portraitError, setPortraitError] = useState<AppError | null>(null);
   const [portraitRequestKey, setPortraitRequestKey] = useState(0);
+  const [overviewRequestKey, setOverviewRequestKey] = useState(0);
+  const [statisticsRequestKey, setStatisticsRequestKey] = useState(0);
   const [overviewLoading, setOverviewLoading] = useState(true);
   const [statisticsLoading, setStatisticsLoading] = useState(true);
-  const [overviewError, setOverviewError] = useState<string | null>(null);
-  const [statisticsError, setStatisticsError] = useState<string | null>(null);
+  const [overviewError, setOverviewError] = useState<AppError | null>(null);
+  const [statisticsError, setStatisticsError] = useState<AppError | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -136,14 +139,14 @@ const AnalyticsPageInner: React.FC = () => {
         setClassRanking(rankingRes.data);
       } catch (err) {
         if (controller.signal.aborted) return;
-        setOverviewError(getApiErrorMessage(err, '加载累计学习数据失败'));
+        setOverviewError(toAppError(err, '加载累计学习数据失败'));
       } finally {
         if (!controller.signal.aborted) setOverviewLoading(false);
       }
     };
     void load();
     return () => { controller.abort(); };
-  }, []);
+  }, [overviewRequestKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -159,7 +162,7 @@ const AnalyticsPageInner: React.FC = () => {
         if (!controller.signal.aborted) setStats(response.data);
       } catch (err) {
         if (!controller.signal.aborted) {
-          setStatisticsError(getApiErrorMessage(err, '加载学习趋势失败'));
+          setStatisticsError(toAppError(err, '加载学习趋势失败'));
         }
       } finally {
         if (!controller.signal.aborted) setStatisticsLoading(false);
@@ -167,7 +170,7 @@ const AnalyticsPageInner: React.FC = () => {
     };
     void loadStatistics();
     return () => controller.abort();
-  }, [timeRange]);
+  }, [statisticsRequestKey, timeRange]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -182,7 +185,7 @@ const AnalyticsPageInner: React.FC = () => {
         if (!controller.signal.aborted) setPortraitInsights(result);
       } catch (err) {
         if (!controller.signal.aborted) {
-          setPortraitError(getApiErrorMessage(err, '加载学生画像失败'));
+          setPortraitError(toAppError(err, '加载学生画像失败'));
         }
       } finally {
         if (!controller.signal.aborted) setPortraitLoading(false);
@@ -395,11 +398,22 @@ const AnalyticsPageInner: React.FC = () => {
           <Select options={timeRangeOptions} value={timeRange} onChange={setTimeRange} className="w-32" />
         </div>
 
-        {(overviewError || statisticsError) && (
-          <div className="mb-6 p-4 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300">
-            {overviewError ?? statisticsError}
-          </div>
-        )}
+        {overviewError ? (
+          <RequestErrorNotice
+            error={overviewError}
+            onRetry={() => setOverviewRequestKey((value) => value + 1)}
+            onRefresh={() => setOverviewRequestKey((value) => value + 1)}
+            className="mb-4"
+          />
+        ) : null}
+        {statisticsError ? (
+          <RequestErrorNotice
+            error={statisticsError}
+            onRetry={() => setStatisticsRequestKey((value) => value + 1)}
+            onRefresh={() => setStatisticsRequestKey((value) => value + 1)}
+            className="mb-6"
+          />
+        ) : null}
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
           <Card>

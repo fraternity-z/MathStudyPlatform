@@ -4,7 +4,7 @@
  * 提供教师工作台、学生管理、数据分析、班级分析、学生详情的统计数据
  */
 
-import { apiClient } from '@/libs/http/apiClient';
+import { apiClient, toAppError } from '@/libs/http/apiClient';
 import { logger } from '@/libs/utils/logger';
 import type {
   DashboardStats,
@@ -19,16 +19,21 @@ import type {
 const teacherLogger = logger.createContextLogger('Teacher');
 const BASE_PATH = '/teacher';
 
+function logRequestError(message: string, error: unknown): void {
+  if (toAppError(error).kind === 'cancelled') return;
+  teacherLogger.error(message, error);
+}
+
 export const teacherService = {
   /**
    * 获取教师工作台统计数据
    */
-  async getDashboardStats(): Promise<DashboardStats> {
+  async getDashboardStats(signal?: AbortSignal): Promise<DashboardStats> {
     try {
-      const response = await apiClient.get<DashboardStats>(`${BASE_PATH}/dashboard/stats`);
+      const response = await apiClient.get<DashboardStats>(`${BASE_PATH}/dashboard/stats`, { signal });
       return response.data;
     } catch (error) {
-      teacherLogger.error('获取工作台统计数据失败', error);
+      logRequestError('获取工作台统计数据失败', error);
       throw error;
     }
   },
@@ -36,12 +41,12 @@ export const teacherService = {
   /**
    * 获取学生管理统计数据
    */
-  async getStudentsStats(): Promise<StudentsStats> {
+  async getStudentsStats(signal?: AbortSignal): Promise<StudentsStats> {
     try {
-      const response = await apiClient.get<StudentsStats>(`${BASE_PATH}/students/stats`);
+      const response = await apiClient.get<StudentsStats>(`${BASE_PATH}/students/stats`, { signal });
       return response.data;
     } catch (error) {
-      teacherLogger.error('获取学生管理统计数据失败', error);
+      logRequestError('获取学生管理统计数据失败', error);
       throw error;
     }
   },
@@ -60,7 +65,7 @@ export const teacherService = {
       });
       return response.data;
     } catch (error) {
-      if (!signal?.aborted) teacherLogger.error('获取学生列表失败', error);
+      logRequestError('获取学生列表失败', error);
       throw error;
     }
   },
@@ -68,14 +73,15 @@ export const teacherService = {
   /**
    * 获取教师数据分析（TeacherDashboardPage）
    */
-  async getAnalytics(timeRange: string = 'week'): Promise<TeacherAnalyticsData> {
+  async getAnalytics(timeRange: string = 'week', signal?: AbortSignal): Promise<TeacherAnalyticsData> {
     try {
       const response = await apiClient.get<TeacherAnalyticsData>(`${BASE_PATH}/analytics`, {
         params: { time_range: timeRange },
+        signal,
       });
       return response.data;
     } catch (error) {
-      teacherLogger.error('获取数据分析失败', error);
+      logRequestError('获取数据分析失败', error);
       throw error;
     }
   },
@@ -83,14 +89,15 @@ export const teacherService = {
   /**
    * 获取班级分析数据（ClassDetailPage）
    */
-  async getClassAnalytics(classId: string): Promise<ClassAnalyticsData> {
+  async getClassAnalytics(classId: string, signal?: AbortSignal): Promise<ClassAnalyticsData> {
     try {
       const response = await apiClient.get<ClassAnalyticsData>(
-        `${BASE_PATH}/classes/${classId}/analytics`
+        `${BASE_PATH}/classes/${classId}/analytics`,
+        { signal },
       );
       return response.data;
     } catch (error) {
-      teacherLogger.error('获取班级分析数据失败', error);
+      logRequestError('获取班级分析数据失败', error);
       throw error;
     }
   },
@@ -106,7 +113,7 @@ export const teacherService = {
       );
       return response.data;
     } catch (error) {
-      if (!signal?.aborted) teacherLogger.error('获取学生详情失败', error);
+      logRequestError('获取学生详情失败', error);
       throw error;
     }
   },

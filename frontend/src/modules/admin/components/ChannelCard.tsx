@@ -25,15 +25,20 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Card, CardContent } from '@/components/ui/Card';
 import type { LLMProvider, LLMModel, ProviderTestResult } from '@/modules/ai-config/types/aiConfig';
+import {
+  getAdminErrorDescription,
+  isAdminRequestCancelled,
+  toAdminAppError,
+} from '@/modules/admin/utils/errorFeedback';
 
 interface ChannelCardProps {
   provider: LLMProvider;
   models: LLMModel[];
   onEdit: (provider: LLMProvider) => void;
-  onDelete: (provider: LLMProvider) => void;
-  onToggleActive: (provider: LLMProvider) => void;
+  onDelete: (provider: LLMProvider) => void | Promise<void>;
+  onToggleActive: (provider: LLMProvider) => void | Promise<void>;
   onTestConnection: (provider: LLMProvider, modelId?: string) => Promise<ProviderTestResult>;
-  onSetDefaultModel?: (modelId: string) => void;
+  onSetDefaultModel?: (modelId: string) => void | Promise<void>;
 }
 
 export const ChannelCard: React.FC<ChannelCardProps> = ({
@@ -59,10 +64,12 @@ export const ChannelCard: React.FC<ChannelCardProps> = ({
     try {
       const result = await onTestConnection(provider, modelId);
       setTestResult(result);
-    } catch {
+    } catch (error) {
+      if (isAdminRequestCancelled(error)) return;
+      const appError = toAdminAppError(error, '测试连接失败');
       setTestResult({
         success: false,
-        message: '测试失败',
+        message: getAdminErrorDescription(appError),
         latency_ms: 0,
       });
     } finally {

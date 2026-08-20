@@ -3,6 +3,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { zhCN } from 'date-fns/locale';
 import { MainLayout } from '../../components/layout/MainLayout';
+import { RequestErrorNotice } from '@/components/feedback';
 import { ErrorBoundary } from '../../components/ErrorBoundary';
 import { Button } from '../../components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
@@ -13,6 +14,7 @@ import { classCodeSchema, type ClassCodeFormData } from '../../libs/validation';
 import { formatDateOrFallback } from '@/libs/utils/dateFormat';
 import { normalizeSafeImageAttachmentUrl, normalizeSafeMailtoUrl } from '@/libs/utils/safeUrl';
 import { Users, Search, LogOut, UserPlus, Calendar, UserCheck, Mail } from 'lucide-react';
+import { isRequestCancelled, toAppError, type AppError } from '@/libs/http/appError';
 
 function formatClassDate(value: string | null | undefined): string {
   return formatDateOrFallback(value, 'yyyy年MM月dd日', {
@@ -26,8 +28,10 @@ export const MyClassPage: React.FC = () => {
   const [lookupResult, setLookupResult] = useState<ClassInfo | null>(null);
   const [teacherName, setTeacherName] = useState<string | null>(null);
   const [message, setMessage] = useState('');
+  const [requestError, setRequestError] = useState<AppError | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
+  const [reloadVersion, setReloadVersion] = useState(0);
   const {
     register,
     handleSubmit,
@@ -39,22 +43,33 @@ export const MyClassPage: React.FC = () => {
   });
 
   useEffect(() => {
+    const controller = new AbortController();
     const loadMyClass = async () => {
+      setPageLoading(true);
+      setRequestError(null);
       try {
-        const response = await classService.getMyClass();
-        setCurrentClass(response.class_info);
-      } catch {
-        // 未加入班级，静默处理
+        const response = await classService.getMyClass(controller.signal);
+        if (!controller.signal.aborted) setCurrentClass(response.class_info);
+      } catch (loadError) {
+        if (controller.signal.aborted || isRequestCancelled(loadError)) return;
+        const appError = toAppError(loadError, '获取当前班级失败，请稍后重试');
+        if (appError.kind === 'not_found') {
+          setCurrentClass(null);
+        } else {
+          setRequestError(appError);
+        }
       } finally {
-        setPageLoading(false);
+        if (!controller.signal.aborted) setPageLoading(false);
       }
     };
-    loadMyClass();
-  }, []);
+    void loadMyClass();
+    return () => controller.abort();
+  }, [reloadVersion]);
 
   const handleLookupClass = async (data: ClassCodeFormData) => {
     setIsLoading(true);
     setMessage('');
+    setRequestError(null);
     try {
       const response = await classService.lookupClass(data.code.trim());
       if (!response.found || !response.class_info) {
@@ -65,8 +80,10 @@ export const MyClassPage: React.FC = () => {
         setLookupResult(response.class_info);
         setTeacherName(response.teacher_name ?? null);
       }
-    } catch {
-      setMessage('班级查询失败，请稍后重试');
+    } catch (lookupError) {
+      if (!isRequestCancelled(lookupError)) {
+        setRequestError(toAppError(lookupError, '班级查询失败，请稍后重试'));
+      }
     } finally {
       setIsLoading(false);
     }
@@ -76,6 +93,7 @@ export const MyClassPage: React.FC = () => {
     if (!lookupResult) return;
     setIsLoading(true);
     setMessage('');
+    setRequestError(null);
     try {
       const response = await classService.joinClass({ code: lookupResult.code });
       setCurrentClass(response.class_info);
@@ -83,8 +101,10 @@ export const MyClassPage: React.FC = () => {
       setTeacherName(null);
       reset();
       setMessage('已成功加入班级');
-    } catch {
-      setMessage('加入班级失败，请先退出当前班级');
+    } catch (joinError) {
+      if (!isRequestCancelled(joinError)) {
+        setRequestError(toAppError(joinError, '加入班级失败，请稍后重试'));
+      }
     } finally {
       setIsLoading(false);
     }
@@ -93,12 +113,15 @@ export const MyClassPage: React.FC = () => {
   const handleLeaveClass = async () => {
     setIsLoading(true);
     setMessage('');
+    setRequestError(null);
     try {
       await classService.leaveClass();
       setCurrentClass(null);
       setMessage('已退出班级');
-    } catch {
-      setMessage('退出班级失败，请稍后重试');
+    } catch (leaveError) {
+      if (!isRequestCancelled(leaveError)) {
+        setRequestError(toAppError(leaveError, '退出班级失败，请稍后重试'));
+      }
     } finally {
       setIsLoading(false);
     }
@@ -132,6 +155,15 @@ export const MyClassPage: React.FC = () => {
               我的班级
             </h1>
           </div>
+
+          {requestError ? (
+            <RequestErrorNotice
+              error={requestError}
+              onRetry={() => setReloadVersion((value) => value + 1)}
+              onRefresh={() => setReloadVersion((value) => value + 1)}
+              onDismiss={() => setRequestError(null)}
+            />
+          ) : null}
 
           {currentClass ? (
             <Card>

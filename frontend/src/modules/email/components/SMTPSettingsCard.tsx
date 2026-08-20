@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle,
@@ -17,8 +17,10 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Input } from '@/components/ui/Input';
+import { RequestErrorNotice } from '@/components/feedback';
 import { emailSchema, emailSettingsSchema } from '@/libs/validation';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import type { AppError } from '@/libs/http/apiClient';
+import { isAdminRequestCancelled, toAdminAppError } from '@/modules/admin/utils/errorFeedback';
 import { adminEmailService } from '@/modules/email/services/adminEmailService';
 import type {
   EmailSettings,
@@ -40,6 +42,8 @@ interface FeedbackState {
   type: 'success' | 'error';
   message: string;
 }
+
+type SMTPAction = 'load' | 'save' | 'test' | 'send' | 'clear';
 
 const emptyForm: SMTPFormState = {
   smtpHost: '',
@@ -66,32 +70,36 @@ export const SMTPSettingsCard: React.FC = () => {
   const [settings, setSettings] = useState<EmailSettings | null>(null);
   const [testRecipient, setTestRecipient] = useState('');
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
+  const [requestError, setRequestError] = useState<AppError | null>(null);
+  const [failedAction, setFailedAction] = useState<SMTPAction | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeAction, setActiveAction] = useState<'save' | 'test' | 'send' | 'clear' | null>(null);
+  const [activeAction, setActiveAction] = useState<Exclude<SMTPAction, 'load'> | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-      try {
-        const data = await adminEmailService.getSettings();
-        if (!active) return;
-        setSettings(data);
-        setForm(settingsToForm(data));
-      } catch (error) {
-        if (active) {
-          setFeedback({ type: 'error', message: getApiErrorMessage(error, '加载邮件配置失败') });
-        }
-      } finally {
-        if (active) setIsLoading(false);
-      }
-    };
-    void load();
-    return () => {
-      active = false;
-    };
+  const loadSettings = useCallback(async (signal?: AbortSignal) => {
+    setIsLoading(true);
+    setRequestError(null);
+    setFailedAction(null);
+    try {
+      const data = await adminEmailService.getSettings(signal);
+      if (signal?.aborted) return;
+      setSettings(data);
+      setForm(settingsToForm(data));
+    } catch (error) {
+      if (signal?.aborted || isAdminRequestCancelled(error)) return;
+      setRequestError(toAdminAppError(error, '加载邮件配置失败'));
+      setFailedAction('load');
+    } finally {
+      if (!signal?.aborted) setIsLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadSettings(controller.signal);
+    return () => controller.abort();
+  }, [loadSettings]);
 
   const validateForm = (): boolean => {
     const result = emailSettingsSchema.safeParse({
@@ -133,6 +141,8 @@ export const SMTPSettingsCard: React.FC = () => {
 
   const handleSave = async () => {
     setFeedback(null);
+    setRequestError(null);
+    setFailedAction(null);
     if (!validateForm()) return;
     setActiveAction('save');
     try {
@@ -141,7 +151,10 @@ export const SMTPSettingsCard: React.FC = () => {
       setForm(settingsToForm(updated));
       setFeedback({ type: 'success', message: '邮件配置已保存' });
     } catch (error) {
-      setFeedback({ type: 'error', message: getApiErrorMessage(error, '保存邮件配置失败') });
+      if (!isAdminRequestCancelled(error)) {
+        setRequestError(toAdminAppError(error, '保存邮件配置失败'));
+        setFailedAction('save');
+      }
     } finally {
       setActiveAction(null);
     }
@@ -149,13 +162,18 @@ export const SMTPSettingsCard: React.FC = () => {
 
   const handleTestConnection = async () => {
     setFeedback(null);
+    setRequestError(null);
+    setFailedAction(null);
     if (!validateForm()) return;
     setActiveAction('test');
     try {
       const result = await adminEmailService.testSMTP(draftPayload());
       setFeedback({ type: 'success', message: result.message });
     } catch (error) {
-      setFeedback({ type: 'error', message: getApiErrorMessage(error, 'SMTP 连接测试失败') });
+      if (!isAdminRequestCancelled(error)) {
+        setRequestError(toAdminAppError(error, 'SMTP 连接测试失败'));
+        setFailedAction('test');
+      }
     } finally {
       setActiveAction(null);
     }
@@ -163,6 +181,8 @@ export const SMTPSettingsCard: React.FC = () => {
 
   const handleSendTestEmail = async () => {
     setFeedback(null);
+    setRequestError(null);
+    setFailedAction(null);
     if (!validateForm()) return;
     const recipientResult = emailSchema.safeParse(testRecipient.trim());
     if (!recipientResult.success) {
@@ -174,7 +194,10 @@ export const SMTPSettingsCard: React.FC = () => {
       const result = await adminEmailService.sendTestEmail(testRecipient.trim(), draftPayload());
       setFeedback({ type: 'success', message: result.message });
     } catch (error) {
-      setFeedback({ type: 'error', message: getApiErrorMessage(error, '测试邮件发送失败') });
+      if (!isAdminRequestCancelled(error)) {
+        setRequestError(toAdminAppError(error, '测试邮件发送失败'));
+        setFailedAction('send');
+      }
     } finally {
       setActiveAction(null);
     }
@@ -182,6 +205,8 @@ export const SMTPSettingsCard: React.FC = () => {
 
   const handleClearPassword = async () => {
     setFeedback(null);
+    setRequestError(null);
+    setFailedAction(null);
     if (!validateForm()) {
       setShowClearConfirm(false);
       return;
@@ -194,9 +219,32 @@ export const SMTPSettingsCard: React.FC = () => {
       setShowClearConfirm(false);
       setFeedback({ type: 'success', message: 'SMTP 密码已清除' });
     } catch (error) {
-      setFeedback({ type: 'error', message: getApiErrorMessage(error, '清除 SMTP 密码失败') });
+      if (!isAdminRequestCancelled(error)) {
+        setRequestError(toAdminAppError(error, '清除 SMTP 密码失败'));
+        setFailedAction('clear');
+        setShowClearConfirm(false);
+      }
     } finally {
       setActiveAction(null);
+    }
+  };
+
+  const retryFailedAction = () => {
+    switch (failedAction) {
+      case 'save':
+        void handleSave();
+        break;
+      case 'test':
+        void handleTestConnection();
+        break;
+      case 'send':
+        void handleSendTestEmail();
+        break;
+      case 'clear':
+        void handleClearPassword();
+        break;
+      default:
+        void loadSettings();
     }
   };
 
@@ -211,6 +259,26 @@ export const SMTPSettingsCard: React.FC = () => {
         </CardHeader>
         <CardContent className="flex min-h-40 items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin text-surface-400" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (requestError && !settings) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-xl">
+            <Server className="h-5 w-5" />
+            SMTP 配置
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <RequestErrorNotice
+            error={requestError}
+            onRetry={requestError.kind === 'conflict' ? undefined : () => void loadSettings()}
+            onRefresh={() => void loadSettings()}
+          />
         </CardContent>
       </Card>
     );
@@ -241,6 +309,14 @@ export const SMTPSettingsCard: React.FC = () => {
           </div>
         </CardHeader>
         <CardContent className="space-y-6">
+          {requestError ? (
+            <RequestErrorNotice
+              error={requestError}
+              onRetry={requestError.kind === 'conflict' ? undefined : retryFailedAction}
+              onRefresh={() => void loadSettings()}
+              onDismiss={() => setRequestError(null)}
+            />
+          ) : null}
           {feedback ? <Feedback feedback={feedback} /> : null}
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">

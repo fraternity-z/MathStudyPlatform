@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { MainLayout } from '../../components/layout/MainLayout';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { Progress } from '../../components/ui/Progress';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 import { knowledgeService } from '@/modules/knowledge/services/knowledgeService';
 import type {
   LearningPathItem,
@@ -20,7 +21,6 @@ import {
   ArrowRight,
   Loader2,
   Circle,
-  AlertCircle,
 } from 'lucide-react';
 
 const EMPTY_PATH_ITEMS: ReadonlyArray<LearningPathItem> = [];
@@ -63,8 +63,8 @@ export const LearningPathPage: React.FC = () => {
   const [pathData, setPathData] = useState<LearningPathResponse | null>(null);
   const [targetId, setTargetId] = useState<string | null>(requestedTargetId);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [goalWarning, setGoalWarning] = useState<string | null>(null);
+  const [error, setError] = useState<AppError | null>(null);
+  const [goalWarning, setGoalWarning] = useState<AppError | null>(null);
   const [reloadVersion, setReloadVersion] = useState(0);
 
   useEffect(() => {
@@ -81,7 +81,7 @@ export const LearningPathPage: React.FC = () => {
             resolvedTargetId = goal.target_id;
           } catch (goalError) {
             if (controller.signal.aborted) return;
-            setGoalWarning(getApiErrorMessage(goalError, '学习目标读取失败，已显示完整学习路径'));
+            setGoalWarning(toAppError(goalError, '学习目标读取失败，已显示完整学习路径'));
           }
         }
 
@@ -94,7 +94,7 @@ export const LearningPathPage: React.FC = () => {
           setPathData(response);
         }
       } catch (err) {
-        if (!controller.signal.aborted) setError(getApiErrorMessage(err, '加载学习路径失败'));
+        if (!controller.signal.aborted) setError(toAppError(err, '加载学习路径失败'));
       } finally {
         if (!controller.signal.aborted) setLoading(false);
       }
@@ -125,19 +125,21 @@ export const LearningPathPage: React.FC = () => {
         </div>
 
         {goalWarning ? (
-          <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>{goalWarning}</span>
-          </div>
+          <RequestErrorNotice
+            error={goalWarning}
+            onRetry={() => setReloadVersion((value) => value + 1)}
+            onRefresh={() => setReloadVersion((value) => value + 1)}
+            className="mb-4"
+          />
         ) : null}
 
         {error ? (
-          <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 p-4 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
-            <span>{error}</span>
-            <Button size="sm" variant="outline" onClick={() => setReloadVersion((value) => value + 1)}>
-              重试
-            </Button>
-          </div>
+          <RequestErrorNotice
+            error={error}
+            onRetry={() => setReloadVersion((value) => value + 1)}
+            onRefresh={() => setReloadVersion((value) => value + 1)}
+            className="mb-6"
+          />
         ) : null}
 
         {loading ? (

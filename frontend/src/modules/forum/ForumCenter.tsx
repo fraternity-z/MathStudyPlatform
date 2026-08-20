@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/Badge';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
@@ -20,7 +21,7 @@ import { IconTooltip } from '@/components/ui/IconTooltip';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { useToast } from '@/components/ui/Toast';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, toAppErrorFeedback, type AppError } from '@/libs/http/apiClient';
 import { cn } from '@/libs/utils/cn';
 import { formatRelativeTime } from '@/libs/utils/dateFormat';
 
@@ -126,11 +127,11 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
   const [items, setItems] = useState<ForumPost[]>([]);
   const [total, setTotal] = useState(0);
   const [listLoading, setListLoading] = useState(true);
-  const [listError, setListError] = useState('');
+  const [listError, setListError] = useState<AppError | null>(null);
   const [activePostId, setActivePostId] = useState(postId);
   const [detail, setDetail] = useState<ForumPostDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [detailError, setDetailError] = useState('');
+  const [detailError, setDetailError] = useState<AppError | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [composeOpen, setComposeOpen] = useState(false);
   const [editingPost, setEditingPost] = useState<ForumPost | null>(null);
@@ -139,7 +140,7 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
   const [hideOpen, setHideOpen] = useState(false);
   const [hiding, setHiding] = useState(false);
   const [unreadPostIDs, setUnreadPostIDs] = useState<Set<string>>(new Set());
-  const [unreadError, setUnreadError] = useState('');
+  const [unreadError, setUnreadError] = useState<AppError | null>(null);
   const listRequest = useRef(0);
   const detailRequest = useRef(0);
   const unreadRequest = useRef(0);
@@ -164,10 +165,10 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
       const next = new Set(ids);
       unreadPostIDsRef.current = next;
       setUnreadPostIDs(next);
-      setUnreadError('');
+      setUnreadError(null);
     } catch (error) {
       if (!signal?.aborted && request === unreadRequest.current) {
-        setUnreadError(getApiErrorMessage(error, '论坛未读状态加载失败'));
+        setUnreadError(toAppError(error, '论坛未读状态加载失败'));
       }
     }
   }, []);
@@ -202,7 +203,7 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
   const loadList = useCallback(async (signal?: AbortSignal) => {
     const request = ++listRequest.current;
     setListLoading(true);
-    setListError('');
+    setListError(null);
     try {
       const response = await forumService.list(query, signal);
       if (signal?.aborted || request !== listRequest.current) return;
@@ -212,7 +213,7 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
       if (query.page > lastPage) setPage(lastPage);
     } catch (error) {
       if (signal?.aborted || request !== listRequest.current) return;
-      setListError(getApiErrorMessage(error, '论坛帖子加载失败，请稍后重试'));
+      setListError(toAppError(error, '论坛帖子加载失败，请稍后重试'));
     } finally {
       if (!signal?.aborted && request === listRequest.current) setListLoading(false);
     }
@@ -236,10 +237,10 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
         unreadPostIDsRef.current = next;
         return next;
       });
-      setUnreadError('');
+      setUnreadError(null);
       if (updatedCount > 0 || wasUnread) notifyUnreadChange();
     } catch (error) {
-      setUnreadError(getApiErrorMessage(error, '论坛互动标记已读失败'));
+      setUnreadError(toAppError(error, '论坛互动标记已读失败'));
     }
   }, [notifyUnreadChange]);
 
@@ -247,7 +248,7 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
     const request = ++detailRequest.current;
     const incrementView = !viewedPostIDs.current.has(id);
     setDetailLoading(true);
-    setDetailError('');
+    setDetailError(null);
     try {
       const response = await forumService.get(id, signal, incrementView);
       if (signal?.aborted || request !== detailRequest.current || activePostId !== id) return false;
@@ -259,7 +260,7 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
     } catch (error) {
       if (signal?.aborted || request !== detailRequest.current) return false;
       setDetail((current) => current?.id === id ? current : null);
-      setDetailError(getApiErrorMessage(error, '帖子详情加载失败，请稍后重试'));
+      setDetailError(toAppError(error, '帖子详情加载失败，请稍后重试'));
       return false;
     } finally {
       if (!signal?.aborted && request === detailRequest.current) setDetailLoading(false);
@@ -270,7 +271,7 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
     if (!activePostId) {
       detailRequest.current += 1;
       setDetail(null);
-      setDetailError('');
+      setDetailError(null);
       setDetailLoading(false);
       return;
     }
@@ -310,7 +311,8 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
       refresh();
       toast({ type: 'success', title: editingPost ? '帖子已更新' : '帖子已发布' });
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, editingPost ? '帖子更新失败' : '帖子发布失败') });
+      const feedback = toAppErrorFeedback(error, editingPost ? '帖子更新失败' : '帖子发布失败');
+      if (feedback) toast(feedback);
     } finally {
       setSaving(false);
     }
@@ -326,7 +328,8 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
       if (detail) void loadDetail(detail.id);
       notifyUnreadChange();
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, failure) });
+      const feedback = toAppErrorFeedback(error, failure);
+      if (feedback) toast(feedback);
     } finally {
       setActionKey('');
     }
@@ -343,7 +346,8 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
       toast({ type: 'success', title: '帖子已设为不可见' });
       notifyUnreadChange();
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '设置帖子不可见失败') });
+      const feedback = toAppErrorFeedback(error, '设置帖子不可见失败');
+      if (feedback) toast(feedback);
     } finally {
       setHiding(false);
     }
@@ -358,7 +362,8 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
       notifyUnreadChange();
       return reloaded;
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '回复发布失败') });
+      const feedback = toAppErrorFeedback(error, '回复发布失败');
+      if (feedback) toast(feedback);
       return false;
     }
   };
@@ -372,7 +377,8 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
       toast({ type: 'success', title: '回复已更新' });
       return reloaded;
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '回复更新失败') });
+      const feedback = toAppErrorFeedback(error, '回复更新失败');
+      if (feedback) toast(feedback);
       return false;
     }
   };
@@ -386,7 +392,8 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
       toast({ type: 'success', title: '回复已删除' });
       return reloaded;
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '回复删除失败') });
+      const feedback = toAppErrorFeedback(error, '回复删除失败');
+      if (feedback) toast(feedback);
       return false;
     }
   };
@@ -402,7 +409,8 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
       toast({ type: 'success', title: '举报已提交' });
       return true;
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '举报提交失败') });
+      const feedback = toAppErrorFeedback(error, '举报提交失败');
+      if (feedback) toast(feedback);
       return false;
     }
   };
@@ -449,7 +457,7 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
             </div>
             {unreadError ? (
               <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-amber-50 px-3 py-1.5 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-                <span className="truncate">{unreadError}</span>
+                <span className="truncate">{unreadError.message}</span>
                 <button type="button" className="shrink-0 font-medium hover:underline" onClick={() => void loadUnreadPostIDs()}>重试</button>
               </div>
             ) : null}
@@ -514,9 +522,13 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
                     {[1, 2, 3, 4, 5, 6].map((item) => <div key={item} className="h-[60px] animate-pulse bg-surface-100/80 dark:bg-surface-800/80" />)}
                   </div>
                 ) : listError ? (
-                  <div className="flex min-h-64 flex-col items-center justify-center gap-3 px-6 text-center">
-                    <p className="text-sm text-red-600 dark:text-red-300">{listError}</p>
-                    <Button variant="outline" size="sm" onClick={refresh}>重新加载</Button>
+                  <div className="flex min-h-64 items-center px-6">
+                    <RequestErrorNotice
+                      error={listError}
+                      onRetry={refresh}
+                      onRefresh={refresh}
+                      className="w-full"
+                    />
                   </div>
                 ) : visibleItems.length === 0 ? (
                   <ForumListEmpty filtered={hasFilter} />
@@ -555,9 +567,13 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
               {detail ? (
                 <div className="relative h-full min-h-0">
                   {detailError ? (
-                    <div className="absolute inset-x-3 top-2 z-10 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 shadow-sm dark:border-red-900/60 dark:bg-red-950 dark:text-red-300">
-                      {detailError}
-                    </div>
+                    <RequestErrorNotice
+                      error={detailError}
+                      onRetry={() => void loadDetail(detail.id)}
+                      onRefresh={() => void loadDetail(detail.id)}
+                      onDismiss={() => setDetailError(null)}
+                      className="absolute inset-x-3 top-2 z-10 shadow-sm"
+                    />
                   ) : null}
                   <ForumPostDetailPane
                     key={detail.id}
@@ -582,9 +598,14 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
                   <Button variant="ghost" size="sm" className="lg:hidden" onClick={() => selectPost('')}><ChevronLeft className="mr-1 h-4 w-4" />返回列表</Button>
                 </div>
               ) : detailError ? (
-                <div className="flex h-full min-h-64 flex-col items-center justify-center gap-3 px-6 text-center text-sm text-surface-500">
-                  <p className="text-red-600 dark:text-red-300">{detailError}</p>
-                  <div className="flex gap-2"><Button variant="outline" size="sm" onClick={refresh}>重新加载</Button><Button variant="ghost" size="sm" className="lg:hidden" onClick={() => selectPost('')}>返回列表</Button></div>
+                <div className="flex h-full min-h-64 flex-col items-center justify-center gap-3 px-6 text-sm text-surface-500">
+                  <RequestErrorNotice
+                    error={detailError}
+                    onRetry={() => void loadDetail(activePostId)}
+                    onRefresh={() => void loadDetail(activePostId)}
+                    className="w-full max-w-lg"
+                  />
+                  <Button variant="ghost" size="sm" className="lg:hidden" onClick={() => selectPost('')}>返回列表</Button>
                 </div>
               ) : (
                 <div className="flex h-full min-h-64 flex-col items-center justify-center px-8 text-center">

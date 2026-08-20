@@ -14,6 +14,8 @@ import {
 import { EmptyExerciseState } from './EmptyExerciseState';
 import { AnswerImageInput } from './AnswerImageInput';
 import { ExerciseMathContent } from './ExerciseMathContent';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/appError';
 import type {
   ExerciseSolution,
   Question,
@@ -21,6 +23,7 @@ import type {
 } from '@/modules/exercise/services/exerciseService';
 import type {
   ExerciseAnswerSubmission,
+  ExerciseErrorSource,
   ExerciseErrorType,
   SubmitPhase,
 } from '../hooks/exerciseViewModel';
@@ -51,9 +54,10 @@ export interface ExercisePanelProps {
   submitResult: SubmitResult | null;
   solution: ExerciseSolution | null;
   isLoadingSolution: boolean;
-  solutionError: string | null;
-  error: string | null;
+  solutionError: AppError | null;
+  error: AppError | null;
   errorType: ExerciseErrorType | null;
+  errorSource?: ExerciseErrorSource | null;
   onNextQuestion: () => void | Promise<void>;
   submitAnswer: (submission: ExerciseAnswerSubmission) => Promise<void>;
   onLoadSolution: () => void | Promise<void>;
@@ -72,6 +76,7 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
   solutionError,
   error,
   errorType,
+  errorSource,
   onNextQuestion,
   submitAnswer,
   onLoadSolution,
@@ -112,6 +117,22 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
     await onLoadSolution();
   }, [onLoadSolution]);
 
+  const handleRetryError = useCallback(async () => {
+    if (errorSource !== 'submission' || !lastSubmission) {
+      await onNextQuestion();
+      return;
+    }
+
+    setSubmittedWithImage(
+      !lastSubmission.answerText && Boolean(lastSubmission.answerImage),
+    );
+    await submitAnswer(
+      lastSubmission.answerText
+        ? { answerText: lastSubmission.answerText }
+        : { answerImage: lastSubmission.answerImage },
+    );
+  }, [errorSource, lastSubmission, onNextQuestion, submitAnswer]);
+
   // ========== 渲染 ==========
 
   if (isLoading && !currentQuestion) {
@@ -127,7 +148,8 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
     return (
       <EmptyExerciseState
         errorType={errorType}
-        errorMessage={error ?? undefined}
+        requestError={error}
+        errorMessage={error?.message}
         onRetry={
           errorType === 'network_error' ||
           errorType === 'generation_unavailable' ||
@@ -467,19 +489,10 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
                   </div>
                 ) : solutionError ? (
                   <div className="space-y-2">
-                    <p className="text-sm text-red-600 dark:text-red-400">{solutionError}</p>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={handleLoadSolution}
-                      isLoading={isLoadingSolution}
-                    >
-                      {!isLoadingSolution ? (
-                        <RefreshCw className="mr-1.5 h-4 w-4" aria-hidden="true" />
-                      ) : null}
-                      重试解析
-                    </Button>
+                    <RequestErrorNotice
+                      error={solutionError}
+                      onRetry={solutionError.retryable ? handleLoadSolution : undefined}
+                    />
                   </div>
                 ) : (
                   <Button
@@ -503,9 +516,11 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
 
       {/* 错误提示 */}
       {error ? (
-        <div role="alert" className="text-center text-sm text-red-500">
-          {error}
-        </div>
+        <RequestErrorNotice
+          error={error}
+          onRetry={error.retryable ? handleRetryError : undefined}
+          onRefresh={error.kind === 'conflict' ? onNextQuestion : undefined}
+        />
       ) : null}
     </div>
   );

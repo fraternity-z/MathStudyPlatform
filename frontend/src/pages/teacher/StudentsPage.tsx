@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { MainLayout } from '../../components/layout/MainLayout';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
@@ -15,6 +16,7 @@ import { classService } from '@/modules/classroom/services/classService';
 import { teacherService } from '@/modules/teacher/services/teacherService';
 import type { ClassInfo } from '@/modules/classroom/types/classroom';
 import type { StudentsStats, TeacherStudentListItem } from '@/modules/teacher/types/teacher';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 
 type StudentRow = TeacherStudentListItem;
 
@@ -28,42 +30,55 @@ export const StudentsPage: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [pagination, setPagination] = useState({ total: 0, totalPages: 0 });
   const [isLoading, setIsLoading] = useState(true);
-  const [errorMessage, setErrorMessage] = useState('');
+  const [classesError, setClassesError] = useState<AppError | null>(null);
+  const [statsError, setStatsError] = useState<AppError | null>(null);
+  const [studentsError, setStudentsError] = useState<AppError | null>(null);
   const [stats, setStats] = useState<StudentsStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
+  const [classesReloadKey, setClassesReloadKey] = useState(0);
+  const [statsReloadKey, setStatsReloadKey] = useState(0);
+  const [studentsReloadKey, setStudentsReloadKey] = useState(0);
 
   useEffect(() => {
+    const controller = new AbortController();
     const loadClasses = async () => {
+      setClassesError(null);
       try {
-        const response = await classService.listTeacherClasses();
-        setClasses(response.items);
-      } catch {
-        setErrorMessage('班级列表加载失败，请稍后重试');
+        const response = await classService.listTeacherClasses(controller.signal);
+        if (!controller.signal.aborted) setClasses(response.items);
+      } catch (error) {
+        if (!controller.signal.aborted) setClassesError(toAppError(error, '班级列表加载失败，请稍后重试'));
       }
     };
-    loadClasses();
-  }, []);
+    void loadClasses();
+    return () => controller.abort();
+  }, [classesReloadKey]);
 
   useEffect(() => {
+    const controller = new AbortController();
     const loadStats = async () => {
       try {
         setStatsLoading(true);
-        const data = await teacherService.getStudentsStats();
-        setStats(data);
-      } catch (err) {
-        console.error('获取学生统计数据失败:', err);
+        setStatsError(null);
+        const data = await teacherService.getStudentsStats(controller.signal);
+        if (!controller.signal.aborted) setStats(data);
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setStatsError(toAppError(error, '学生统计数据加载失败，请稍后重试'));
+        }
       } finally {
-        setStatsLoading(false);
+        if (!controller.signal.aborted) setStatsLoading(false);
       }
     };
-    loadStats();
-  }, []);
+    void loadStats();
+    return () => controller.abort();
+  }, [statsReloadKey]);
 
   useEffect(() => {
     const controller = new AbortController();
     const loadStudents = async () => {
       setIsLoading(true);
-      setErrorMessage('');
+      setStudentsError(null);
       try {
         const response = await teacherService.getStudents({
           page: currentPage,
@@ -74,18 +89,18 @@ export const StudentsPage: React.FC = () => {
         if (controller.signal.aborted) return;
         setStudents(response.items);
         setPagination({ total: response.total, totalPages: response.total_pages });
-      } catch {
+      } catch (error) {
         if (controller.signal.aborted) return;
         setStudents([]);
         setPagination({ total: 0, totalPages: 0 });
-        setErrorMessage('学生列表加载失败，请稍后重试');
+        setStudentsError(toAppError(error, '学生列表加载失败，请稍后重试'));
       } finally {
         if (!controller.signal.aborted) setIsLoading(false);
       }
     };
     void loadStudents();
     return () => controller.abort();
-  }, [currentPage, searchTerm, selectedClassId]);
+  }, [currentPage, searchTerm, selectedClassId, studentsReloadKey]);
 
   return (
     <MainLayout>
@@ -105,6 +120,23 @@ export const StudentsPage: React.FC = () => {
 
           </div>
         </div>
+
+        {classesError ? (
+          <RequestErrorNotice
+            error={classesError}
+            onRetry={() => setClassesReloadKey((key) => key + 1)}
+            onRefresh={() => setClassesReloadKey((key) => key + 1)}
+            className="mb-4"
+          />
+        ) : null}
+        {statsError ? (
+          <RequestErrorNotice
+            error={statsError}
+            onRetry={() => setStatsReloadKey((key) => key + 1)}
+            onRefresh={() => setStatsReloadKey((key) => key + 1)}
+            className="mb-6"
+          />
+        ) : null}
 
         {/* 统计卡片 */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
@@ -211,9 +243,14 @@ export const StudentsPage: React.FC = () => {
             <CardTitle>学生列表 ({pagination.total})</CardTitle>
           </CardHeader>
           <CardContent>
-            {errorMessage && (
-              <p className="mb-4 text-sm text-red-500">{errorMessage}</p>
-            )}
+            {studentsError ? (
+              <RequestErrorNotice
+                error={studentsError}
+                onRetry={() => setStudentsReloadKey((key) => key + 1)}
+                onRefresh={() => setStudentsReloadKey((key) => key + 1)}
+                className="mb-4"
+              />
+            ) : null}
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>

@@ -1,13 +1,14 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Modal } from '../../../../components/ui/Modal';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Button } from '../../../../components/ui/Button';
 import { Input } from '../../../../components/ui/Input';
 import { Loader2, Upload, Search, Link as LinkIcon, Check, X, Plus } from 'lucide-react';
 import { cn } from '../../../../libs/utils/cn';
-import { useAppDispatch } from '@/store';
-import { createResource } from '@/modules/resource/store/resourceSlice';
+import { resourceService } from '@/modules/resource/services/resourceService';
 import { uploadResourceFile, validateResourceFile } from '@/modules/upload/services/uploadService';
 import type { ResourceCreateRequest, BatchImportItem, ResourceType as ResourceTypeEnum } from '@/modules/resource/types/resource';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 import {
   extractTitleFromUrl,
   detectResourceTypeFromUrl,
@@ -24,6 +25,17 @@ interface BatchImportModalProps {
   onSuccess: () => void;
 }
 
+function formatRequestError(error: unknown, fallback: string): string {
+  const appError = toAppError(error, fallback);
+  return [
+    appError.message,
+    appError.retryAfter !== undefined && appError.retryAfter > 0
+      ? `可在 ${appError.retryAfter} 秒后重试`
+      : '',
+    appError.requestId ? `请求编号：${appError.requestId}` : '',
+  ].filter(Boolean).join('；');
+}
+
 // 文件上传进度状态
 interface FileUploadProgress {
   id: string;
@@ -34,14 +46,15 @@ interface FileUploadProgress {
 }
 
 export const BatchImportModal = React.memo<BatchImportModalProps>(({ isOpen, onClose, onSuccess }) => {
-  const dispatch = useAppDispatch();
-
   const [tab, setTab] = useState<'link' | 'file'>('link');
   const [linksText, setLinksText] = useState('');
   const [importItems, setImportItems] = useState<BatchImportItem[]>([]);
   const [defaultChapter, setDefaultChapter] = useState('');
   const [defaultTopic, setDefaultTopic] = useState('');
   const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [requestError, setRequestError] = useState<AppError | null>(null);
+  const completedLinkImportsRef = useRef(new Map<string, string>());
 
   // 文件上传状态
   const [files, setFiles] = useState<File[]>([]);
@@ -59,6 +72,7 @@ export const BatchImportModal = React.memo<BatchImportModalProps>(({ isOpen, onC
       source: extractSourceFromUrl(url),
       selected: true,
     }));
+    completedLinkImportsRef.current.clear();
     setImportItems(items);
   };
 
@@ -80,9 +94,7 @@ export const BatchImportModal = React.memo<BatchImportModalProps>(({ isOpen, onC
     const selectedItems = importItems.filter((item) => item.selected);
     if (selectedItems.length === 0) return;
 
-    setImporting(true);
-
-    for (const item of selectedItems) {
+    const pendingItems = selectedItems.filter((item) => {
       const data: ResourceCreateRequest = {
         title: item.title,
         type: item.type,
@@ -92,12 +104,38 @@ export const BatchImportModal = React.memo<BatchImportModalProps>(({ isOpen, onC
         topic: defaultTopic || undefined,
         storage_type: 'external',
       };
-      await dispatch(createResource(data));
+      return completedLinkImportsRef.current.get(item.id) !== JSON.stringify(data);
+    });
+    if (pendingItems.length === 0) {
+      handleClose();
+      onSuccess();
+      return;
     }
 
-    setImporting(false);
-    handleClose();
-    onSuccess();
+    setImporting(true);
+    setImportError(null);
+    setRequestError(null);
+    try {
+      for (const item of pendingItems) {
+        const data: ResourceCreateRequest = {
+          title: item.title,
+          type: item.type,
+          url: item.url,
+          source: item.source,
+          chapter: defaultChapter || undefined,
+          topic: defaultTopic || undefined,
+          storage_type: 'external',
+        };
+        await resourceService.createResource(data);
+        completedLinkImportsRef.current.set(item.id, JSON.stringify(data));
+      }
+      handleClose();
+      onSuccess();
+    } catch (error) {
+      setRequestError(toAppError(error, '资源导入失败'));
+    } finally {
+      setImporting(false);
+    }
   };
 
   // 处理文件选择
@@ -107,14 +145,16 @@ export const BatchImportModal = React.memo<BatchImportModalProps>(({ isOpen, onC
 
     // 验证文件类型
     const validFiles: File[] = [];
+    const validationErrors: string[] = [];
     for (const file of selectedFiles) {
       const validation = validateResourceFile(file);
       if (!validation.valid) {
-        alert(`文件 "${file.name}" 不支持: ${validation.error}`);
+        validationErrors.push(`文件 "${file.name}" 不支持：${validation.error}`);
         continue;
       }
       validFiles.push(file);
     }
+    setImportError(validationErrors.length > 0 ? validationErrors.join('；') : null);
 
     if (validFiles.length === 0) return;
 
@@ -147,16 +187,30 @@ export const BatchImportModal = React.memo<BatchImportModalProps>(({ isOpen, onC
   const handleFileUpload = async () => {
     const selectedIndices = fileItems
       .map((item, index) => ({ item, index }))
-      .filter(({ item }) => item.selected);
+      .filter(({ item }) => item.selected && fileProgress[item.id]?.status !== 'done');
 
-    if (selectedIndices.length === 0) return;
+    if (selectedIndices.length === 0) {
+      if (fileItems.some((item) => item.selected && fileProgress[item.id]?.status === 'done')) {
+        handleClose();
+        onSuccess();
+      }
+      return;
+    }
 
     setImporting(true);
+    setImportError(null);
+    setRequestError(null);
+    let hadFailure = false;
 
     // 初始化进度状态
-    const initialProgress: Record<string, FileUploadProgress> = {};
+    const initialProgress: Record<string, FileUploadProgress> = { ...fileProgress };
     for (const { item } of selectedIndices) {
-      initialProgress[item.id] = { id: item.id, percent: 0, status: 'pending' };
+      initialProgress[item.id] = {
+        id: item.id,
+        percent: fileProgress[item.id]?.url ? 100 : 0,
+        status: 'pending',
+        ...(fileProgress[item.id]?.url ? { url: fileProgress[item.id].url } : {}),
+      };
     }
     setFileProgress(initialProgress);
 
@@ -171,32 +225,39 @@ export const BatchImportModal = React.memo<BatchImportModalProps>(({ isOpen, onC
       }));
 
       try {
-        // 上传文件到七牛云
-        const uploadResult = await uploadResourceFile(file, (percent) => {
+        // 已经完成对象存储上传但资源记录失败时，重试只提交资源记录，避免重复上传。
+        const existingUrl = fileProgress[item.id]?.url;
+        const resourceUrl = existingUrl ?? (await uploadResourceFile(file, (percent) => {
           setFileProgress((prev) => ({
             ...prev,
             [item.id]: { ...prev[item.id], percent },
           }));
-        });
+        })).url;
+        setFileProgress((prev) => ({
+          ...prev,
+          [item.id]: { ...prev[item.id], percent: 100, status: 'uploading', url: resourceUrl },
+        }));
 
         // 上传成功，创建资源记录
         const data: ResourceCreateRequest = {
           title: item.title,
           type: item.type,
-          url: uploadResult.url,
+          url: resourceUrl,
           source: item.source,
           chapter: defaultChapter || undefined,
           topic: defaultTopic || undefined,
           storage_type: 'cloud',
         };
-        await dispatch(createResource(data));
+        await resourceService.createResource(data);
 
         setFileProgress((prev) => ({
           ...prev,
-          [item.id]: { ...prev[item.id], status: 'done', percent: 100, url: uploadResult.url },
+          [item.id]: { ...prev[item.id], status: 'done', percent: 100, url: resourceUrl },
         }));
       } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : '上传失败';
+        hadFailure = true;
+        setRequestError((current) => current ?? toAppError(err, '上传失败'));
+        const errorMsg = formatRequestError(err, '上传失败');
         setFileProgress((prev) => ({
           ...prev,
           [item.id]: { ...prev[item.id], status: 'error', error: errorMsg },
@@ -205,8 +266,10 @@ export const BatchImportModal = React.memo<BatchImportModalProps>(({ isOpen, onC
     }
 
     setImporting(false);
-    handleClose();
-    onSuccess();
+    if (!hadFailure) {
+      handleClose();
+      onSuccess();
+    }
   };
 
   const handleClose = () => {
@@ -218,12 +281,27 @@ export const BatchImportModal = React.memo<BatchImportModalProps>(({ isOpen, onC
     setFiles([]);
     setFileItems([]);
     setFileProgress({});
+    setImportError(null);
+    setRequestError(null);
+    completedLinkImportsRef.current.clear();
     onClose();
   };
 
   return (
     <Modal isOpen={isOpen} onClose={handleClose} title="上传资源">
       <div className="space-y-4">
+        {requestError ? (
+          <RequestErrorNotice
+            error={requestError}
+            onRetry={tab === 'link' ? handleBatchImport : handleFileUpload}
+            onDismiss={() => setRequestError(null)}
+          />
+        ) : null}
+        {importError ? (
+          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/70 dark:bg-red-950/30 dark:text-red-200">
+            {importError}
+          </div>
+        ) : null}
         {/* 标签页切换 */}
         <div className="flex border-b border-surface-200 dark:border-surface-700">
           <button

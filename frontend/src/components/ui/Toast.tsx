@@ -9,6 +9,11 @@ import { animationDuration } from '../../libs/animations';
  */
 export type ToastType = 'success' | 'error' | 'info' | 'warning';
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 /**
  * Toast 样式配置（模块级常量，避免重复创建）
  */
@@ -42,13 +47,17 @@ export interface Toast {
   title: string;
   description?: string;
   duration?: number;
+  action?: ToastAction;
+  dedupeKey?: string;
 }
+
+export type ToastOptions = Omit<Toast, 'id'>;
 
 /**
  * Toast Context 接口
  */
 interface ToastActionsContextType {
-  addToast: (toast: Omit<Toast, 'id'>) => void;
+  addToast: (toast: ToastOptions) => string;
   removeToast: (id: string) => void;
 }
 
@@ -78,8 +87,8 @@ export const useToast = () => {
     throw new Error('useToast must be used within ToastProvider');
   }
 
-  const toast = useCallback((options: Omit<Toast, 'id'>) => {
-    actions.addToast(options);
+  const toast = useCallback((options: ToastOptions) => {
+    return actions.addToast(options);
   }, [actions]);
 
   return { toast, removeToast: actions.removeToast };
@@ -100,19 +109,32 @@ const useToastState = (): Toast[] => {
  */
 export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastsRef = useRef<Toast[]>([]);
 
-  const addToast = useCallback((toast: Omit<Toast, 'id'>) => {
+  const addToast = useCallback((toast: ToastOptions): string => {
+    if (toast.dedupeKey !== undefined) {
+      const duplicate = toastsRef.current.find(
+        (activeToast) => activeToast.dedupeKey === toast.dedupeKey
+      );
+      if (duplicate) return duplicate.id;
+    }
+
     const id = Math.random().toString(36).substring(2, 9);
     const newToast: Toast = {
       ...toast,
       id,
       duration: toast.duration ?? animationDuration.slow * 6 // 默认 3000ms
     };
-    setToasts((prev) => [...prev, newToast]);
+    const nextToasts = [...toastsRef.current, newToast];
+    toastsRef.current = nextToasts;
+    setToasts(nextToasts);
+    return id;
   }, []);
 
   const removeToast = useCallback((id: string) => {
-    setToasts((prev) => prev.filter((toast) => toast.id !== id));
+    const nextToasts = toastsRef.current.filter((toast) => toast.id !== id);
+    toastsRef.current = nextToasts;
+    setToasts(nextToasts);
   }, []);
 
   const actions = useMemo(() => ({ addToast, removeToast }), [addToast, removeToast]);
@@ -177,6 +199,11 @@ const ToastItem: React.FC<{ toast: Toast }> = ({ toast }) => {
 
   const handleClose = startExit;
 
+  const handleAction = () => {
+    startExit();
+    toast.action?.onClick();
+  };
+
   return (
     <div
       className={cn(
@@ -196,16 +223,26 @@ const ToastItem: React.FC<{ toast: Toast }> = ({ toast }) => {
         <div className="flex-1 min-w-0">
           <h3 className="font-semibold text-sm mb-1">{toast.title}</h3>
           {toast.description && (
-            <p className="text-sm opacity-90">{toast.description}</p>
+            <p className="break-words text-sm opacity-90">{toast.description}</p>
+          )}
+          {toast.action && (
+            <button
+              type="button"
+              onClick={handleAction}
+              className="mt-2 inline-flex min-h-8 items-center rounded-md border border-current/25 px-2.5 py-1 text-sm font-medium transition-colors hover:bg-black/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current focus-visible:ring-offset-1 dark:hover:bg-white/10"
+            >
+              {toast.action.label}
+            </button>
           )}
         </div>
 
         <button
+          type="button"
           onClick={handleClose}
-          className="shrink-0 opacity-70 hover:opacity-100 transition-opacity"
+          className="shrink-0 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current focus-visible:ring-offset-1"
           aria-label="关闭通知"
         >
-          <X className="w-4 h-4" />
+          <X className="w-4 h-4" aria-hidden="true" />
         </button>
       </div>
     </div>
