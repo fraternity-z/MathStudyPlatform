@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  AlertCircle,
   Archive,
   ArrowRight,
   BarChart3,
@@ -17,6 +16,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { MainLayout } from '../../components/layout/MainLayout';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Card, CardContent } from '../../components/ui/Card';
@@ -26,7 +26,7 @@ import { Progress } from '../../components/ui/Progress';
 import { Select, type SelectOption } from '../../components/ui/Select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/Tabs';
 import { ExerciseMathContent } from '@/modules/exercise/components/ExerciseMathContent';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 import { knowledgeService } from '@/modules/knowledge/services/knowledgeService';
 import {
   buildMistakeBookRequestKey,
@@ -435,7 +435,7 @@ function MistakeDetailDialog({
 }) {
   const [detail, setDetail] = useState<MistakeDetail | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<AppError | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [revealedSolutionAttemptId, setRevealedSolutionAttemptId] = useState<string | null>(null);
   const solutionSectionId = React.useId();
@@ -454,7 +454,7 @@ function MistakeDetailDialog({
         if (active) setDetail(result);
       } catch (requestError: unknown) {
         if (active) {
-          setError(getApiErrorMessage(requestError, '读取错题详情失败，请稍后重试'));
+          setError(toAppError(requestError, '读取错题详情失败，请稍后重试'));
         }
       } finally {
         if (active) setLoading(false);
@@ -515,16 +515,13 @@ function MistakeDetailDialog({
           正在加载错题详情
         </div>
       ) : error ? (
-        <div className="flex min-h-48 flex-col items-center justify-center gap-3 text-center">
-          <AlertCircle className="h-9 w-9 text-red-500" />
-          <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setRetryKey((current) => current + 1)}
-          >
-            重试
-          </Button>
+        <div className="flex min-h-48 items-center justify-center">
+          <RequestErrorNotice
+            error={error}
+            onRetry={() => setRetryKey((current) => current + 1)}
+            onRefresh={() => setRetryKey((current) => current + 1)}
+            className="w-full"
+          />
         </div>
       ) : detail ? (
         <div className="space-y-5">
@@ -930,6 +927,8 @@ export const MistakeBookPage: React.FC = () => {
   const history = useMistakeBook(historyFilters, libraryPage);
   const review = useMistakeReviewTasks(taskView, reviewFilters, taskView === 'due' ? duePage : masteredPage);
   const [knowledgeLabels, setKnowledgeLabels] = useState<ReadonlyMap<string, string>>(new Map());
+  const [knowledgeLabelsError, setKnowledgeLabelsError] = useState<AppError | null>(null);
+  const [knowledgeLabelsRequestKey, setKnowledgeLabelsRequestKey] = useState(0);
   const isLibrary = activeView === 'library';
   const activeLoading = isLibrary ? history.mistakesLoading : review.tasksLoading;
   const activeError = isLibrary ? history.mistakesError : review.tasksError;
@@ -949,12 +948,16 @@ export const MistakeBookPage: React.FC = () => {
       .then((graph) => {
         if (controller.signal.aborted) return;
         setKnowledgeLabels(new Map(graph.nodes.map((node) => [node.id, node.label])));
+        setKnowledgeLabelsError(null);
       })
-      .catch(() => {
-        if (!controller.signal.aborted) setKnowledgeLabels(new Map());
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setKnowledgeLabels(new Map());
+          setKnowledgeLabelsError(toAppError(error, '知识点标签加载失败'));
+        }
       });
     return () => controller.abort();
-  }, []);
+  }, [knowledgeLabelsRequestKey]);
 
   const knowledgeOptions = useMemo<SelectOption[]>(() => {
     const options = Array.from(knowledgeLabels.entries())
@@ -1163,6 +1166,22 @@ export const MistakeBookPage: React.FC = () => {
           </Button>
         </div>
 
+        {knowledgeLabelsError ? (
+          <RequestErrorNotice
+            error={knowledgeLabelsError}
+            onRetry={() => {
+              setKnowledgeLabelsError(null);
+              setKnowledgeLabelsRequestKey((value) => value + 1);
+            }}
+            onRefresh={() => {
+              setKnowledgeLabelsError(null);
+              setKnowledgeLabelsRequestKey((value) => value + 1);
+            }}
+            onDismiss={() => setKnowledgeLabelsError(null)}
+            className="mb-4"
+          />
+        ) : null}
+
         <Tabs
           defaultValue="due"
           value={activeView}
@@ -1296,10 +1315,12 @@ export const MistakeBookPage: React.FC = () => {
 
           {activeLoading === 'error' && activeError ? (
             <Card className="border-red-200 dark:border-red-800">
-              <CardContent className="p-8 text-center">
-                <AlertCircle className="mx-auto mb-3 h-11 w-11 text-red-500" />
-                <p className="text-red-600 dark:text-red-400">{activeError}</p>
-                <Button onClick={retryActiveView} variant="outline" className="mt-4">重试</Button>
+              <CardContent className="p-6">
+                <RequestErrorNotice
+                  error={activeError}
+                  onRetry={retryActiveView}
+                  onRefresh={retryActiveView}
+                />
               </CardContent>
             </Card>
           ) : null}

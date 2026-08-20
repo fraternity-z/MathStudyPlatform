@@ -35,7 +35,8 @@ import type {
   AIStudentStatusFilter,
   UpdateAIRiskSettingsRequest,
 } from '@/modules/admin/types/aiRisk';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
@@ -43,6 +44,7 @@ import { Input } from '@/components/ui/Input';
 import { Progress } from '@/components/ui/Progress';
 import { Select } from '@/components/ui/Select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs';
+import { isAdminRequestCancelled, toAdminAppError } from '@/modules/admin/utils/errorFeedback';
 
 type ViewTab = 'policy' | 'students' | 'events';
 type ModeratorConfigStatus = 'loading' | 'configured' | 'missing' | 'error';
@@ -142,7 +144,12 @@ export const AIRiskControlPage: React.FC = () => {
   const [eventSearch, setEventSearch] = useState('');
   const [eventType, setEventType] = useState<AIRiskEventType | 'all'>('all');
   const [loading, setLoading] = useState({ summary: true, students: true, events: true, save: false });
-  const [error, setError] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [summaryError, setSummaryError] = useState<AppError | null>(null);
+  const [studentsError, setStudentsError] = useState<AppError | null>(null);
+  const [eventsError, setEventsError] = useState<AppError | null>(null);
+  const [actionError, setActionError] = useState<AppError | null>(null);
+  const [moderatorError, setModeratorError] = useState<AppError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [accessTarget, setAccessTarget] = useState<AIStudentItem | null>(null);
   const [accessReason, setAccessReason] = useState('');
@@ -163,86 +170,109 @@ export const AIRiskControlPage: React.FC = () => {
     });
   }, []);
 
-  const loadModeratorStatus = useCallback(async () => {
+  const loadModeratorStatus = useCallback(async (signal?: AbortSignal) => {
     setModeratorStatus('loading');
+    setModeratorError(null);
     try {
-      const response = await aiConfigService.listAgentTypes();
+      const response = await aiConfigService.listAgentTypes(signal);
+      if (signal?.aborted) return;
       const moderator = response.items.find((item) => item.type === AgentTypes.CONTENT_MODERATOR);
       setModeratorStatus(moderator?.configured ? 'configured' : 'missing');
-    } catch {
-      setModeratorStatus('error');
+    } catch (loadError) {
+      if (!signal?.aborted && !isAdminRequestCancelled(loadError)) {
+        setModeratorStatus('error');
+        setModeratorError(toAdminAppError(loadError, '加载内容审核模型状态失败'));
+      }
     }
   }, []);
 
-  const loadSummary = useCallback(async () => {
+  const loadSummary = useCallback(async (signal?: AbortSignal) => {
     setLoading((current) => ({ ...current, summary: true }));
+    setSummaryError(null);
     try {
       const [overviewResponse, settingsResponse] = await Promise.all([
-        aiRiskService.getOverview(),
-        aiRiskService.getSettings(),
+        aiRiskService.getOverview(signal),
+        aiRiskService.getSettings(signal),
       ]);
+      if (signal?.aborted) return;
       setOverview(overviewResponse);
       applySettings(settingsResponse);
-      setError(null);
     } catch (loadError) {
-      setError(getApiErrorMessage(loadError, '加载风控概览失败'));
+      if (signal?.aborted || isAdminRequestCancelled(loadError)) return;
+      setSummaryError(toAdminAppError(loadError, '加载风控概览失败'));
     } finally {
-      setLoading((current) => ({ ...current, summary: false }));
+      if (!signal?.aborted) setLoading((current) => ({ ...current, summary: false }));
     }
   }, [applySettings]);
 
-  const loadStudents = useCallback(async () => {
+  const loadStudents = useCallback(async (signal?: AbortSignal) => {
     setLoading((current) => ({ ...current, students: true }));
+    setStudentsError(null);
     try {
       const response = await aiRiskService.listStudents({
         page: studentPage,
         page_size: 20,
         search: studentSearch.trim() || undefined,
         status: studentStatus,
-      });
+      }, signal);
+      if (signal?.aborted) return;
       setStudents(response);
-      setError(null);
     } catch (loadError) {
-      setError(getApiErrorMessage(loadError, '加载学生 AI 状态失败'));
+      if (signal?.aborted || isAdminRequestCancelled(loadError)) return;
+      setStudentsError(toAdminAppError(loadError, '加载学生 AI 状态失败'));
     } finally {
-      setLoading((current) => ({ ...current, students: false }));
+      if (!signal?.aborted) setLoading((current) => ({ ...current, students: false }));
     }
   }, [studentPage, studentSearch, studentStatus]);
 
-  const loadEvents = useCallback(async () => {
+  const loadEvents = useCallback(async (signal?: AbortSignal) => {
     setLoading((current) => ({ ...current, events: true }));
+    setEventsError(null);
     try {
       const response = await aiRiskService.listEvents({
         page: eventPage,
         page_size: 20,
         search: eventSearch.trim() || undefined,
         event_type: eventType,
-      });
+      }, signal);
+      if (signal?.aborted) return;
       setEvents(response);
-      setError(null);
     } catch (loadError) {
-      setError(getApiErrorMessage(loadError, '加载风控事件失败'));
+      if (signal?.aborted || isAdminRequestCancelled(loadError)) return;
+      setEventsError(toAdminAppError(loadError, '加载风控事件失败'));
     } finally {
-      setLoading((current) => ({ ...current, events: false }));
+      if (!signal?.aborted) setLoading((current) => ({ ...current, events: false }));
     }
   }, [eventPage, eventSearch, eventType]);
 
   useEffect(() => {
-    void loadSummary();
+    const controller = new AbortController();
+    void loadSummary(controller.signal);
+    return () => controller.abort();
   }, [loadSummary]);
 
   useEffect(() => {
-    void loadModeratorStatus();
+    const controller = new AbortController();
+    void loadModeratorStatus(controller.signal);
+    return () => controller.abort();
   }, [loadModeratorStatus]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadStudents(), 250);
-    return () => window.clearTimeout(timer);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => void loadStudents(controller.signal), 250);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [loadStudents]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadEvents(), 250);
-    return () => window.clearTimeout(timer);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => void loadEvents(controller.signal), 250);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [loadEvents]);
 
   const refreshAll = useCallback(async () => {
@@ -261,22 +291,24 @@ export const AIRiskControlPage: React.FC = () => {
       model_review_thresholds: settingsDraft.modelReviewThresholds,
     };
     if (request.daily_reply_limit < 1 || request.daily_reply_limit > 10_000) {
-      setError('每日回复额度必须在 1 到 10000 之间');
+      setValidationError('每日回复额度必须在 1 到 10000 之间');
       return;
     }
     if (request.max_concurrent_requests < 1 || request.max_concurrent_requests > 20) {
-      setError('每生并发上限必须在 1 到 20 之间');
+      setValidationError('每生并发上限必须在 1 到 20 之间');
       return;
     }
     if (request.model_review_enabled && moderatorStatus !== 'configured') {
-      setError('请先在 AI 模型设置中配置内容审核智能体');
+      setValidationError('请先在 AI 模型设置中配置内容审核智能体');
       return;
     }
     if (Object.values(request.model_review_thresholds).some((value) => !Number.isFinite(value) || value < 0 || value > 1)) {
-      setError('模型审查阈值必须在 0 到 1 之间');
+      setValidationError('模型审查阈值必须在 0 到 1 之间');
       return;
     }
     setLoading((current) => ({ ...current, save: true }));
+    setValidationError(null);
+    setActionError(null);
     try {
       const response = await aiRiskService.updateSettings(request);
       applySettings(response);
@@ -286,10 +318,11 @@ export const AIRiskControlPage: React.FC = () => {
         max_concurrent_requests: response.max_concurrent_requests,
       } : current);
       setNotice('风控策略已保存');
-      setError(null);
       await loadStudents();
     } catch (saveError) {
-      setError(getApiErrorMessage(saveError, '保存风控策略失败'));
+      if (!isAdminRequestCancelled(saveError)) {
+        setActionError(toAdminAppError(saveError, '保存风控策略失败'));
+      }
     } finally {
       setLoading((current) => ({ ...current, save: false }));
     }
@@ -300,19 +333,22 @@ export const AIRiskControlPage: React.FC = () => {
     const shouldBlock = !accessTarget.ai_blocked;
     const reason = accessReason.trim();
     if (shouldBlock && !reason) {
-      setError('请输入封禁原因');
+      setValidationError('请输入封禁原因');
       return;
     }
     setAccessLoading(true);
+    setValidationError(null);
+    setActionError(null);
     try {
       await aiRiskService.updateStudentAccess(accessTarget.id, { blocked: shouldBlock, reason });
       setNotice(shouldBlock ? '学生 AI 权限已封禁' : '学生 AI 权限已恢复');
-      setError(null);
       setAccessTarget(null);
       setAccessReason('');
       await Promise.all([loadSummary(), loadStudents(), loadEvents()]);
     } catch (accessError) {
-      setError(getApiErrorMessage(accessError, '更新学生 AI 权限失败'));
+      if (!isAdminRequestCancelled(accessError)) {
+        setActionError(toAdminAppError(accessError, '更新学生 AI 权限失败'));
+      }
     } finally {
       setAccessLoading(false);
     }
@@ -371,20 +407,46 @@ export const AIRiskControlPage: React.FC = () => {
           </Button>
         </header>
 
-        {(error || notice) && (
+        {summaryError ? (
+          <RequestErrorNotice
+            error={summaryError}
+            onRetry={() => void loadSummary()}
+            onRefresh={() => void loadSummary()}
+          />
+        ) : null}
+
+        {moderatorError ? (
+          <RequestErrorNotice
+            error={moderatorError}
+            onRetry={() => void loadModeratorStatus()}
+            onRefresh={() => void loadModeratorStatus()}
+            onDismiss={() => setModeratorError(null)}
+          />
+        ) : null}
+
+        {actionError ? (
+          <RequestErrorNotice
+            error={actionError}
+            onRetry={() => accessTarget ? void submitAccessChange() : void saveSettings()}
+            onRefresh={() => void refreshAll()}
+            onDismiss={() => setActionError(null)}
+          />
+        ) : null}
+
+        {(validationError || notice) && (
           <div
             role="status"
             className={`flex items-center justify-between rounded-lg border px-4 py-3 text-sm ${
-              error
+              validationError
                 ? 'border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200'
                 : 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200'
             }`}
           >
-            <span>{error ?? notice}</span>
+            <span>{validationError ?? notice}</span>
             <button
               type="button"
               className="rounded-md p-1 hover:bg-black/5"
-              onClick={() => { setError(null); setNotice(null); }}
+              onClick={() => { setValidationError(null); setNotice(null); }}
               aria-label="关闭提示"
               title="关闭提示"
             >
@@ -432,6 +494,14 @@ export const AIRiskControlPage: React.FC = () => {
           </TabsContent>
 
           <TabsContent value="students" className="mt-4">
+            {studentsError ? (
+              <RequestErrorNotice
+                error={studentsError}
+                onRetry={() => void loadStudents()}
+                onRefresh={() => void loadStudents()}
+                className="mb-4"
+              />
+            ) : null}
             <StudentsPanel
               data={students}
               loading={loading.students}
@@ -446,6 +516,14 @@ export const AIRiskControlPage: React.FC = () => {
           </TabsContent>
 
           <TabsContent value="events" className="mt-4">
+            {eventsError ? (
+              <RequestErrorNotice
+                error={eventsError}
+                onRetry={() => void loadEvents()}
+                onRefresh={() => void loadEvents()}
+                className="mb-4"
+              />
+            ) : null}
             <EventsPanel
               data={events}
               loading={loading.events}

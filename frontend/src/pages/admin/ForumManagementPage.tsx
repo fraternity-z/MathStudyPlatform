@@ -26,7 +26,8 @@ import { Select } from '@/components/ui/Select';
 import { useToast } from '@/components/ui/Toast';
 import { MarkdownContent } from '@/components/chat/MarkdownContent';
 import { MessageAttachments } from '@/modules/message-center/MessageAttachments';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
 import { cn } from '@/libs/utils/cn';
 import { formatDateOrFallback } from '@/libs/utils/dateFormat';
 import { forumAdminService } from '@/modules/admin/services/forumAdminService';
@@ -37,6 +38,11 @@ import type {
   ForumReportStatus,
 } from '@/modules/admin/types/forumAdmin';
 import type { ForumPost, ForumSort } from '@/modules/forum/types';
+import {
+  getAdminErrorToast,
+  isAdminRequestCancelled,
+  toAdminAppError,
+} from '@/modules/admin/utils/errorFeedback';
 
 type ViewMode = 'posts' | 'reports';
 type PostActionTarget = Pick<ForumPost, 'id' | 'title'>;
@@ -118,9 +124,10 @@ interface PostDetailModalProps {
   post: ForumModerationPost | null;
   report: ForumModerationReport | null;
   loading: boolean;
-  error: string;
+  error: AppError | null;
   mutation: string;
   onClose: () => void;
+  onRetry: () => void;
   onHide: () => void;
   onRestore: () => void;
   onHardDelete: () => void;
@@ -135,6 +142,7 @@ function PostDetailModal({
   error,
   mutation,
   onClose,
+  onRetry,
   onHide,
   onRestore,
   onHardDelete,
@@ -151,7 +159,7 @@ function PostDetailModal({
         </div>
       ) : error ? (
         <div className="space-y-4">
-          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-3 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">{error}</div>
+          <RequestErrorNotice error={error} onRetry={onRetry} onRefresh={onRetry} />
           {report ? (
             <div className="rounded-md border border-surface-200 px-3 py-3 text-sm dark:border-surface-700">
               <div className="flex items-center gap-2 font-medium"><TriangleAlert className="h-4 w-4 text-amber-600" />举报信息</div>
@@ -277,17 +285,18 @@ export const ForumManagementPage: React.FC = () => {
   const [searchDraft, setSearchDraft] = useState('');
   const [search, setSearch] = useState('');
   const [postLoading, setPostLoading] = useState(true);
-  const [postError, setPostError] = useState('');
+  const [postError, setPostError] = useState<AppError | null>(null);
   const [reports, setReports] = useState<ForumModerationReport[]>([]);
   const [reportTotal, setReportTotal] = useState(0);
   const [reportPage, setReportPage] = useState(1);
   const [reportStatus, setReportStatus] = useState<'all' | ForumReportStatus>('pending');
   const [reportLoading, setReportLoading] = useState(false);
-  const [reportError, setReportError] = useState('');
+  const [reportError, setReportError] = useState<AppError | null>(null);
   const [selectedPost, setSelectedPost] = useState<ForumModerationPost | null>(null);
   const [selectedReport, setSelectedReport] = useState<ForumModerationReport | null>(null);
+  const [detailPostID, setDetailPostID] = useState('');
   const [detailLoading, setDetailLoading] = useState(false);
-  const [detailError, setDetailError] = useState('');
+  const [detailError, setDetailError] = useState<AppError | null>(null);
   const [mutation, setMutation] = useState('');
   const [hideTarget, setHideTarget] = useState<PostActionTarget | null>(null);
   const [restoreTarget, setRestoreTarget] = useState<PostActionTarget | null>(null);
@@ -300,7 +309,7 @@ export const ForumManagementPage: React.FC = () => {
   const loadPosts = useCallback(async (signal?: AbortSignal) => {
     const request = ++postRequest.current;
     setPostLoading(true);
-    setPostError('');
+    setPostError(null);
     try {
       const response = await forumAdminService.listPosts({
         search,
@@ -316,7 +325,9 @@ export const ForumManagementPage: React.FC = () => {
       if (postPage > lastPage) setPostPage(lastPage);
     } catch (error) {
       if (!signal?.aborted && request === postRequest.current) {
-        setPostError(getApiErrorMessage(error, '获取帖子列表失败'));
+        if (!isAdminRequestCancelled(error)) {
+          setPostError(toAdminAppError(error, '获取帖子列表失败'));
+        }
       }
     } finally {
       if (!signal?.aborted && request === postRequest.current) setPostLoading(false);
@@ -326,7 +337,7 @@ export const ForumManagementPage: React.FC = () => {
   const loadReports = useCallback(async (signal?: AbortSignal) => {
     const request = ++reportRequest.current;
     setReportLoading(true);
-    setReportError('');
+    setReportError(null);
     try {
       const response = await forumAdminService.listReports({ status: reportStatus, page: reportPage, pageSize }, signal);
       if (signal?.aborted || request !== reportRequest.current) return;
@@ -336,7 +347,9 @@ export const ForumManagementPage: React.FC = () => {
       if (reportPage > lastPage) setReportPage(lastPage);
     } catch (error) {
       if (!signal?.aborted && request === reportRequest.current) {
-        setReportError(getApiErrorMessage(error, '获取举报列表失败'));
+        if (!isAdminRequestCancelled(error)) {
+          setReportError(toAdminAppError(error, '获取举报列表失败'));
+        }
       }
     } finally {
       if (!signal?.aborted && request === reportRequest.current) setReportLoading(false);
@@ -370,15 +383,18 @@ export const ForumManagementPage: React.FC = () => {
     detailAbortRef.current?.abort();
     const controller = new AbortController();
     detailAbortRef.current = controller;
+    setDetailPostID(postID);
     setSelectedReport(report);
     setSelectedPost(null);
-    setDetailError('');
+    setDetailError(null);
     setDetailLoading(true);
     try {
       const post = await forumAdminService.getPost(postID, controller.signal);
       if (!controller.signal.aborted) setSelectedPost(post);
     } catch (error) {
-      if (!controller.signal.aborted) setDetailError(getApiErrorMessage(error, '获取帖子详情失败'));
+      if (!controller.signal.aborted && !isAdminRequestCancelled(error)) {
+        setDetailError(toAdminAppError(error, '获取帖子详情失败'));
+      }
     } finally {
       if (!controller.signal.aborted) setDetailLoading(false);
     }
@@ -388,7 +404,8 @@ export const ForumManagementPage: React.FC = () => {
     detailAbortRef.current?.abort();
     setSelectedPost(null);
     setSelectedReport(null);
-    setDetailError('');
+    setDetailPostID('');
+    setDetailError(null);
     setDetailLoading(false);
     setDeleteReplyID('');
   };
@@ -412,7 +429,8 @@ export const ForumManagementPage: React.FC = () => {
       await loadPosts();
       if (view === 'reports') await loadReports();
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '设置帖子不可见失败') });
+      const feedback = getAdminErrorToast(error, '设置帖子不可见失败');
+      if (feedback) toast(feedback);
     } finally {
       setMutation('');
     }
@@ -432,7 +450,8 @@ export const ForumManagementPage: React.FC = () => {
       await loadPosts();
       if (view === 'reports') await loadReports();
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '永久删除帖子失败') });
+      const feedback = getAdminErrorToast(error, '永久删除帖子失败');
+      if (feedback) toast(feedback);
     } finally {
       setMutation('');
     }
@@ -454,7 +473,8 @@ export const ForumManagementPage: React.FC = () => {
       if (selectedPost?.id === target.id) closeDetail();
       await loadPosts();
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '恢复帖子可见状态失败') });
+      const feedback = getAdminErrorToast(error, '恢复帖子可见状态失败');
+      if (feedback) toast(feedback);
     } finally {
       setMutation('');
     }
@@ -472,7 +492,8 @@ export const ForumManagementPage: React.FC = () => {
       await loadPosts();
       if (view === 'reports') await loadReports();
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '设置回复不可见失败') });
+      const feedback = getAdminErrorToast(error, '设置回复不可见失败');
+      if (feedback) toast(feedback);
     } finally {
       setMutation('');
     }
@@ -487,7 +508,8 @@ export const ForumManagementPage: React.FC = () => {
       toast({ type: 'success', title: status === 'resolved' ? '举报已标记为已处理' : '举报已驳回' });
       await loadReports();
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '处理举报失败') });
+      const feedback = getAdminErrorToast(error, '处理举报失败');
+      if (feedback) toast(feedback);
     } finally {
       setMutation('');
     }
@@ -502,7 +524,8 @@ export const ForumManagementPage: React.FC = () => {
       toast({ type: 'success', title: status === 'resolved' ? '举报已处理' : '举报已驳回' });
       await loadReports();
     } catch (error) {
-      toast({ type: 'error', title: getApiErrorMessage(error, '处理举报失败') });
+      const feedback = getAdminErrorToast(error, '处理举报失败');
+      if (feedback) toast(feedback);
     } finally {
       setMutation('');
     }
@@ -549,7 +572,7 @@ export const ForumManagementPage: React.FC = () => {
                 <Select value={postSort} onChange={(value) => { setPostSort(value as ForumSort); setPostPage(1); }} options={sortOptions} aria-label="帖子排序" />
               </div>
             </div>
-            {postError ? <div className="m-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300" role="alert">{postError}</div> : null}
+            {postError ? <RequestErrorNotice error={postError} onRetry={() => void loadPosts()} onRefresh={() => void loadPosts()} className="m-4" /> : null}
             {postLoading ? <div className="flex min-h-56 items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-primary-600" /></div> : posts.length === 0 ? <PageEmpty icon={FileText} title="暂无帖子" /> : (
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[760px] text-left text-sm">
@@ -617,7 +640,7 @@ export const ForumManagementPage: React.FC = () => {
         ) : (
           <section className="overflow-hidden rounded-lg border border-surface-200 bg-white dark:border-surface-800 dark:bg-surface-900" aria-label="举报审核">
             <div className="flex flex-col gap-3 border-b border-surface-200 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-surface-800"><div className="flex items-center gap-2 text-sm font-medium text-surface-800 dark:text-surface-200"><TriangleAlert className="h-4 w-4 text-amber-500" />社区举报</div><Select value={reportStatus} onChange={(value) => { setReportStatus(value as 'all' | ForumReportStatus); setReportPage(1); }} options={reportStatusOptions} aria-label="举报状态" /></div>
-            {reportError ? <div className="m-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300" role="alert">{reportError}</div> : null}
+            {reportError ? <RequestErrorNotice error={reportError} onRetry={() => void loadReports()} onRefresh={() => void loadReports()} className="m-4" /> : null}
             {reportLoading ? (
               <div className="flex min-h-56 items-center justify-center">
                 <Loader2 className="h-6 w-6 animate-spin text-primary-600" />
@@ -720,6 +743,9 @@ export const ForumManagementPage: React.FC = () => {
           error={detailError}
           mutation={mutation}
           onClose={closeDetail}
+          onRetry={() => {
+            if (detailPostID) void openPost(detailPostID, selectedReport);
+          }}
           onHide={() => selectedPost && setHideTarget(selectedPost)}
           onRestore={() => selectedPost && setRestoreTarget(selectedPost)}
           onHardDelete={() => selectedPost && setHardDeleteTarget(selectedPost)}

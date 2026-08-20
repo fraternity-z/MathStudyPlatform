@@ -179,9 +179,10 @@ export const systemSettingService = {
   /**
    * 获取注册配置（管理员接口）
    */
-  async getRegistrationSettings(): Promise<RegistrationSettings> {
+  async getRegistrationSettings(signal?: AbortSignal): Promise<RegistrationSettings> {
     const response = await apiClient.get<RegistrationSettings>(
-      '/admin/settings/registration'
+      '/admin/settings/registration',
+      { signal }
     );
     return response.data;
   },
@@ -212,9 +213,10 @@ export const systemSettingService = {
   /**
    * 获取系统基本信息（管理员接口）
    */
-  async getGeneralSettings(): Promise<GeneralSettings> {
+  async getGeneralSettings(signal?: AbortSignal): Promise<GeneralSettings> {
     const response = await apiClient.get<GeneralSettings>(
-      '/admin/settings/general'
+      '/admin/settings/general',
+      { signal }
     );
     return response.data;
   },
@@ -233,8 +235,8 @@ export const systemSettingService = {
   },
 
   /** 获取当前生效的对象存储配置。 */
-  async getStorageSettings(): Promise<StorageSettings> {
-    const response = await apiClient.get<StorageSettings>('/admin/settings/storage');
+  async getStorageSettings(signal?: AbortSignal): Promise<StorageSettings> {
+    const response = await apiClient.get<StorageSettings>('/admin/settings/storage', { signal });
     return response.data;
   },
 
@@ -263,9 +265,10 @@ export const systemSettingService = {
   /**
    * 获取可导出的表列表（管理员接口）
    */
-  async getExportableTables(): Promise<{ tables: ExportableTable[] }> {
+  async getExportableTables(signal?: AbortSignal): Promise<{ tables: ExportableTable[] }> {
     const response = await apiClient.get<{ tables: ExportableTable[] }>(
-      '/admin/settings/database/exportable-tables'
+      '/admin/settings/database/exportable-tables',
+      { signal }
     );
     return response.data;
   },

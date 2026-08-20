@@ -29,10 +29,11 @@ export const resourceService = {
   /**
    * 获取资源列表
    */
-  async getResources(filter?: ResourceFilter): Promise<ResourceListResponse> {
+  async getResources(filter?: ResourceFilter, signal?: AbortSignal): Promise<ResourceListResponse> {
     try {
       const response = await apiClient.get<ResourceListResponse>(BASE_PATH, {
         params: filter,
+        signal,
       });
       resourceLogger.debug('获取资源列表成功', {
         total: response.data.total,
@@ -48,9 +49,9 @@ export const resourceService = {
   /**
    * 获取资源统计
    */
-  async getStats(): Promise<ResourceStats> {
+  async getStats(signal?: AbortSignal): Promise<ResourceStats> {
     try {
-      const response = await apiClient.get<ResourceStats>(`${BASE_PATH}/stats`);
+      const response = await apiClient.get<ResourceStats>(`${BASE_PATH}/stats`, { signal });
       resourceLogger.debug('获取资源统计成功', response.data);
       return response.data;
     } catch (error) {
@@ -94,9 +95,9 @@ export const resourceService = {
   /**
    * 创建资源
    */
-  async createResource(data: ResourceCreateRequest): Promise<Resource> {
+  async createResource(data: ResourceCreateRequest, signal?: AbortSignal): Promise<Resource> {
     try {
-      const response = await apiClient.post<Resource>(BASE_PATH, data);
+      const response = await apiClient.post<Resource>(BASE_PATH, data, { signal });
       resourceLogger.info('创建资源成功', { id: response.data.id, title: data.title });
       return response.data;
     } catch (error) {
@@ -108,9 +109,9 @@ export const resourceService = {
   /**
    * 更新资源
    */
-  async updateResource(id: string, data: ResourceUpdateRequest): Promise<Resource> {
+  async updateResource(id: string, data: ResourceUpdateRequest, signal?: AbortSignal): Promise<Resource> {
     try {
-      const response = await apiClient.put<Resource>(`${BASE_PATH}/${id}`, data);
+      const response = await apiClient.put<Resource>(`${BASE_PATH}/${id}`, data, { signal });
       resourceLogger.info('更新资源成功', { id });
       return response.data;
     } catch (error) {
@@ -122,9 +123,9 @@ export const resourceService = {
   /**
    * 删除资源
    */
-  async deleteResource(id: string): Promise<void> {
+  async deleteResource(id: string, signal?: AbortSignal): Promise<void> {
     try {
-      await apiClient.delete(`${BASE_PATH}/${id}`);
+      await apiClient.delete(`${BASE_PATH}/${id}`, { signal });
       resourceLogger.info('删除资源成功', { id });
     } catch (error) {
       resourceLogger.error('删除资源失败', { id, error });
@@ -135,10 +136,12 @@ export const resourceService = {
   /**
    * 切换收藏状态
    */
-  async toggleFavorite(id: string): Promise<FavoriteToggleResponse> {
+  async toggleFavorite(id: string, signal?: AbortSignal): Promise<FavoriteToggleResponse> {
     try {
       const response = await apiClient.post<FavoriteToggleResponse>(
-        `${BASE_PATH}/${id}/favorite`
+        `${BASE_PATH}/${id}/favorite`,
+        undefined,
+        { signal }
       );
       resourceLogger.debug('切换收藏状态成功', {
         id,

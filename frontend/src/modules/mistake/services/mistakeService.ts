@@ -4,10 +4,16 @@
  * 对接后端 /mistakes API
  */
 
-import { apiClient } from '@/libs/http/apiClient';
+import { apiClient, toAppError } from '@/libs/http/apiClient';
 import { logger } from '@/libs/utils/logger';
 
 const mistakeLogger = logger.createContextLogger('MistakeService');
+
+function logMistakeFailure(message: string, error: unknown): void {
+  // AbortController cancellation is expected during navigation or filter changes.
+  if (toAppError(error).kind === 'cancelled') return;
+  mistakeLogger.error(message, { error });
+}
 
 // ========== 类型定义 ==========
 
@@ -739,7 +745,7 @@ export async function fetchMistakes(
 
     return mapped;
   } catch (error) {
-    mistakeLogger.error('Failed to fetch mistakes', { error });
+    logMistakeFailure('Failed to fetch mistakes', error);
     throw error;
   }
 }
@@ -748,7 +754,8 @@ export async function fetchMistakes(
  * 获取错题统计
  */
 export async function fetchStatistics(
-  timeRange: string = 'month'
+  timeRange: string = 'month',
+  signal?: AbortSignal,
 ): Promise<MistakeStatisticsResponse> {
   mistakeLogger.info('Fetching mistake statistics', { timeRange });
 
@@ -757,6 +764,7 @@ export async function fetchStatistics(
       '/mistakes/statistics',
       {
         params: { time_range: timeRange },
+        signal,
       }
     );
 
@@ -764,7 +772,7 @@ export async function fetchStatistics(
 
     return mapMistakeStatisticsResponse(response.data);
   } catch (error) {
-    mistakeLogger.error('Failed to fetch statistics', { error });
+    logMistakeFailure('Failed to fetch statistics', error);
     throw error;
   }
 }
@@ -773,20 +781,22 @@ export async function fetchStatistics(
  * 获取错题详情
  */
 export async function fetchMistakeDetail(
-  attemptId: string
+  attemptId: string,
+  signal?: AbortSignal,
 ): Promise<MistakeDetail> {
   mistakeLogger.info('Fetching mistake detail', { attemptId });
 
   try {
     const response = await apiClient.get<MistakeDetailRaw>(
-      `/mistakes/${attemptId}`
+      `/mistakes/${attemptId}`,
+      { signal },
     );
 
     mistakeLogger.info('Mistake detail fetched successfully');
 
     return mapMistakeDetail(response.data);
   } catch (error) {
-    mistakeLogger.error('Failed to fetch mistake detail', { error });
+    if (!signal?.aborted) logMistakeFailure('Failed to fetch mistake detail', error);
     throw error;
   }
 }
@@ -795,13 +805,16 @@ export async function fetchMistakeDetail(
  * 标记错题已掌握
  */
 export async function markAsMastered(
-  attemptId: string
+  attemptId: string,
+  signal?: AbortSignal,
 ): Promise<MarkAsMasteredResponse> {
   mistakeLogger.info('Marking mistake as mastered', { attemptId });
 
   try {
     const response = await apiClient.post<MarkAsMasteredResponseRaw>(
-      `/mistakes/${attemptId}/master`
+      `/mistakes/${attemptId}/master`,
+      undefined,
+      { signal },
     );
 
     mistakeLogger.info('Mistake marked as mastered successfully');
@@ -812,7 +825,7 @@ export async function markAsMastered(
       masteryUpdate: response.data.mastery_update,
     };
   } catch (error) {
-    mistakeLogger.error('Failed to mark mistake as mastered', { error });
+    logMistakeFailure('Failed to mark mistake as mastered', error);
     throw error;
   }
 }
@@ -821,7 +834,8 @@ export async function markAsMastered(
  * 删除错题
  */
 export async function archiveMistake(
-  attemptId: string
+  attemptId: string,
+  signal?: AbortSignal,
 ): Promise<ArchiveMistakeResponse> {
   const normalizedAttemptId = attemptId.trim();
   if (!normalizedAttemptId) {
@@ -834,7 +848,7 @@ export async function archiveMistake(
     const response = await apiClient.delete<{
       success: boolean;
       message: string;
-    }>(`/mistakes/${encodeURIComponent(normalizedAttemptId)}`);
+    }>(`/mistakes/${encodeURIComponent(normalizedAttemptId)}`, { signal });
 
     mistakeLogger.info('Mistake record archived successfully');
     return {
@@ -842,7 +856,7 @@ export async function archiveMistake(
       message: response.data.message,
     };
   } catch (error) {
-    mistakeLogger.error('Failed to archive mistake record', { error });
+    logMistakeFailure('Failed to archive mistake record', error);
     throw error;
   }
 }
@@ -850,8 +864,11 @@ export async function archiveMistake(
 /**
  * 兼容现有 Redux thunk；后端已将该操作改为归档而非删除作答证据。
  */
-export async function deleteMistake(attemptId: string): Promise<void> {
-  await archiveMistake(attemptId);
+export async function deleteMistake(
+  attemptId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await archiveMistake(attemptId, signal);
 }
 
 /**
@@ -889,7 +906,7 @@ export async function fetchReviewTasks(
     });
     return mapped;
   } catch (error) {
-    mistakeLogger.error('Failed to fetch mistake review tasks', { error });
+    logMistakeFailure('Failed to fetch mistake review tasks', error);
     throw error;
   }
 }
@@ -898,7 +915,8 @@ export async function fetchReviewTasks(
  * 获取复习题目
  */
 export async function fetchReviewExercise(
-  params: ReviewParams = {}
+  params: ReviewParams = {},
+  signal?: AbortSignal,
 ): Promise<ReviewExerciseResponse> {
   mistakeLogger.info('Fetching review exercise', { params });
 
@@ -910,6 +928,7 @@ export async function fetchReviewExercise(
           focus_concept: params.focusConcept,
           focus_error_type: params.focusErrorType,
         },
+        signal,
       }
     );
 
@@ -917,7 +936,7 @@ export async function fetchReviewExercise(
 
     return mapReviewExerciseResponse(response.data);
   } catch (error) {
-    mistakeLogger.error('Failed to fetch review exercise', { error });
+    logMistakeFailure('Failed to fetch review exercise', error);
     throw error;
   }
 }
@@ -945,7 +964,7 @@ export async function fetchReviewExerciseByAttempt(
     );
     return mapReviewExerciseResponse(response.data);
   } catch (error) {
-    mistakeLogger.error('Failed to fetch exact mistake review exercise', { error });
+    logMistakeFailure('Failed to fetch exact mistake review exercise', error);
     throw error;
   }
 }

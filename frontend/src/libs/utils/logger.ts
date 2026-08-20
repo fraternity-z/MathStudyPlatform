@@ -269,21 +269,28 @@ class Logger {
   /**
    * 输出到控制台
    */
-  private logToConsole(level: LogLevel, levelName: string, logEntry: unknown) {
+  private logToConsole(
+    level: LogLevel,
+    levelName: string,
+    logEntry: { timestamp: string; message: string; data: unknown }
+  ) {
     const prefix = `[${levelName}]`;
+    const output = logEntry.data === undefined
+      ? [prefix, logEntry.message]
+      : [prefix, logEntry.message, logEntry.data];
 
     switch (level) {
       case LogLevel.DEBUG:
-        console.debug(prefix, logEntry);
+        console.debug(...output);
         break;
       case LogLevel.INFO:
-        console.info(prefix, logEntry);
+        console.info(...output);
         break;
       case LogLevel.WARN:
-        console.warn(prefix, logEntry);
+        console.warn(...output);
         break;
       case LogLevel.ERROR:
-        console.error(prefix, logEntry);
+        console.error(...output);
         break;
     }
   }

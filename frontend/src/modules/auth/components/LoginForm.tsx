@@ -9,6 +9,11 @@ import { setCredentials } from '@/modules/auth/store/authSlice';
 import { loginSchema, type LoginFormData } from '@/libs/validation';
 import { ArrowRight, Sparkles, GraduationCap, BookOpen, Eye, EyeOff } from 'lucide-react';
 import { logger } from '@/libs/utils/logger';
+import {
+  formatAppErrorDescription,
+  isRequestCancelled,
+  toAppError,
+} from '@/libs/http/apiClient';
 import { Button } from '@/components/ui/Button';
 import {
   FormField,
@@ -152,10 +157,18 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onSuccess, onSwitchToRegis
         role: data.role,
         error: err instanceof Error ? err.message : 'Unknown error'
       });
-      setError('root', {
-        type: 'manual',
-        message: '登录失败，请检查用户名和密码',
-      });
+      if (!isRequestCancelled(err)) {
+        const appError = toAppError(err, '登录失败，请检查用户名和密码');
+        const hidesAuthenticationDetail = appError.kind === 'unauthenticated'
+          || appError.kind === 'forbidden'
+          || appError.kind === 'validation';
+        setError('root', {
+          type: 'manual',
+          message: hidesAuthenticationDetail
+            ? '登录失败，请检查用户名和密码'
+            : formatAppErrorDescription(appError),
+        });
+      }
     } finally {
       setIsLoggingIn(false);
     }

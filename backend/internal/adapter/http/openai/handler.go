@@ -92,6 +92,7 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.limiter != nil && !h.limiter.Allow(r.Context(), principal.UserID) {
+		w.Header().Set("Retry-After", "60")
 		writeOpenAIError(w, http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exceeded", "", "Responses requests are too frequent. Please retry later.")
 		return
 	}

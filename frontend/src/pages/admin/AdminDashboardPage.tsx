@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Ca
 import { Button } from '../../components/ui/Button';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { useToast } from '../../components/ui/Toast';
+import { RequestErrorNotice } from '@/components/feedback';
 import { StatCard } from '../../components/ui/StatCard';
 import {
   Users,
@@ -34,6 +35,7 @@ import {
   selectSystemStatusData,
 } from '../../store/selectors/adminStatsSelectors';
 import type { UserGrowthPeriod } from '@/modules/admin/types/adminStats';
+import { getAdminErrorToast } from '@/modules/admin/utils/errorFeedback';
 
 export const AdminDashboardPage: React.FC = () => {
   const dispatch = useAppDispatch();
@@ -46,9 +48,9 @@ export const AdminDashboardPage: React.FC = () => {
   const [isResetMetricsDialogOpen, setIsResetMetricsDialogOpen] = useState(false);
 
   // 使用记忆化 Selectors 减少不必要的重渲染
-  const { overview, overviewLoading } = useAppSelector(selectOverviewData);
-  const { userGrowth, userGrowthLoading, userGrowthPeriod } = useAppSelector(selectUserGrowthData);
-  const { recentActivities, activitiesLoading } = useAppSelector(selectActivitiesData);
+  const { overview, overviewLoading, overviewError } = useAppSelector(selectOverviewData);
+  const { userGrowth, userGrowthLoading, userGrowthError, userGrowthPeriod } = useAppSelector(selectUserGrowthData);
+  const { recentActivities, activitiesLoading, activitiesError } = useAppSelector(selectActivitiesData);
   const {
     systemStatus,
     systemStatusLoading,
@@ -59,8 +61,12 @@ export const AdminDashboardPage: React.FC = () => {
 
   // 组件挂载时获取一次性数据
   useEffect(() => {
-    dispatch(fetchOverviewStats());
-    dispatch(fetchRecentActivities(10));
+    const overviewRequest = dispatch(fetchOverviewStats());
+    const activitiesRequest = dispatch(fetchRecentActivities(10));
+    return () => {
+      overviewRequest.abort();
+      activitiesRequest.abort();
+    };
   }, [dispatch]);
 
   // 仅在 period 变化时获取用户增长数据
@@ -101,12 +107,8 @@ export const AdminDashboardPage: React.FC = () => {
         description: result.message,
       });
     } catch (error) {
-      const message = typeof error === 'string' ? error : '重置运维流量指标失败';
-      toast({
-        type: 'error',
-        title: '重置失败',
-        description: message,
-      });
+      const feedback = getAdminErrorToast(error, '重置运维流量指标失败', '重置失败');
+      if (feedback) toast(feedback);
     }
   };
 
@@ -192,6 +194,14 @@ export const AdminDashboardPage: React.FC = () => {
               </Button>
             </div>
 
+            {overviewError ? (
+              <RequestErrorNotice
+                error={overviewError}
+                onRetry={() => { void dispatch(fetchOverviewStats()); }}
+                onRefresh={() => { void dispatch(fetchOverviewStats()); }}
+              />
+            ) : null}
+
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <StatCard
                 title="总用户数"
@@ -230,7 +240,13 @@ export const AdminDashboardPage: React.FC = () => {
                   <CardTitle className="text-xl">最近活动</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  {activitiesLoading === 'loading' ? (
+                  {activitiesError ? (
+                    <RequestErrorNotice
+                      error={activitiesError}
+                      onRetry={() => { void dispatch(fetchRecentActivities(10)); }}
+                      onRefresh={() => { void dispatch(fetchRecentActivities(10)); }}
+                    />
+                  ) : activitiesLoading === 'loading' ? (
                     <div className="space-y-4">
                       {[1, 2, 3, 4].map((i) => (
                         <div key={i} className="flex items-start space-x-3 animate-pulse">
@@ -279,7 +295,13 @@ export const AdminDashboardPage: React.FC = () => {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  {userGrowth?.data && userGrowth.data.length > 0 ? (
+                  {userGrowthError ? (
+                    <RequestErrorNotice
+                      error={userGrowthError}
+                      onRetry={() => { void dispatch(fetchUserGrowth(userGrowthPeriod)); }}
+                      onRefresh={() => { void dispatch(fetchUserGrowth(userGrowthPeriod)); }}
+                    />
+                  ) : userGrowth?.data && userGrowth.data.length > 0 ? (
                     <>
                       <UserGrowthChart
                         data={userGrowth.data}
@@ -340,11 +362,7 @@ export const AdminDashboardPage: React.FC = () => {
               <li>不会删除用户、课程、学习会话、日志或任何数据库数据。</li>
             </ul>
             <p className="font-medium text-red-600 dark:text-red-400">本轮历史累计指标重置后不可恢复。</p>
-            {trafficResetError ? (
-              <p className="rounded-lg bg-red-50 px-3 py-2 text-red-700 dark:bg-red-950/30 dark:text-red-300" role="alert">
-                重置失败：{trafficResetError}
-              </p>
-            ) : null}
+            {trafficResetError ? <RequestErrorNotice error={trafficResetError} /> : null}
           </div>
         }
         confirmText="确认重置"
@@ -396,4 +414,3 @@ const ActivityItem = ({ user, action, time, type }: {
     </div>
   );
 };
-

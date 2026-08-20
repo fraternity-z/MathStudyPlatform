@@ -25,6 +25,7 @@ import type {
   ModelsUpdateResponse,
 } from '@/modules/ai-config/types/aiConfig';
 import type { LoadingState } from '@/types';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 
 /**
  * AI 配置状态
@@ -33,18 +34,18 @@ interface AIConfigState {
   // 提供商
   providers: LLMProvider[];
   providersLoading: LoadingState;
-  providersError: string | null;
+  providersError: AppError | null;
 
   // 模型
   models: LLMModel[];
   modelsLoading: LoadingState;
-  modelsError: string | null;
+  modelsError: AppError | null;
 
   // 智能体配置
   agentConfigs: AgentModelConfig[];
   agentTypes: AgentTypeInfo[];
   agentConfigsLoading: LoadingState;
-  agentConfigsError: string | null;
+  agentConfigsError: AppError | null;
 
   // 当前选中
   selectedProviderId: string | null;
@@ -83,13 +84,13 @@ const initialState: AIConfigState = {
 // 提供商相关
 export const fetchProviders = createAsyncThunk(
   'aiConfig/fetchProviders',
-  async (includeInactive: boolean = false, { rejectWithValue }) => {
+  async (includeInactive: boolean = false, { rejectWithValue, signal }) => {
     try {
-      const response = await aiConfigService.listProviders(includeInactive);
+      const response = await aiConfigService.listProviders(includeInactive, signal);
       return response.items;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '获取提供商列表失败';
-      return rejectWithValue(message);
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '获取提供商列表失败'));
     }
   },
   {
@@ -106,8 +107,7 @@ export const createProvider = createAsyncThunk(
     try {
       return await aiConfigService.createProvider(data);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '创建提供商失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '创建提供商失败'));
     }
   }
 );
@@ -118,8 +118,7 @@ export const updateProvider = createAsyncThunk(
     try {
       return await aiConfigService.updateProvider(id, data);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '更新提供商失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '更新提供商失败'));
     }
   }
 );
@@ -131,8 +130,7 @@ export const deleteProvider = createAsyncThunk(
       await aiConfigService.deleteProvider(id);
       return id;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '删除提供商失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '删除提供商失败'));
     }
   }
 );
@@ -146,8 +144,7 @@ export const testProviderConnection = createAsyncThunk(
     try {
       return await aiConfigService.testProvider(id, modelId);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '测试连接失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '测试连接失败'));
     }
   }
 );
@@ -155,15 +152,14 @@ export const testProviderConnection = createAsyncThunk(
 export const createProviderWithModels = createAsyncThunk<
   ProviderWithModelsResponse,
   CreateProviderWithModelsRequest,
-  { rejectValue: string }
+  { rejectValue: AppError }
 >(
   'aiConfig/createProviderWithModels',
   async (data: CreateProviderWithModelsRequest, { rejectWithValue }) => {
     try {
       return await aiConfigService.createProviderWithModels(data);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '创建渠道失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '创建渠道失败'));
     }
   }
 );
@@ -171,15 +167,14 @@ export const createProviderWithModels = createAsyncThunk<
 export const fetchAvailableModels = createAsyncThunk<
   FetchModelsResponse,
   string,
-  { rejectValue: string }
+  { rejectValue: AppError }
 >(
   'aiConfig/fetchAvailableModels',
   async (providerId: string, { rejectWithValue }) => {
     try {
       return await aiConfigService.fetchAvailableModels(providerId);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '获取可用模型列表失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '获取可用模型列表失败'));
     }
   }
 );
@@ -187,15 +182,14 @@ export const fetchAvailableModels = createAsyncThunk<
 export const updateProviderModels = createAsyncThunk<
   ModelsUpdateResponse,
   { providerId: string; data: ModelsUpdateRequest },
-  { rejectValue: string }
+  { rejectValue: AppError }
 >(
   'aiConfig/updateProviderModels',
   async ({ providerId, data }, { rejectWithValue }) => {
     try {
       return await aiConfigService.updateProviderModels(providerId, data);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '更新模型列表失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '更新模型列表失败'));
     }
   }
 );
@@ -205,14 +199,14 @@ export const fetchModels = createAsyncThunk(
   'aiConfig/fetchModels',
   async (
     { providerId, includeInactive }: { providerId?: string; includeInactive?: boolean } = {},
-    { rejectWithValue }
+    { rejectWithValue, signal }
   ) => {
     try {
-      const response = await aiConfigService.listModels(providerId, includeInactive);
+      const response = await aiConfigService.listModels(providerId, includeInactive, signal);
       return response.items;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '获取模型列表失败';
-      return rejectWithValue(message);
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '获取模型列表失败'));
     }
   },
   {
@@ -229,8 +223,7 @@ export const createModel = createAsyncThunk(
     try {
       return await aiConfigService.createModel(data);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '创建模型失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '创建模型失败'));
     }
   }
 );
@@ -241,8 +234,7 @@ export const updateModel = createAsyncThunk(
     try {
       return await aiConfigService.updateModel(id, data);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '更新模型失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '更新模型失败'));
     }
   }
 );
@@ -254,8 +246,7 @@ export const deleteModel = createAsyncThunk(
       await aiConfigService.deleteModel(id);
       return id;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '删除模型失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '删除模型失败'));
     }
   }
 );
@@ -267,8 +258,7 @@ export const setDefaultModel = createAsyncThunk(
       await aiConfigService.setDefaultModel(id);
       return id;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '设置默认模型失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '设置默认模型失败'));
     }
   }
 );
@@ -276,26 +266,26 @@ export const setDefaultModel = createAsyncThunk(
 // 智能体配置相关
 export const fetchAgentConfigs = createAsyncThunk(
   'aiConfig/fetchAgentConfigs',
-  async (_, { rejectWithValue }) => {
+  async (_, { rejectWithValue, signal }) => {
     try {
-      const response = await aiConfigService.listAgentConfigs();
+      const response = await aiConfigService.listAgentConfigs(signal);
       return response.items;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '获取智能体配置失败';
-      return rejectWithValue(message);
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '获取智能体配置失败'));
     }
   }
 );
 
 export const fetchAgentTypes = createAsyncThunk(
   'aiConfig/fetchAgentTypes',
-  async (_, { rejectWithValue }) => {
+  async (_, { rejectWithValue, signal }) => {
     try {
-      const response = await aiConfigService.listAgentTypes();
+      const response = await aiConfigService.listAgentTypes(signal);
       return response.items;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '获取智能体类型失败';
-      return rejectWithValue(message);
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '获取智能体类型失败'));
     }
   }
 );
@@ -309,8 +299,7 @@ export const updateAgentConfig = createAsyncThunk(
     try {
       return await aiConfigService.updateAgentConfig(agentType, data);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '更新智能体配置失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '更新智能体配置失败'));
     }
   }
 );
@@ -322,8 +311,7 @@ export const deleteAgentConfig = createAsyncThunk(
       await aiConfigService.deleteAgentConfig(agentType);
       return agentType;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '删除智能体配置失败';
-      return rejectWithValue(message);
+      return rejectWithValue(toAppError(error, '删除智能体配置失败'));
     }
   }
 );
@@ -384,8 +372,12 @@ const aiConfigSlice = createSlice({
         state.providers = action.payload;
       })
       .addCase(fetchProviders.rejected, (state, action) => {
+        if (action.meta.aborted) {
+          state.providersLoading = state.providers.length ? 'success' : 'idle';
+          return;
+        }
         state.providersLoading = 'error';
-        state.providersError = action.payload as string;
+        state.providersError = action.payload as AppError;
       })
 
       .addCase(createProvider.fulfilled, (state, action) => {
@@ -451,8 +443,12 @@ const aiConfigSlice = createSlice({
         state.models = action.payload;
       })
       .addCase(fetchModels.rejected, (state, action) => {
+        if (action.meta.aborted) {
+          state.modelsLoading = state.models.length ? 'success' : 'idle';
+          return;
+        }
         state.modelsLoading = 'error';
-        state.modelsError = action.payload as string;
+        state.modelsError = action.payload as AppError;
       })
 
       .addCase(createModel.fulfilled, (state, action) => {
@@ -488,12 +484,19 @@ const aiConfigSlice = createSlice({
         state.agentConfigs = action.payload;
       })
       .addCase(fetchAgentConfigs.rejected, (state, action) => {
+        if (action.meta.aborted) {
+          state.agentConfigsLoading = state.agentConfigs.length ? 'success' : 'idle';
+          return;
+        }
         state.agentConfigsLoading = 'error';
-        state.agentConfigsError = action.payload as string;
+        state.agentConfigsError = action.payload as AppError;
       })
 
       .addCase(fetchAgentTypes.fulfilled, (state, action) => {
         state.agentTypes = action.payload;
+      })
+      .addCase(fetchAgentTypes.rejected, (state, action) => {
+        if (!action.meta.aborted) state.agentConfigsError = action.payload as AppError;
       })
 
       .addCase(updateAgentConfig.fulfilled, (state, action) => {

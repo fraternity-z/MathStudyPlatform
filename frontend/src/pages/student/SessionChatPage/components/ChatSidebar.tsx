@@ -13,10 +13,11 @@ import {
   GraduationCap,
   Target,
   Lightbulb,
-  AlertCircle,
 } from 'lucide-react';
 import { cn } from '../../../../libs/utils/cn';
 import type { ChatSessionListItem } from '@/modules/session/types';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/appError';
 
 interface ChatSidebarProps {
   isOpen: boolean;
@@ -27,7 +28,8 @@ interface ChatSidebarProps {
   deletingSessionId: string | null;
   isBatchDeleting: boolean;
   loading: boolean;
-  error?: string | null;
+  error?: AppError | null;
+  onRetry?: () => void;
   interactionDisabled?: boolean;
   onToggleSidebar: () => void;
   onNewSession: () => void;
@@ -78,6 +80,7 @@ export const ChatSidebar = React.memo<ChatSidebarProps>(
     isBatchDeleting,
     loading,
     error,
+    onRetry,
     interactionDisabled,
     onToggleSidebar,
     onNewSession,
@@ -148,10 +151,12 @@ export const ChatSidebar = React.memo<ChatSidebarProps>(
           </div>
 
           {error && (
-            <div className="mx-3 mt-3 flex items-start gap-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-900/20 dark:text-red-300">
-              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              <span>会话列表刷新失败，已保留现有数据</span>
-            </div>
+            <RequestErrorNotice
+              error={error}
+              onRetry={onRetry}
+              onRefresh={onRetry}
+              className="mx-3 mt-3 px-3 py-2 text-xs"
+            />
           )}
 
           {/* 会话列表 */}

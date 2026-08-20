@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { Image as ImageIcon, Loader2, Paperclip, X } from 'lucide-react';
 
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppErrorFeedback, type AppErrorFeedback } from '@/libs/http/apiClient';
 import { MAX_MESSAGE_ATTACHMENTS, type MessageAttachment } from '@/modules/message-center/attachmentTypes';
 import { MessageImagePreview } from '@/modules/message-center/MessageImagePreview';
 import { uploadService } from '@/modules/upload/services/uploadService';
@@ -11,6 +11,7 @@ interface MessageAttachmentPickerProps {
   onChange: (attachments: MessageAttachment[]) => void;
   onUploadingChange?: (uploading: boolean) => void;
   onError?: (message: string) => void;
+  onFeedback?: (feedback: AppErrorFeedback) => void;
   disabled?: boolean;
   onPendingChange?: (attachments: PendingMessageAttachment[]) => void;
 }
@@ -46,6 +47,7 @@ export function MessageAttachmentControls({
   onChange,
   onUploadingChange,
   onError,
+  onFeedback,
   onPendingChange,
   disabled = false,
 }: MessageAttachmentControlsProps) {
@@ -115,8 +117,20 @@ export function MessageAttachmentControls({
       }
       const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
       if (failures.length > 0) {
-        const detail = getApiErrorMessage(failures[0].reason, '附件上传失败');
-        onError?.(failures.length === 1 ? detail : `${failures.length} 个附件上传失败：${detail}`);
+        const feedback = toAppErrorFeedback(failures[0].reason, '附件上传失败');
+        if (feedback) {
+          if (onFeedback) {
+            onFeedback({
+              ...feedback,
+              description: failures.length === 1
+                ? feedback.description
+                : `${failures.length} 个附件上传失败：${feedback.description}`,
+            });
+          } else {
+            const detail = feedback.description;
+            onError?.(failures.length === 1 ? detail : `${failures.length} 个附件上传失败：${detail}`);
+          }
+        }
       }
     } finally {
       pendingRef.current.forEach((attachment) => {

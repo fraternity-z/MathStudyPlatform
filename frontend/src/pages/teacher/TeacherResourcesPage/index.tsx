@@ -1,12 +1,7 @@
-import React, { useEffect, useReducer } from 'react';
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { MainLayout } from '../../../components/layout/MainLayout';
-import { useAppDispatch, useAppSelector } from '@/store';
-import {
-  fetchResources,
-  fetchResourceStats,
-  deleteResource,
-} from '@/modules/resource/store/resourceSlice';
-import type { ResourceFilter } from '@/modules/resource/types/resource';
+import { resourceService } from '@/modules/resource/services/resourceService';
+import type { Resource, ResourceFilter, ResourceStats } from '@/modules/resource/types/resource';
 import type { FilterType, ViewMode } from './types';
 import { resourcePageReducer, initialState } from './reducer';
 import { ResourceStatsCards } from './components/ResourceStatsCards';
@@ -18,57 +13,139 @@ import { ResourceDetailModal } from './components/ResourceDetailModal';
 import { ResourceEditModal } from './components/ResourceEditModal';
 import { BatchImportModal } from './components/BatchImportModal';
 import { ConfirmDialog } from '../../../components/ui/ConfirmDialog';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Button } from '../../../components/ui/Button';
+import { useToast } from '@/components/ui/Toast';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 import { Check, Upload, Loader2, FolderOpen } from 'lucide-react';
 
 export const TeacherResourcesPage: React.FC = () => {
-  const dispatch = useAppDispatch();
-  const { resources, stats, loading, statsLoading, actionLoading } = useAppSelector(
-    (state) => state.resource
-  );
-
+  const { toast } = useToast();
   const [state, localDispatch] = useReducer(resourcePageReducer, initialState);
+  const [resources, setResources] = useState<Resource[]>([]);
+  const [stats, setStats] = useState<ResourceStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [statsLoading, setStatsLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [listError, setListError] = useState<AppError | null>(null);
+  const [statsError, setStatsError] = useState<AppError | null>(null);
+  const listRequestRef = useRef(0);
+
+  const currentFilter = useMemo<ResourceFilter>(() => ({
+    ...(state.selectedType !== 'all' ? { type: state.selectedType } : {}),
+    ...(state.searchTerm ? { search: state.searchTerm } : {}),
+  }), [state.searchTerm, state.selectedType]);
+
+  const loadResources = useCallback(async (filter: ResourceFilter) => {
+    const requestID = listRequestRef.current + 1;
+    listRequestRef.current = requestID;
+    setLoading(true);
+    setListError(null);
+    try {
+      const response = await resourceService.getResources(filter);
+      if (listRequestRef.current === requestID) setResources(response.items);
+    } catch (error) {
+      if (listRequestRef.current === requestID) {
+        setListError(toAppError(error, '资源列表加载失败'));
+      }
+    } finally {
+      if (listRequestRef.current === requestID) setLoading(false);
+    }
+  }, []);
+
+  const loadStats = useCallback(async () => {
+    setStatsLoading(true);
+    setStatsError(null);
+    try {
+      setStats(await resourceService.getStats());
+    } catch (error) {
+      setStatsError(toAppError(error, '资源统计加载失败'));
+    } finally {
+      setStatsLoading(false);
+    }
+  }, []);
+
+  const notifyRequestError = useCallback((error: unknown, fallback: string) => {
+    const appError = toAppError(error, fallback);
+    if (appError.kind === 'cancelled' || appError.kind === 'rate_limited') return;
+    const details = [
+      appError.retryAfter !== undefined && appError.retryAfter > 0
+        ? `可在 ${appError.retryAfter} 秒后重试`
+        : '',
+      appError.requestId ? `请求编号：${appError.requestId}` : '',
+    ].filter(Boolean);
+    toast({
+      type: 'error',
+      title: appError.message,
+      description: details.length > 0 ? details.join('；') : undefined,
+    });
+  }, [toast]);
 
   // 初始加载统计
   useEffect(() => {
-    dispatch(fetchResourceStats());
-  }, [dispatch]);
+    void loadStats();
+  }, [loadStats]);
 
   // 筛选变化时重新加载（含搜索防抖）
   useEffect(() => {
     const timer = setTimeout(() => {
-      const filter: ResourceFilter = {};
-
-      if (state.selectedType !== 'all') {
-        filter.type = state.selectedType;
-      }
-      if (state.searchTerm) {
-        filter.search = state.searchTerm;
-      }
-
-      dispatch(fetchResources(filter));
+      void loadResources(currentFilter);
     }, state.searchTerm ? 300 : 0);
 
-    return () => clearTimeout(timer);
-  }, [dispatch, state.selectedType, state.searchTerm]);
+    return () => {
+      clearTimeout(timer);
+      listRequestRef.current += 1;
+    };
+  }, [currentFilter, loadResources, state.searchTerm]);
 
   // 处理删除
   const handleDelete = async (id: string) => {
-    await dispatch(deleteResource(id));
-    localDispatch({ type: 'CLOSE_DELETE_CONFIRM' });
-    dispatch(fetchResourceStats());
+    setActionLoading(true);
+    try {
+      await resourceService.deleteResource(id);
+      setResources((current) => current.filter((resource) => resource.id !== id));
+      localDispatch({ type: 'CLOSE_DELETE_CONFIRM' });
+      await loadStats();
+    } catch (error) {
+      notifyRequestError(error, '删除资源失败');
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   // 批量删除
   const handleBatchDelete = async () => {
     const ids = Array.from(state.selectedResourceIds);
-    for (const id of ids) {
-      await dispatch(deleteResource(id));
+    setActionLoading(true);
+    const failed: unknown[] = [];
+    const deletedIDs: string[] = [];
+    try {
+      for (const id of ids) {
+        try {
+          await resourceService.deleteResource(id);
+          deletedIDs.push(id);
+        } catch (error) {
+          failed.push(error);
+        }
+      }
+      if (deletedIDs.length > 0) {
+        const deleted = new Set(deletedIDs);
+        setResources((current) => current.filter((resource) => !deleted.has(resource.id)));
+        await loadStats();
+      }
+      if (failed.length > 0) {
+        notifyRequestError(
+          failed[0],
+          failed.length === ids.length ? '批量删除失败' : `有 ${failed.length} 个资源删除失败`,
+        );
+        return;
+      }
+      localDispatch({ type: 'CLOSE_BATCH_DELETE_CONFIRM' });
+      localDispatch({ type: 'CLEAR_SELECTION' });
+      localDispatch({ type: 'EXIT_SELECTION_MODE' });
+    } finally {
+      setActionLoading(false);
     }
-    localDispatch({ type: 'CLOSE_BATCH_DELETE_CONFIRM' });
-    localDispatch({ type: 'CLEAR_SELECTION' });
-    localDispatch({ type: 'EXIT_SELECTION_MODE' });
-    dispatch(fetchResourceStats());
   };
 
   const displayStats = stats || {
@@ -101,6 +178,23 @@ export const TeacherResourcesPage: React.FC = () => {
             </Button>
           </div>
         </div>
+
+        {listError ? (
+          <RequestErrorNotice
+            error={listError}
+            onRetry={() => void loadResources(currentFilter)}
+            onRefresh={() => void loadResources(currentFilter)}
+            className="mb-6"
+          />
+        ) : null}
+        {statsError ? (
+          <RequestErrorNotice
+            error={statsError}
+            onRetry={() => void loadStats()}
+            onRefresh={() => void loadStats()}
+            className="mb-6"
+          />
+        ) : null}
 
         {/* 批量操作栏 */}
         {state.selectionMode && (
@@ -225,7 +319,7 @@ export const TeacherResourcesPage: React.FC = () => {
         onClose={() => localDispatch({ type: 'CLOSE_EDIT' })}
         onSuccess={() => {
           localDispatch({ type: 'CLOSE_EDIT' });
-          dispatch(fetchResources({}));
+          void loadResources(currentFilter);
         }}
       />
 
@@ -235,8 +329,8 @@ export const TeacherResourcesPage: React.FC = () => {
         onClose={() => localDispatch({ type: 'CLOSE_BATCH_IMPORT' })}
         onSuccess={() => {
           localDispatch({ type: 'CLOSE_BATCH_IMPORT' });
-          dispatch(fetchResources({}));
-          dispatch(fetchResourceStats());
+          void loadResources(currentFilter);
+          void loadStats();
         }}
       />
     </MainLayout>

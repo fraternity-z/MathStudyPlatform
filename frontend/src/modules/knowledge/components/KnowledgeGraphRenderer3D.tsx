@@ -167,33 +167,29 @@ const KnowledgeGraphRenderer3D = forwardRef<GraphRendererHandle, GraphRendererPr
     };
   }, []);
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      const graph = graphRef.current;
-      if (!graph) return;
-      try {
-        const radialForce = prerequisiteDepths
-          ? forceRadial<ForceNode>(
-              (node) => 54 + (prerequisiteDepths.get(node.id) ?? 0) * 74,
-              0,
-              0,
-              0,
-            ).strength(0.46)
-          : null;
-        graph.d3Force('prerequisite-depth', radialForce);
-        graph.d3Force('charge')
-          ?.strength?.((node: ForceNode) => -120 - Math.min(node.degree, 8) * 12)
-          ?.distanceMax?.(460);
-        graph.d3Force('link')
-          ?.distance?.((link: ForceLink) => link.relation === 'prerequisite' ? 92 : 124)
-          ?.strength?.((link: ForceLink) => link.relation === 'prerequisite' ? 0.72 : 0.26);
-        if (!reducedMotion) graph.d3ReheatSimulation();
-      } catch (error) {
-        onRendererErrorRef.current?.(toError(error));
-      }
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [prerequisiteDepths, reducedMotion]);
+  useLayoutEffect(() => {
+    const graph = graphRef.current;
+    if (!graph) return;
+    try {
+      const radialForce = prerequisiteDepths
+        ? forceRadial<ForceNode>(
+            (node) => 54 + (prerequisiteDepths.get(node.id) ?? 0) * 74,
+            0,
+            0,
+            0,
+          ).strength(0.46)
+        : null;
+      graph.d3Force('prerequisite-depth', radialForce);
+      graph.d3Force('charge')
+        ?.strength?.((node: ForceNode) => -120 - Math.min(node.degree, 8) * 12)
+        ?.distanceMax?.(460);
+      graph.d3Force('link')
+        ?.distance?.((link: ForceLink) => link.relation === 'prerequisite' ? 92 : 124)
+        ?.strength?.((link: ForceLink) => link.relation === 'prerequisite' ? 0.72 : 0.26);
+    } catch (error) {
+      onRendererErrorRef.current?.(toError(error));
+    }
+  }, [prerequisiteDepths]);
 
   useEffect(() => {
     if (selectedNodeId || graphData.nodes.length === 0) return;

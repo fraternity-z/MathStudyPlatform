@@ -8,12 +8,14 @@ import type {
   KnowledgeRelationUpdateData,
   SimpleNode,
 } from '@/modules/admin/types/knowledgeAdmin';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
 
 interface RelationFormModalProps {
   relation: KnowledgeRelationAdmin | null;
   allNodes: SimpleNode[];
   nodesLoading: boolean;
-  nodesError: string | null;
+  nodesError: AppError | null;
   saving: boolean;
   onSave: (data: KnowledgeRelationCreateData | KnowledgeRelationUpdateData) => void;
   onRetryNodes: () => void;
@@ -60,10 +62,7 @@ export const RelationFormModal = React.memo<RelationFormModalProps>(
               <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载节点...
             </div>
           ) : nodesError ? (
-            <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200" role="alert">
-              <span>{nodesError}</span>
-              <Button type="button" variant="outline" size="sm" onClick={onRetryNodes}>重试</Button>
-            </div>
+            <RequestErrorNotice error={nodesError} onRetry={onRetryNodes} onRefresh={onRetryNodes} className="mb-4" />
           ) : null}
           <form onSubmit={handleSubmit} className="space-y-4">
             {/* 源节点 */}

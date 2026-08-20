@@ -26,11 +26,18 @@ import { DailyQuestionStatusEntry } from '@/modules/daily-question/components/Da
 import { useShanghaiDate } from '@/modules/daily-question/hooks/useShanghaiDate';
 import { dailyQuestionService } from '@/modules/daily-question/services/dailyQuestionService';
 import type { DailyQuestionAssignment } from '@/modules/daily-question/types/dailyQuestion';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 
 type ExerciseMode = 'class' | 'ai';
 
 const INVALID_CONCEPT_MESSAGE = '指定的知识点不存在，请重新选择';
+
+const makeUiError = (message: string): AppError => ({
+  kind: 'validation',
+  message,
+  retryable: false,
+  source: 'ui',
+});
 
 const tutorCopy = {
   class: {
@@ -67,6 +74,7 @@ export const ExercisePage: React.FC = () => {
     solutionError: classSolutionError,
     error: classError,
     errorType: classErrorType,
+    errorSource: classErrorSource,
     loadNextQuestion: loadNextClassQuestion,
     submitAnswer: submitClassAnswer,
     loadSolution: loadClassSolution,
@@ -95,13 +103,13 @@ export const ExercisePage: React.FC = () => {
   const [mode, setMode] = useState<ExerciseMode>(requestedMode);
   const [knowledgeNodes, setKnowledgeNodes] = useState<KnowledgeNode[]>([]);
   const [isLoadingKnowledge, setIsLoadingKnowledge] = useState(false);
-  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
+  const [knowledgeError, setKnowledgeError] = useState<AppError | null>(null);
   const [selectedConceptId, setSelectedConceptId] = useState('');
   const [difficulty, setDifficulty] = useState(0.5);
   const [questionType, setQuestionType] = useState<GenerateQuestionType>('multiple_choice');
   const [dailyAssignment, setDailyAssignment] = useState<DailyQuestionAssignment | null>(null);
   const [isDailyStatusLoading, setIsDailyStatusLoading] = useState(true);
-  const [dailyStatusError, setDailyStatusError] = useState<string | null>(null);
+  const [dailyStatusError, setDailyStatusError] = useState<AppError | null>(null);
 
   useEffect(() => {
     if (classLoadStarted.current) return;
@@ -122,7 +130,7 @@ export const ExercisePage: React.FC = () => {
         }
       } catch (statusError) {
         if (!controller.signal.aborted) {
-          setDailyStatusError(getApiErrorMessage(statusError, '每日一题状态暂时无法加载'));
+          setDailyStatusError(toAppError(statusError, '每日一题状态暂时无法加载'));
         }
       } finally {
         if (!controller.signal.aborted) {
@@ -157,7 +165,7 @@ export const ExercisePage: React.FC = () => {
       setKnowledgeNodes(graph.nodes);
       if (graph.nodes.length === 0) {
         setSelectedConceptId('');
-        setKnowledgeError('暂无可用知识点，请联系管理员配置');
+        setKnowledgeError(makeUiError('暂无可用知识点，请联系管理员配置'));
         return;
       }
       const requestedNode = requestedConceptId
@@ -165,11 +173,11 @@ export const ExercisePage: React.FC = () => {
         : null;
       setSelectedConceptId((current) => requestedNode?.id || current || graph.nodes[0]?.id || '');
       if (requestedConceptId && !requestedNode) {
-        setKnowledgeError(INVALID_CONCEPT_MESSAGE);
+        setKnowledgeError(makeUiError(INVALID_CONCEPT_MESSAGE));
       }
-    } catch {
+    } catch (error) {
       if (requestId === knowledgeRequestId.current) {
-        setKnowledgeError('知识点加载失败，请稍后重试');
+        setKnowledgeError(toAppError(error, '知识点加载失败，请稍后重试'));
       }
     } finally {
       if (requestId === knowledgeRequestId.current) {
@@ -193,11 +201,11 @@ export const ExercisePage: React.FC = () => {
     if (mode !== 'ai' || !requestedConceptId || knowledgeNodes.length === 0) return;
     const requestedNode = knowledgeNodes.find((node) => node.id === requestedConceptId);
     if (!requestedNode) {
-      setKnowledgeError(INVALID_CONCEPT_MESSAGE);
+      setKnowledgeError(makeUiError(INVALID_CONCEPT_MESSAGE));
       return;
     }
     setSelectedConceptId(requestedNode.id);
-    setKnowledgeError((current) => current === INVALID_CONCEPT_MESSAGE ? null : current);
+    setKnowledgeError((current) => current?.message === INVALID_CONCEPT_MESSAGE ? null : current);
   }, [knowledgeNodes, mode, requestedConceptId]);
 
   useEffect(() => {
@@ -292,6 +300,7 @@ export const ExercisePage: React.FC = () => {
                   solutionError={classSolutionError}
                   error={classError}
                   errorType={classErrorType}
+                  errorSource={classErrorSource}
                   onNextQuestion={loadNextClassQuestion}
                   submitAnswer={submitClassAnswer}
                   onLoadSolution={loadClassSolution}
@@ -327,6 +336,7 @@ export const ExercisePage: React.FC = () => {
                     solutionError={aiSolutionError}
                     error={aiErrorSource === 'submission' ? aiError : null}
                     errorType={aiErrorSource === 'submission' ? aiErrorType : null}
+                    errorSource={aiErrorSource === 'submission' ? aiErrorSource : null}
                     onNextQuestion={generateQuestion}
                     submitAnswer={submitAIAnswer}
                     onLoadSolution={loadAISolution}

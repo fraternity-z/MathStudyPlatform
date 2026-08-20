@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { MainLayout } from '../../components/layout/MainLayout';
+import { RequestErrorNotice } from '@/components/feedback';
 import { ErrorBoundary } from '../../components/ErrorBoundary';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
@@ -14,12 +15,14 @@ import type { ClassInfo } from '@/modules/classroom/types/classroom';
 import { Plus, ChevronRight, Copy, Check } from 'lucide-react';
 import { useToast } from '../../components/ui/Toast';
 import { classCreationSchema, type ClassCreationFormData } from './schemas';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 
 export const ClassManagementPage: React.FC = () => {
   const [classes, setClasses] = useState<ClassInfo[]>([]);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [loadError, setLoadError] = useState('');
+  const [loadError, setLoadError] = useState<AppError | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -57,17 +60,20 @@ export const ClassManagementPage: React.FC = () => {
   };
 
   useEffect(() => {
+    const controller = new AbortController();
     const loadClasses = async () => {
       try {
-        const response = await classService.listTeacherClasses();
+        const response = await classService.listTeacherClasses(controller.signal);
+        if (controller.signal.aborted) return;
         setClasses(response.items);
-        setLoadError('');
-      } catch {
-        setLoadError('班级列表加载失败，请稍后重试');
+        setLoadError(null);
+      } catch (error) {
+        if (!controller.signal.aborted) setLoadError(toAppError(error, '班级列表加载失败，请稍后重试'));
       }
     };
-    loadClasses();
-  }, []);
+    void loadClasses();
+    return () => controller.abort();
+  }, [reloadKey]);
 
   const handleCreateClass = async (data: ClassCreationFormData) => {
     setIsSubmitting(true);
@@ -80,11 +86,25 @@ export const ClassManagementPage: React.FC = () => {
       setClasses((prev) => [response.class_info, ...prev]);
       reset();
       setIsCreateOpen(false);
-    } catch {
+    } catch (error) {
+      const appError = toAppError(error, '创建班级失败，请稍后重试');
       setError('root', {
         type: 'manual',
-        message: '创建班级失败，请稍后重试',
+        message: appError.message,
       });
+      if (appError.kind !== 'cancelled' && appError.kind !== 'rate_limited'
+        && (appError.requestId || appError.retryAfter !== undefined)) {
+        toast({
+          type: 'error',
+          title: appError.message,
+          description: [
+            appError.retryAfter !== undefined && appError.retryAfter > 0
+              ? `可在 ${appError.retryAfter} 秒后重试`
+              : '',
+            appError.requestId ? `请求编号：${appError.requestId}` : '',
+          ].filter(Boolean).join('；'),
+        });
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -115,7 +135,12 @@ export const ClassManagementPage: React.FC = () => {
           </CardHeader>
           <CardContent>
             {loadError && (
-              <p className="mb-4 text-sm text-red-500">{loadError}</p>
+              <RequestErrorNotice
+                error={loadError}
+                onRetry={() => setReloadKey((key) => key + 1)}
+                onRefresh={() => setReloadKey((key) => key + 1)}
+                className="mb-4"
+              />
             )}
             <div className="overflow-x-auto">
               <table className="w-full text-sm text-left">

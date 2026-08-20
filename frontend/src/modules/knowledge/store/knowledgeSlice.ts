@@ -7,6 +7,8 @@ import type {
 } from '@/modules/knowledge/types/knowledge';
 import { knowledgeService } from '@/modules/knowledge/services/knowledgeService';
 import { createLoadingReducers, type WithLoadingState } from '@/store/utils/sliceFactory';
+import { toAppError, type AppError } from '@/libs/http/appError';
+import type { KnowledgeGraphData } from '@/modules/knowledge/types/knowledge';
 
 /**
  * 知识图谱状态
@@ -17,6 +19,8 @@ export interface KnowledgeState extends WithLoadingState {
   statistics: KnowledgeGraphStatistics | null;
   filters: KnowledgeGraphFilters;
   selectedNodeId: string | null;
+  requestError: AppError | null;
+  graphRequestId: string | null;
 }
 
 const initialState: KnowledgeState = {
@@ -25,6 +29,8 @@ const initialState: KnowledgeState = {
   statistics: null,
   filters: {},
   selectedNodeId: null,
+  requestError: null,
+  graphRequestId: null,
   loadingState: 'idle',
   error: null,
 };
@@ -32,11 +38,19 @@ const initialState: KnowledgeState = {
 /**
  * 异步获取知识图谱数据
  */
-export const fetchKnowledgeGraph = createAsyncThunk(
+export const fetchKnowledgeGraph = createAsyncThunk<
+  KnowledgeGraphData,
+  KnowledgeGraphFilters | undefined,
+  { rejectValue: AppError }
+>(
   'knowledge/fetchKnowledgeGraph',
-  async (filters?: KnowledgeGraphFilters) => {
-    const data = await knowledgeService.getKnowledgeGraph(filters);
-    return data;
+  async (filters, { rejectWithValue, signal }) => {
+    try {
+      return await knowledgeService.getKnowledgeGraph(filters, signal);
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '获取知识图谱数据失败'));
+    }
   }
 );
 
@@ -81,28 +95,45 @@ const knowledgeSlice = createSlice({
       state.edges = [];
       state.statistics = null;
       state.selectedNodeId = null;
+      state.loadingState = 'idle';
       state.error = null;
+      state.requestError = null;
+      state.graphRequestId = null;
     },
   },
   extraReducers: (builder) => {
     builder
       // 获取知识图谱数据 - pending
-      .addCase(fetchKnowledgeGraph.pending, (state) => {
+      .addCase(fetchKnowledgeGraph.pending, (state, action) => {
         state.loadingState = 'loading';
         state.error = null;
+        state.requestError = null;
+        state.graphRequestId = action.meta.requestId;
       })
       // 获取知识图谱数据 - fulfilled
       .addCase(fetchKnowledgeGraph.fulfilled, (state, action) => {
+        if (state.graphRequestId !== action.meta.requestId) return;
         state.loadingState = 'success';
         state.nodes = action.payload.nodes;
         state.edges = action.payload.edges;
         state.statistics = action.payload.statistics;
         state.error = null;
+        state.requestError = null;
+        state.graphRequestId = null;
       })
       // 获取知识图谱数据 - rejected
       .addCase(fetchKnowledgeGraph.rejected, (state, action) => {
+        if (state.graphRequestId !== action.meta.requestId) return;
+        state.graphRequestId = null;
+        if (action.meta.aborted || action.payload?.kind === 'cancelled') {
+          state.loadingState = 'idle';
+          state.error = null;
+          state.requestError = null;
+          return;
+        }
         state.loadingState = 'error';
-        state.error = action.error.message || '获取知识图谱数据失败';
+        state.requestError = action.payload ?? toAppError(action.error, '获取知识图谱数据失败');
+        state.error = state.requestError.message;
       });
   },
 });

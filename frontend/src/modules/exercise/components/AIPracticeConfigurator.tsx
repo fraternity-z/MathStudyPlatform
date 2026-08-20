@@ -4,6 +4,8 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Select, type SelectOption } from '@/components/ui/Select';
 import type { GenerateQuestionType } from '@/modules/exercise/services/exerciseService';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/appError';
 
 const difficultyOptions: SelectOption[] = [
   { value: '0.15', label: '简单' },
@@ -24,7 +26,7 @@ export interface AIPracticeConfiguratorProps {
   isLoadingKnowledge: boolean;
   isGenerating: boolean;
   isSubmitting: boolean;
-  error: string | null;
+  error: AppError | string | null;
   hasQuestion: boolean;
   onConceptChange: (conceptId: string) => void;
   onDifficultyChange: (difficulty: number) => void;
@@ -51,6 +53,7 @@ export const AIPracticeConfigurator: FC<AIPracticeConfiguratorProps> = ({
 }) => {
   const hasKnowledgeOptions = knowledgeOptions.length > 0;
   const isPending = isLoadingKnowledge || isGenerating;
+  const errorMessage = typeof error === 'string' ? error : error?.message;
   const canRetryKnowledge = Boolean(error) && !hasKnowledgeOptions && !isLoadingKnowledge;
   const isDisabled =
     isPending ||
@@ -139,14 +142,23 @@ export const AIPracticeConfigurator: FC<AIPracticeConfiguratorProps> = ({
         </Button>
 
         {error ? (
+          typeof error === 'string' ? (
           <div
             id="ai-practice-error"
             role="alert"
             className="flex items-start gap-2 text-sm text-red-600 dark:text-red-400 sm:col-span-4"
           >
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-            <span>{error}</span>
+            <span>{errorMessage}</span>
           </div>
+          ) : (
+            <RequestErrorNotice
+              error={error}
+              onRetry={canRetryKnowledge ? onRetryKnowledge : undefined}
+              onRefresh={error.kind === 'conflict' ? onRetryKnowledge : undefined}
+              className="sm:col-span-4"
+            />
+          )
         ) : null}
       </CardContent>
     </Card>

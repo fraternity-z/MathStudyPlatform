@@ -32,7 +32,7 @@ export const securityLogService = {
   /**
    * 获取安全日志列表
    */
-  async getLogs(params?: SecurityLogQueryParams): Promise<SecurityLogListResponse> {
+  async getLogs(params?: SecurityLogQueryParams, signal?: AbortSignal): Promise<SecurityLogListResponse> {
     try {
       const response = await apiClient.get<SecurityLogListResponse>(BASE_PATH, {
         params: {
@@ -44,6 +44,7 @@ export const securityLogService = {
           page: params?.page,
           page_size: params?.page_size,
         },
+        signal,
       });
       securityLogger.debug('获取安全日志成功', {
         total: response.data.total,
@@ -51,7 +52,7 @@ export const securityLogService = {
       });
       return response.data;
     } catch (error) {
-      securityLogger.error('获取安全日志失败', error);
+      if (!signal?.aborted) securityLogger.error('获取安全日志失败', error);
       throw error;
     }
   },
@@ -59,13 +60,13 @@ export const securityLogService = {
   /**
    * 获取安全日志统计
    */
-  async getStats(): Promise<SecurityLogStatsResponse> {
+  async getStats(signal?: AbortSignal): Promise<SecurityLogStatsResponse> {
     try {
-      const response = await apiClient.get<SecurityLogStatsResponse>(`${BASE_PATH}/stats`);
+      const response = await apiClient.get<SecurityLogStatsResponse>(`${BASE_PATH}/stats`, { signal });
       securityLogger.debug('获取安全日志统计成功', response.data);
       return response.data;
     } catch (error) {
-      securityLogger.error('获取安全日志统计失败', error);
+      if (!signal?.aborted) securityLogger.error('获取安全日志统计失败', error);
       throw error;
     }
   },

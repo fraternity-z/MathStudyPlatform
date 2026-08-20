@@ -25,11 +25,13 @@ import {
   selectSecurityLogExportLoading,
   selectSecurityLogSelectedIds,
   selectSecurityLogQueryParams,
+  selectSecurityLogError,
 } from '@/store/selectors/securityLogSelectors';
 import { SecurityLogToolbar } from './SecurityLogToolbar';
 import { SecurityLogFilters } from './SecurityLogFilters';
 import { SecurityLogList } from './SecurityLogList';
 import { DeleteConfirmDialog } from './DeleteConfirmDialog';
+import { RequestErrorNotice } from '@/components/feedback';
 
 interface SecurityLogModalProps {
   isOpen: boolean;
@@ -46,6 +48,7 @@ export const SecurityLogModal: React.FC<SecurityLogModalProps> = ({ isOpen, onCl
   const exportLoading = useAppSelector(selectSecurityLogExportLoading);
   const selectedIds = useAppSelector(selectSecurityLogSelectedIds);
   const queryParams = useAppSelector(selectSecurityLogQueryParams);
+  const error = useAppSelector(selectSecurityLogError);
 
   const [showFilters, setShowFilters] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -59,10 +62,19 @@ export const SecurityLogModal: React.FC<SecurityLogModalProps> = ({ isOpen, onCl
 
   // 打开弹窗时加载数据
   useEffect(() => {
-    if (isOpen) {
-      dispatch(fetchSecurityLogs(undefined));
-      dispatch(fetchSecurityLogStats());
-    }
+    if (!isOpen) return;
+    let requests: Array<{ abort: () => void }> = [];
+    // The next task runs only for the active mount/open state under StrictMode.
+    const timer = window.setTimeout(() => {
+      requests = [
+        dispatch(fetchSecurityLogs(undefined)),
+        dispatch(fetchSecurityLogStats()),
+      ];
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      requests.forEach((request) => request.abort());
+    };
   }, [isOpen, dispatch]);
 
   // 刷新数据
@@ -202,6 +214,14 @@ export const SecurityLogModal: React.FC<SecurityLogModalProps> = ({ isOpen, onCl
 
           {/* 日志列表 */}
           <div className="flex-1 overflow-y-auto px-6 py-4">
+            {error ? (
+              <RequestErrorNotice
+                error={error}
+                onRetry={handleRefresh}
+                onRefresh={handleRefresh}
+                className="mb-4"
+              />
+            ) : null}
             <SecurityLogList
               groups={groups}
               loading={loading}

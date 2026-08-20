@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Navigate } from 'react-router-dom';
-import { AlertCircle, RefreshCw } from 'lucide-react';
 import { MainLayout } from '@/components/layout/MainLayout';
+import { RequestErrorNotice } from '@/components/feedback';
 import { useAppSelector } from '@/store';
 import { selectCurrentUser } from '@/modules/auth/store/authSlice';
 import { HomeHero } from './HomeHero';
@@ -9,6 +9,7 @@ import { HomeStatsStrip } from './HomeStatsStrip';
 import { HomeSections } from './HomeSections';
 import { loadStudentHomeData, loadTeacherHomeData } from './homeData';
 import type { PersonalHomeData, HomeRole } from './types';
+import { isRequestCancelled } from '@/libs/http/appError';
 
 interface PersonalHomeViewProps {
   role: HomeRole;
@@ -40,6 +41,7 @@ const loadingData: Record<HomeRole, PersonalHomeData> = {
       empty: true,
     },
     failedSections: [],
+    sectionErrors: [],
   },
   teacher: {
     role: 'teacher',
@@ -62,12 +64,22 @@ const loadingData: Record<HomeRole, PersonalHomeData> = {
       empty: true,
     },
     failedSections: [],
+    sectionErrors: [],
   },
 };
 
 const unexpectedFailureLabel = '主页数据';
 
 function markHomeUnavailable(data: PersonalHomeData): PersonalHomeData {
+  const fallbackError = {
+    kind: 'unknown' as const,
+    message: '主页数据暂时无法加载，请稍后重试',
+    retryable: true,
+    source: 'ui' as const,
+  };
+  const sectionErrors = data.sectionErrors.length > 0
+    ? data.sectionErrors
+    : [{ section: unexpectedFailureLabel, error: fallbackError }];
   return {
     ...data,
     primaryContext: data.role === 'teacher'
@@ -84,6 +96,7 @@ function markHomeUnavailable(data: PersonalHomeData): PersonalHomeData {
     failedSections: data.failedSections.includes(unexpectedFailureLabel)
       ? data.failedSections
       : [...data.failedSections, unexpectedFailureLabel],
+    sectionErrors,
   };
 }
 
@@ -109,25 +122,20 @@ export function PersonalHomeView({
           <HomeStatsStrip stats={data.stats} loading={loading} />
         </div>
 
-        {data.failedSections.length > 0 && !loading ? (
+        {data.sectionErrors.length > 0 && !loading ? (
           <div className="mx-auto mt-5 max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div
-              role="status"
-              aria-live="polite"
-              className="flex flex-col gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200"
-            >
-              <div className="flex items-start gap-2">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                <span>部分数据暂时未能加载，常用入口仍可正常使用。</span>
-              </div>
-              <button
-                type="button"
-                onClick={onRetry}
-                className="inline-flex h-9 items-center justify-center gap-2 rounded-md px-3 font-medium transition-colors hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:hover:bg-amber-900/40"
-              >
-                <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                重新加载
-              </button>
+            <div role="status" aria-live="polite" className="space-y-3">
+              <p className="text-sm text-surface-600 dark:text-surface-300">
+                部分数据暂时未能加载，常用入口仍可正常使用。
+              </p>
+              {data.sectionErrors.map(({ section, error }) => (
+                <RequestErrorNotice
+                  key={`${section}:${error.requestId ?? error.code ?? error.kind}`}
+                  error={{ ...error, message: `${section}：${error.message}` }}
+                  onRetry={onRetry}
+                  onRefresh={error.kind === 'conflict' ? onRetry : undefined}
+                />
+              ))}
             </div>
           </div>
         ) : null}
@@ -150,46 +158,39 @@ export function PersonalHomePage() {
   const role: HomeRole = user?.role === 'teacher' ? 'teacher' : 'student';
   const [data, setData] = useState<PersonalHomeData>(() => loadingData[role]);
   const [loading, setLoading] = useState(true);
+  const loadControllerRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
+    loadControllerRef.current?.abort();
+    const controller = new AbortController();
+    loadControllerRef.current = controller;
     setLoading(true);
     try {
       const nextData = role === 'teacher'
-        ? await loadTeacherHomeData()
-        : await loadStudentHomeData();
-      setData(nextData);
-    } catch {
-      setData((currentData) => markHomeUnavailable(currentData));
+        ? await loadTeacherHomeData(controller.signal)
+        : await loadStudentHomeData(controller.signal);
+      if (!controller.signal.aborted) setData(nextData);
+    } catch (error) {
+      if (!controller.signal.aborted && !isRequestCancelled(error)) {
+        setData((currentData) => markHomeUnavailable(currentData));
+      }
     } finally {
-      setLoading(false);
+      if (loadControllerRef.current === controller) {
+        loadControllerRef.current = null;
+        setLoading(false);
+      }
     }
   }, [role]);
 
   useEffect(() => {
-    let active = true;
     if (user?.role === 'admin') return undefined;
 
     setData(loadingData[role]);
-    setLoading(true);
-
-    const run = async () => {
-      try {
-        const nextData = role === 'teacher'
-          ? await loadTeacherHomeData()
-          : await loadStudentHomeData();
-        if (active) setData(nextData);
-      } catch {
-        if (active) setData((currentData) => markHomeUnavailable(currentData));
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
-
-    void run();
+    void load();
     return () => {
-      active = false;
+      loadControllerRef.current?.abort();
     };
-  }, [role, user?.role]);
+  }, [load, role, user?.role]);
 
   if (user?.role === 'admin') {
     return <Navigate to="/admin/dashboard" replace />;

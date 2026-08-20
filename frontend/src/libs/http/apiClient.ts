@@ -5,6 +5,23 @@ import { emitAuthExpired } from '../auth/authEvents';
 import { csrfHeader } from '../auth/csrfToken';
 import { authTokenStorage } from '../auth/tokenStorage';
 import { emitRateLimited } from './rateLimitEvents';
+import {
+  formatAppErrorDescription,
+  parseRetryAfterSeconds,
+  toAppError,
+} from './appError';
+
+export {
+  formatAppErrorDescription,
+  getAppErrorTitle,
+  isAppError,
+  isAppErrorKind,
+  isRequestCancelled,
+  parseRetryAfterSeconds,
+  toAppError,
+  toAppErrorFeedback,
+} from './appError';
+export type { AppError, AppErrorFeedback, AppErrorKind } from './appError';
 
 /**
  * Normalize API error detail to a single string for display.
@@ -15,26 +32,7 @@ export function getApiErrorMessage(
   err: unknown,
   fallback = '请求失败，请稍后重试'
 ): string {
-  if (!axios.isAxiosError(err)) {
-    return err instanceof Error ? err.message : fallback;
-  }
-  if (!err.response?.data?.detail) {
-    return err.request ? '无法连接到服务器，请检查网络' : fallback;
-  }
-  const detail = err.response.data.detail;
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail) && detail.length > 0) {
-    const first = detail[0];
-    const msg =
-      typeof first === 'object' &&
-      first !== null &&
-      'msg' in first &&
-      typeof (first as { msg?: unknown }).msg === 'string'
-        ? (first as { msg: string }).msg
-        : null;
-    return msg ?? fallback;
-  }
-  return fallback;
+  return formatAppErrorDescription(toAppError(err, fallback));
 }
 
 // 创建 API 客户端专用日志记录器
@@ -44,6 +42,11 @@ const apiLogger = logger.createContextLogger('API');
 interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
   _retry?: boolean;
   _rateLimitRetryCount?: number;
+}
+
+function canAutomaticallyRetry(config: CustomAxiosRequestConfig): boolean {
+  const method = (config.method ?? 'get').toLowerCase();
+  return method === 'get' || method === 'head' || method === 'options';
 }
 
 // 429 重试配置
@@ -127,18 +130,18 @@ apiClient.interceptors.response.use(
     // Handle 429 Too Many Requests — 自动重试（对用户透明）
     if (error.response?.status === 429 && originalRequest) {
       if (isCaptchaEndpoint) {
-        const retryAfter = parseInt(error.response.headers['retry-after'] || '60', 10);
+        const retryAfter = parseRetryAfterSeconds(error.response.headers['retry-after']) ?? 60;
         emitRateLimited({ retryAfter, url: originalRequest.url });
         return Promise.reject(error);
       }
       const retryCount = originalRequest._rateLimitRetryCount ?? 0;
 
-      if (retryCount < RATE_LIMIT_MAX_RETRIES) {
+      if (retryCount < RATE_LIMIT_MAX_RETRIES && canAutomaticallyRetry(originalRequest)) {
         originalRequest._rateLimitRetryCount = retryCount + 1;
 
         // 优先使用服务端 Retry-After 头，否则指数退避
         const retryAfterHeader = error.response.headers['retry-after'];
-        const retryAfterSec = retryAfterHeader ? parseInt(retryAfterHeader, 10) : 0;
+        const retryAfterSec = parseRetryAfterSeconds(retryAfterHeader) ?? 0;
         const delayMs = retryAfterSec > 0
           ? retryAfterSec * 1000
           : RATE_LIMIT_BASE_DELAY_MS * Math.pow(2, retryCount);
@@ -152,7 +155,7 @@ apiClient.interceptors.response.use(
       }
 
       // 重试耗尽，通知用户
-      const retryAfter = parseInt(error.response.headers['retry-after'] || '60', 10);
+      const retryAfter = parseRetryAfterSeconds(error.response.headers['retry-after']) ?? 60;
       apiLogger.warn('429 限流重试耗尽，通知用户', { url: originalRequest.url });
       emitRateLimited({ retryAfter, url: originalRequest.url });
       return Promise.reject(error);

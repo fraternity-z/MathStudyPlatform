@@ -5,9 +5,8 @@
  * 遵循 DRY、KISS 原则，使用工厂函数消除重复代码
  */
 
-import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
+import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { createLoadingReducers, type WithLoadingState } from '@/store/utils/sliceFactory';
-import { createSafeThunk } from '@/store/utils/thunkFactory';
 import { knowledgeAdminService } from '@/modules/admin/services/knowledgeAdminService';
 import type {
   KnowledgeNodeAdmin,
@@ -19,6 +18,7 @@ import type {
   KnowledgeRelationCreateData,
   KnowledgeRelationUpdateData,
 } from '@/modules/admin/types/knowledgeAdmin';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 
 /**
  * 知识点管理状态接口
@@ -34,7 +34,7 @@ export interface KnowledgeAdminState extends WithLoadingState {
   // 节点数据
   nodes: KnowledgeNodeAdmin[];
   nodesLoading: boolean;
-  nodesError: string | null;
+  nodesError: AppError | null;
   nodePage: number;
   nodeTotalPages: number;
   nodeTotal: number;
@@ -48,9 +48,11 @@ export interface KnowledgeAdminState extends WithLoadingState {
   // 关系数据
   relations: KnowledgeRelationAdmin[];
   relationsLoading: boolean;
+  relationsError: AppError | null;
   allNodes: SimpleNode[];
   allNodesLoading: boolean;
-  allNodesError: string | null;
+  allNodesError: AppError | null;
+  requestError: AppError | null;
 
   // 模态框状态
   nodeModalOpen: boolean;
@@ -77,9 +79,11 @@ const initialState: KnowledgeAdminState = {
   chapters: [],
   relations: [],
   relationsLoading: false,
+  relationsError: null,
   allNodes: [],
   allNodesLoading: false,
   allNodesError: null,
+  requestError: null,
   nodeModalOpen: false,
   editingNode: null,
   relationModalOpen: false,
@@ -92,10 +96,29 @@ const initialState: KnowledgeAdminState = {
 
 // ========== Async Thunks ==========
 
+function createAdminThunk<Returned, ThunkArg = void>(
+  typePrefix: string,
+  payloadCreator: (arg: ThunkArg) => Promise<Returned>,
+  fallback: string,
+) {
+  return createAsyncThunk<Returned, ThunkArg, { rejectValue: AppError }>(
+    typePrefix,
+    async (arg, { rejectWithValue }) => {
+      try {
+        return await payloadCreator(arg);
+      } catch (error) {
+        const appError = toAppError(error, fallback);
+        if (appError.kind === 'cancelled') throw error;
+        return rejectWithValue(appError);
+      }
+    },
+  );
+}
+
 /**
  * 获取统计数据
  */
-export const fetchStats = createSafeThunk(
+export const fetchStats = createAdminThunk(
   'knowledgeAdmin/fetchStats',
   async () => await knowledgeAdminService.getStats(),
   '获取统计数据失败'
@@ -104,7 +127,7 @@ export const fetchStats = createSafeThunk(
 /**
  * 获取章节列表
  */
-export const fetchChapters = createSafeThunk(
+export const fetchChapters = createAdminThunk(
   'knowledgeAdmin/fetchChapters',
   async () => await knowledgeAdminService.getChapters(),
   '获取章节列表失败'
@@ -113,7 +136,7 @@ export const fetchChapters = createSafeThunk(
 /**
  * 获取节点列表
  */
-export const fetchNodes = createSafeThunk(
+export const fetchNodes = createAdminThunk(
   'knowledgeAdmin/fetchNodes',
   async (params: {
     page?: number;
@@ -128,7 +151,7 @@ export const fetchNodes = createSafeThunk(
 /**
  * 获取关系列表
  */
-export const fetchRelations = createSafeThunk(
+export const fetchRelations = createAdminThunk(
   'knowledgeAdmin/fetchRelations',
   async (nodeId?: string) => await knowledgeAdminService.listRelations(nodeId),
   '获取关系列表失败'
@@ -137,7 +160,7 @@ export const fetchRelations = createSafeThunk(
 /**
  * 获取所有节点简要信息
  */
-export const fetchAllNodesSimple = createSafeThunk(
+export const fetchAllNodesSimple = createAdminThunk(
   'knowledgeAdmin/fetchAllNodesSimple',
   async () => await knowledgeAdminService.getAllNodesSimple(),
   '获取节点列表失败'
@@ -146,7 +169,7 @@ export const fetchAllNodesSimple = createSafeThunk(
 /**
  * 创建节点
  */
-export const createNode = createSafeThunk(
+export const createNode = createAdminThunk(
   'knowledgeAdmin/createNode',
   async (data: KnowledgeNodeCreateData) => await knowledgeAdminService.createNode(data),
   '创建节点失败'
@@ -155,7 +178,7 @@ export const createNode = createSafeThunk(
 /**
  * 更新节点
  */
-export const updateNode = createSafeThunk(
+export const updateNode = createAdminThunk(
   'knowledgeAdmin/updateNode',
   async ({ nodeId, data }: { nodeId: string; data: KnowledgeNodeUpdateData }) =>
     await knowledgeAdminService.updateNode(nodeId, data),
@@ -165,7 +188,7 @@ export const updateNode = createSafeThunk(
 /**
  * 删除节点
  */
-export const deleteNode = createSafeThunk(
+export const deleteNode = createAdminThunk(
   'knowledgeAdmin/deleteNode',
   async (nodeId: string) => await knowledgeAdminService.deleteNode(nodeId),
   '删除节点失败'
@@ -174,7 +197,7 @@ export const deleteNode = createSafeThunk(
 /**
  * 创建关系
  */
-export const createRelation = createSafeThunk(
+export const createRelation = createAdminThunk(
   'knowledgeAdmin/createRelation',
   async (data: KnowledgeRelationCreateData) => await knowledgeAdminService.createRelation(data),
   '创建关系失败'
@@ -183,7 +206,7 @@ export const createRelation = createSafeThunk(
 /**
  * 更新关系
  */
-export const updateRelation = createSafeThunk(
+export const updateRelation = createAdminThunk(
   'knowledgeAdmin/updateRelation',
   async ({ relationId, data }: { relationId: string; data: KnowledgeRelationUpdateData }) =>
     await knowledgeAdminService.updateRelation(relationId, data),
@@ -193,7 +216,7 @@ export const updateRelation = createSafeThunk(
 /**
  * 删除关系
  */
-export const deleteRelation = createSafeThunk(
+export const deleteRelation = createAdminThunk(
   'knowledgeAdmin/deleteRelation',
   async (relationId: string) => await knowledgeAdminService.deleteRelation(relationId),
   '删除关系失败'
@@ -272,19 +295,24 @@ const knowledgeAdminSlice = createSlice({
     builder
       .addCase(fetchStats.pending, (state) => {
         state.statsLoading = true;
+        state.requestError = null;
       })
       .addCase(fetchStats.fulfilled, (state, action) => {
         state.statsLoading = false;
         state.stats = action.payload;
       })
-      .addCase(fetchStats.rejected, (state) => {
+      .addCase(fetchStats.rejected, (state, action) => {
         state.statsLoading = false;
+        if (!action.meta.aborted) state.requestError = action.payload ?? null;
       });
 
     // ========== 章节列表 ==========
     builder
       .addCase(fetchChapters.fulfilled, (state, action) => {
         state.chapters = action.payload;
+      })
+      .addCase(fetchChapters.rejected, (state, action) => {
+        if (!action.meta.aborted) state.requestError = action.payload ?? null;
       });
 
     // ========== 节点列表 ==========
@@ -301,20 +329,22 @@ const knowledgeAdminSlice = createSlice({
       })
       .addCase(fetchNodes.rejected, (state, action) => {
         state.nodesLoading = false;
-        state.nodesError = action.payload || '获取节点列表失败';
+        if (!action.meta.aborted) state.nodesError = action.payload ?? null;
       });
 
     // ========== 关系列表 ==========
     builder
       .addCase(fetchRelations.pending, (state) => {
         state.relationsLoading = true;
+        state.relationsError = null;
       })
       .addCase(fetchRelations.fulfilled, (state, action) => {
         state.relationsLoading = false;
         state.relations = action.payload.items;
       })
-      .addCase(fetchRelations.rejected, (state) => {
+      .addCase(fetchRelations.rejected, (state, action) => {
         state.relationsLoading = false;
+        if (!action.meta.aborted) state.relationsError = action.payload ?? null;
       });
 
     // ========== 所有节点简要信息 ==========
@@ -329,89 +359,101 @@ const knowledgeAdminSlice = createSlice({
       })
       .addCase(fetchAllNodesSimple.rejected, (state, action) => {
         state.allNodesLoading = false;
-        state.allNodesError = action.payload || '获取节点列表失败';
+        if (!action.meta.aborted) state.allNodesError = action.payload ?? null;
       });
 
     // ========== 创建节点 ==========
     builder
       .addCase(createNode.pending, (state) => {
         state.saving = true;
+        state.requestError = null;
       })
       .addCase(createNode.fulfilled, (state) => {
         state.saving = false;
         state.nodeModalOpen = false;
         state.editingNode = null;
       })
-      .addCase(createNode.rejected, (state) => {
+      .addCase(createNode.rejected, (state, action) => {
         state.saving = false;
+        if (!action.meta.aborted) state.requestError = action.payload ?? null;
       });
 
     // ========== 更新节点 ==========
     builder
       .addCase(updateNode.pending, (state) => {
         state.saving = true;
+        state.requestError = null;
       })
       .addCase(updateNode.fulfilled, (state) => {
         state.saving = false;
         state.nodeModalOpen = false;
         state.editingNode = null;
       })
-      .addCase(updateNode.rejected, (state) => {
+      .addCase(updateNode.rejected, (state, action) => {
         state.saving = false;
+        if (!action.meta.aborted) state.requestError = action.payload ?? null;
       });
 
     // ========== 删除节点 ==========
     builder
       .addCase(deleteNode.pending, (state) => {
         state.saving = true;
+        state.requestError = null;
       })
       .addCase(deleteNode.fulfilled, (state) => {
         state.saving = false;
         state.deleteConfirm = null;
       })
-      .addCase(deleteNode.rejected, (state) => {
+      .addCase(deleteNode.rejected, (state, action) => {
         state.saving = false;
+        if (!action.meta.aborted) state.requestError = action.payload ?? null;
       });
 
     // ========== 创建关系 ==========
     builder
       .addCase(createRelation.pending, (state) => {
         state.saving = true;
+        state.requestError = null;
       })
       .addCase(createRelation.fulfilled, (state) => {
         state.saving = false;
         state.relationModalOpen = false;
         state.editingRelation = null;
       })
-      .addCase(createRelation.rejected, (state) => {
+      .addCase(createRelation.rejected, (state, action) => {
         state.saving = false;
+        if (!action.meta.aborted) state.requestError = action.payload ?? null;
       });
 
     // ========== 更新关系 ==========
     builder
       .addCase(updateRelation.pending, (state) => {
         state.saving = true;
+        state.requestError = null;
       })
       .addCase(updateRelation.fulfilled, (state) => {
         state.saving = false;
         state.relationModalOpen = false;
         state.editingRelation = null;
       })
-      .addCase(updateRelation.rejected, (state) => {
+      .addCase(updateRelation.rejected, (state, action) => {
         state.saving = false;
+        if (!action.meta.aborted) state.requestError = action.payload ?? null;
       });
 
     // ========== 删除关系 ==========
     builder
       .addCase(deleteRelation.pending, (state) => {
         state.saving = true;
+        state.requestError = null;
       })
       .addCase(deleteRelation.fulfilled, (state) => {
         state.saving = false;
         state.deleteConfirm = null;
       })
-      .addCase(deleteRelation.rejected, (state) => {
+      .addCase(deleteRelation.rejected, (state, action) => {
         state.saving = false;
+        if (!action.meta.aborted) state.requestError = action.payload ?? null;
       });
   },
 });

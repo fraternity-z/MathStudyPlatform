@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { MainLayout } from '../../components/layout/MainLayout';
 import { Card, CardContent, CardHeader } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Badge } from '../../components/ui/Badge';
 import { Input } from '../../components/ui/Input';
 import { Select } from '../../components/ui/Select';
@@ -26,6 +27,8 @@ import {
 } from '@/modules/resource/store/resourceSlice';
 import { getInitialResourceSearch, openResourceUrl } from '@/libs/utils/resourceUtils';
 import type { ResourceType, Resource } from '@/modules/resource/types/resource';
+import { toAppErrorFeedback } from '@/libs/http/appError';
+import { useToast } from '@/components/ui/Toast';
 
 const typeOptions = [
   { value: '', label: '全部类型' },
@@ -66,9 +69,10 @@ const getTypeBadge = (type: string) => {
 
 export const ResourcesPage: React.FC = () => {
   const dispatch = useAppDispatch();
-  const { resources, stats, loading, statsLoading, actionLoading } = useAppSelector(
+  const { resources, stats, loading, statsLoading, actionLoading, loadError, statsError } = useAppSelector(
     (state) => state.resource
   );
+  const { toast } = useToast();
 
   const [searchTerm, setSearchTerm] = useState(() =>
     getInitialResourceSearch(window.location.search)
@@ -111,8 +115,26 @@ export const ResourcesPage: React.FC = () => {
     return () => clearTimeout(timer);
   }, [dispatch, selectedType, selectedChapter, activeTab, searchTerm]);
 
-  const handleToggleFavorite = (id: string) => {
-    dispatch(toggleFavorite(id));
+  const handleToggleFavorite = async (id: string) => {
+    const result = await dispatch(toggleFavorite(id));
+    if (toggleFavorite.rejected.match(result)) {
+      const feedback = toAppErrorFeedback(result.payload, '收藏状态更新失败');
+      if (feedback) toast(feedback);
+    }
+  };
+
+  const retryResources = () => {
+    const filter: {
+      type?: ResourceType;
+      chapter?: string;
+      search?: string;
+      favorites_only?: boolean;
+    } = {};
+    if (selectedType) filter.type = selectedType as ResourceType;
+    if (selectedChapter) filter.chapter = selectedChapter;
+    if (searchTerm) filter.search = searchTerm;
+    if (activeTab === 'favorites') filter.favorites_only = true;
+    void dispatch(fetchResources(filter));
   };
 
   const handleOpenResource = (resource: Resource) => {
@@ -139,6 +161,14 @@ export const ResourcesPage: React.FC = () => {
         </div>
 
         {/* 统计卡片 */}
+        {statsError ? (
+          <RequestErrorNotice
+            error={statsError}
+            onRetry={() => void dispatch(fetchResourceStats())}
+            onRefresh={() => void dispatch(fetchResourceStats())}
+            className="mb-6"
+          />
+        ) : null}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
           <Card>
             <CardContent className="p-4 flex items-center gap-4">
@@ -223,7 +253,13 @@ export const ResourcesPage: React.FC = () => {
             </Tabs>
           </CardHeader>
           <CardContent>
-            {loading ? (
+            {loadError ? (
+              <RequestErrorNotice
+                error={loadError}
+                onRetry={retryResources}
+                onRefresh={retryResources}
+              />
+            ) : loading ? (
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin text-primary-500" />
                 <span className="ml-2 text-surface-500">加载中...</span>
@@ -254,7 +290,7 @@ export const ResourcesPage: React.FC = () => {
                         </div>
                       )}
                       <button
-                        onClick={() => handleToggleFavorite(resource.id)}
+                        onClick={() => void handleToggleFavorite(resource.id)}
                         disabled={actionLoading}
                         className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white dark:bg-surface-900 shadow-md flex items-center justify-center hover:scale-110 transition-transform disabled:opacity-50"
                       >

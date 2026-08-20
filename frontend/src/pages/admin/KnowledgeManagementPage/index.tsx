@@ -48,6 +48,7 @@ import { RelationsTable } from './components/RelationsTable';
 import { NodeFormModal } from './components/NodeFormModal';
 import { RelationFormModal } from './components/RelationFormModal';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { RequestErrorNotice } from '@/components/feedback';
 
 const KnowledgeGraphEditor = React.lazy(() =>
   import('./components/KnowledgeGraphEditor').then((module) => ({ default: module.KnowledgeGraphEditor })),
@@ -73,11 +74,11 @@ export const KnowledgeManagementPage: React.FC = () => {
     nodePage, nodeTotalPages, nodeTotal,
     searchTerm, chapterFilter, typeFilter, chapters,
   } = useAppSelector(selectNodesTableData);
-  const { relations, relationsLoading } = useAppSelector(selectRelationsData);
+  const { relations, relationsLoading, relationsError } = useAppSelector(selectRelationsData);
   const {
     nodeModalOpen, editingNode,
     relationModalOpen, editingRelation,
-    deleteConfirm, saving, allNodes, allNodesLoading, allNodesError,
+    deleteConfirm, saving, allNodes, allNodesLoading, allNodesError, requestError,
   } = useAppSelector(selectModalState);
   const nodeFilterParams = useAppSelector(selectNodeFilterParams);
   const allNodesRequested = useRef(allNodes.length > 0);
@@ -162,9 +163,9 @@ export const KnowledgeManagementPage: React.FC = () => {
   const handleSaveNode = useCallback(
     async (data: KnowledgeNodeCreateData | KnowledgeNodeUpdateData) => {
       if (editingNode) {
-        await dispatch(updateNode({ nodeId: editingNode.id, data: data as KnowledgeNodeUpdateData }));
+        await dispatch(updateNode({ nodeId: editingNode.id, data: data as KnowledgeNodeUpdateData })).unwrap();
       } else {
-        await dispatch(createNode(data as KnowledgeNodeCreateData));
+        await dispatch(createNode(data as KnowledgeNodeCreateData)).unwrap();
       }
       // 刷新相关数据
       dispatch(fetchStats());
@@ -183,7 +184,7 @@ export const KnowledgeManagementPage: React.FC = () => {
   /** 图谱视图中拖拽创建关系 */
   const handleGraphCreateRelation = useCallback(
     async (data: KnowledgeRelationCreateData) => {
-      await dispatch(createRelation(data));
+      await dispatch(createRelation(data)).unwrap();
       dispatch(fetchStats());
       dispatch(fetchRelations());
     },
@@ -207,9 +208,9 @@ export const KnowledgeManagementPage: React.FC = () => {
   const handleSaveRelation = useCallback(
     async (data: KnowledgeRelationCreateData | KnowledgeRelationUpdateData) => {
       if (editingRelation) {
-        await dispatch(updateRelation({ relationId: editingRelation.id, data: data as KnowledgeRelationUpdateData }));
+        await dispatch(updateRelation({ relationId: editingRelation.id, data: data as KnowledgeRelationUpdateData })).unwrap();
       } else {
-        await dispatch(createRelation(data as KnowledgeRelationCreateData));
+        await dispatch(createRelation(data as KnowledgeRelationCreateData)).unwrap();
       }
       // 刷新相关数据
       dispatch(fetchStats());
@@ -223,14 +224,14 @@ export const KnowledgeManagementPage: React.FC = () => {
     if (!deleteConfirm) return;
 
     if (deleteConfirm.type === 'node') {
-      await dispatch(deleteNode(deleteConfirm.id));
+      await dispatch(deleteNode(deleteConfirm.id)).unwrap();
       // 刷新相关数据
       dispatch(fetchStats());
       dispatch(fetchNodes(nodeFilterParams));
       dispatch(fetchRelations());
       if (allNodesRequested.current) dispatch(fetchAllNodesSimple());
     } else {
-      await dispatch(deleteRelation(deleteConfirm.id));
+      await dispatch(deleteRelation(deleteConfirm.id)).unwrap();
       // 刷新相关数据
       dispatch(fetchStats());
       dispatch(fetchRelations());
@@ -253,6 +254,8 @@ export const KnowledgeManagementPage: React.FC = () => {
 
         {/* 统计卡片 */}
         <StatsCards stats={stats} loading={statsLoading} />
+
+        {requestError ? <RequestErrorNotice error={requestError} onRefresh={handleRefreshAll} /> : null}
 
         {/* 选项卡 */}
         <Card>
@@ -296,6 +299,7 @@ export const KnowledgeManagementPage: React.FC = () => {
                 nodes={nodes}
                 loading={nodesLoading}
                 error={nodesError}
+                onRetry={() => { void dispatch(fetchNodes(nodeFilterParams)); }}
                 searchInput={searchInput}
                 chapterFilter={chapterFilter}
                 typeFilter={typeFilter}
@@ -315,17 +319,14 @@ export const KnowledgeManagementPage: React.FC = () => {
               <RelationsTable
                 relations={relations}
                 loading={relationsLoading}
+                error={relationsError}
+                onRetry={() => { void dispatch(fetchRelations()); }}
                 onAddRelation={handleAddRelation}
                 onEditRelation={handleEditRelation}
                 onDeleteRelation={handleDeleteRelationConfirm}
               />
             ) : allNodesError ? (
-              <div className="flex min-h-64 flex-col items-center justify-center gap-3 text-sm text-red-600 dark:text-red-300" role="alert">
-                <span>{allNodesError}</span>
-                <Button variant="outline" size="sm" onClick={handleRetryAllNodes}>
-                  <RefreshCw className="mr-1 h-4 w-4" /> 重试
-                </Button>
-              </div>
+              <RequestErrorNotice error={allNodesError} onRetry={handleRetryAllNodes} onRefresh={handleRetryAllNodes} />
             ) : (
               <React.Suspense fallback={(
                 <div className="flex min-h-64 items-center justify-center text-sm text-surface-500">

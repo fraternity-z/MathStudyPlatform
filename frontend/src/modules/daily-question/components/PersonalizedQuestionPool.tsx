@@ -5,17 +5,17 @@ import {
   Edit3,
   Loader2,
   Plus,
-  RefreshCw,
   Send,
   Star,
   Upload,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Button } from '@/components/ui/Button';
 import { Pagination } from '@/components/ui/Pagination';
 import { Select } from '@/components/ui/Select';
 import { useToast } from '@/components/ui/Toast';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 import { MathText } from '@/libs/math/MathText';
 import { questionService } from '@/modules/question/services/questionService';
 import type { Question, QuestionCreateData } from '@/modules/question/types/question';
@@ -52,7 +52,7 @@ export function PersonalizedQuestionPool({ classId }: PersonalizedQuestionPoolPr
   const [isLoading, setIsLoading] = useState(true);
   const [updatingIds, setUpdatingIds] = useState<string[]>([]);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<AppError | null>(null);
   const questionRequestRef = useRef(0);
   const returnPath = `/teacher/class/${encodeURIComponent(classId)}?tab=daily-question`;
 
@@ -82,12 +82,39 @@ export function PersonalizedQuestionPool({ classId }: PersonalizedQuestionPoolPr
       if (!signal?.aborted && questionRequestRef.current === requestID) {
         setQuestions([]);
         setTotal(0);
-        setError(getApiErrorMessage(loadError, '个性化题库加载失败'));
+        setError(toAppError(loadError, '个性化题库加载失败'));
       }
     } finally {
       if (!signal?.aborted && questionRequestRef.current === requestID) setIsLoading(false);
     }
   }, [currentPage, selectedGroup]);
+
+  const formatRequestError = useCallback((error: unknown, fallback: string): string => {
+    const appError = toAppError(error, fallback);
+    return [
+      appError.message,
+      appError.retryAfter !== undefined && appError.retryAfter > 0
+        ? `可在 ${appError.retryAfter} 秒后重试`
+        : '',
+      appError.requestId ? `请求编号：${appError.requestId}` : '',
+    ].filter(Boolean).join('；');
+  }, []);
+
+  const notifyRequestError = useCallback((error: unknown, fallback: string) => {
+    const appError = toAppError(error, fallback);
+    if (appError.kind === 'cancelled' || appError.kind === 'rate_limited') return;
+    const details = [
+      appError.retryAfter !== undefined && appError.retryAfter > 0
+        ? `可在 ${appError.retryAfter} 秒后重试`
+        : '',
+      appError.requestId ? `请求编号：${appError.requestId}` : '',
+    ].filter(Boolean);
+    toast({
+      type: 'error',
+      title: appError.message,
+      description: details.length > 0 ? details.join('；') : undefined,
+    });
+  }, [toast]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -121,7 +148,7 @@ export function PersonalizedQuestionPool({ classId }: PersonalizedQuestionPoolPr
         toast({ type: 'success', title: '新建题目已发布到个性化题库' });
       } catch (publishError) {
         if (!cancelled) {
-          toast({ type: 'error', title: getApiErrorMessage(publishError, '新建题目发布失败') });
+          notifyRequestError(publishError, '新建题目发布失败');
         }
       } finally {
         if (!cancelled) {
@@ -136,7 +163,7 @@ export function PersonalizedQuestionPool({ classId }: PersonalizedQuestionPoolPr
     return () => {
       cancelled = true;
     };
-  }, [isLoading, searchParams, selectedGroup, setSearchParams, toast]);
+  }, [isLoading, notifyRequestError, searchParams, selectedGroup, setSearchParams, toast]);
 
   const updateQuestion = async (questionId: string, operation: () => Promise<void>) => {
     setUpdatingIds((current) => current.includes(questionId) ? current : [...current, questionId]);
@@ -155,7 +182,7 @@ export function PersonalizedQuestionPool({ classId }: PersonalizedQuestionPoolPr
       });
       toast({ type: 'success', title: '题目已发布到个性化题库' });
     } catch (publishError) {
-      toast({ type: 'error', title: getApiErrorMessage(publishError, '题目发布失败') });
+      notifyRequestError(publishError, '题目发布失败');
     }
   };
 
@@ -169,7 +196,7 @@ export function PersonalizedQuestionPool({ classId }: PersonalizedQuestionPoolPr
         title: question.isDailyCandidate ? '已取消每日候选' : '已设为每日候选',
       });
     } catch (updateError) {
-      toast({ type: 'error', title: getApiErrorMessage(updateError, '候选状态更新失败') });
+      notifyRequestError(updateError, '候选状态更新失败');
     }
   };
 
@@ -181,7 +208,7 @@ export function PersonalizedQuestionPool({ classId }: PersonalizedQuestionPoolPr
         const created = await questionService.createQuestion(item);
         createdIds.push(created.id);
       } catch (createError) {
-        errors.push(`第 ${index + 1} 题：${getApiErrorMessage(createError, '导入失败')}`);
+        errors.push(`第 ${index + 1} 题：${formatRequestError(createError, '导入失败')}`);
       }
     }
 
@@ -192,7 +219,7 @@ export function PersonalizedQuestionPool({ classId }: PersonalizedQuestionPoolPr
         publishedCount = result.success;
         errors.push(...result.errors);
       } catch (publishError) {
-        errors.push(getApiErrorMessage(publishError, '导入题目已保存为草稿，但发布失败'));
+        errors.push(formatRequestError(publishError, '导入题目已保存为草稿，但发布失败'));
       }
     }
 
@@ -268,13 +295,11 @@ export function PersonalizedQuestionPool({ classId }: PersonalizedQuestionPoolPr
       </div>
 
       {error ? (
-        <div className="flex items-center justify-between gap-3 text-sm text-red-600 dark:text-red-400">
-          <span>{error}</span>
-          <Button variant="ghost" size="sm" onClick={() => void loadQuestions()}>
-            <RefreshCw className="mr-1.5 h-4 w-4" aria-hidden="true" />
-            重试
-          </Button>
-        </div>
+        <RequestErrorNotice
+          error={error}
+          onRetry={() => void loadQuestions()}
+          onRefresh={() => void loadQuestions()}
+        />
       ) : null}
 
       {isLoading ? (

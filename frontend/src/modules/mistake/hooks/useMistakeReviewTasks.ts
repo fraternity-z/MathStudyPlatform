@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 import {
   fetchReviewTasks,
   type ReviewTaskQueryParams,
@@ -57,7 +57,7 @@ export function useMistakeReviewTasks(
   const [pagination, setPagination] = useState<PaginationInfo>(initialPagination);
   const [counts, setCounts] = useState<ReviewTaskCounts>(initialCounts);
   const [tasksLoading, setTasksLoading] = useState<LoadingState>('idle');
-  const [tasksError, setTasksError] = useState<string | null>(null);
+  const [tasksError, setTasksError] = useState<AppError | null>(null);
   const [resolvedRequestKey, setResolvedRequestKey] = useState('');
   const [reloadVersion, setReloadVersion] = useState(0);
   const requestIdRef = useRef(0);
@@ -127,7 +127,7 @@ export function useMistakeReviewTasks(
       } catch (error) {
         if (controller.signal.aborted || requestIdRef.current !== requestId) return;
         setTasksLoading('error');
-        setTasksError(getApiErrorMessage(error, '获取复习任务失败'));
+        setTasksError(toAppError(error, '获取复习任务失败'));
       }
     };
 

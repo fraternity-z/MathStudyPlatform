@@ -3,6 +3,7 @@ import {
   messageCenterService,
   type MessageCenterSummary,
 } from '@/modules/message-center/services/messageCenterService';
+import { toAppError, type AppError } from '@/libs/http/appError';
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000;
 const MIN_POLL_INTERVAL_MS = 5_000;
@@ -11,7 +12,7 @@ interface SummarySnapshot {
   cacheKey: string | null;
   summary: MessageCenterSummary | null;
   isRefreshing: boolean;
-  error: Error | null;
+  error: AppError | null;
   updatedAt: number;
 }
 
@@ -25,7 +26,7 @@ export interface UseMessageCenterSummaryResult {
   summary: MessageCenterSummary | null;
   isLoading: boolean;
   isRefreshing: boolean;
-  error: Error | null;
+  error: AppError | null;
   refresh: () => Promise<MessageCenterSummary>;
 }
 
@@ -59,8 +60,8 @@ function updateSnapshot(update: Partial<SummarySnapshot>): void {
   listeners.forEach((listener) => listener());
 }
 
-function normalizeError(error: unknown): Error {
-  return error instanceof Error ? error : new Error('消息汇总加载失败');
+function normalizeError(error: unknown): AppError {
+  return toAppError(error, '消息汇总加载失败');
 }
 
 export function refreshMessageCenterSummary(): Promise<MessageCenterSummary> {

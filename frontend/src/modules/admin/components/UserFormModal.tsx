@@ -6,6 +6,9 @@ import { Select } from '@/components/ui/Select';
 import { Loader2, UserPlus, Save } from 'lucide-react';
 import { adminUserService } from '@/modules/admin/services/adminUserService';
 import type { UserRole, UserItem } from '@/modules/admin/types/adminUsers';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
+import { isAdminRequestCancelled, toAdminAppError } from '@/modules/admin/utils/errorFeedback';
 
 interface UserFormModalProps {
   isOpen: boolean;
@@ -38,7 +41,7 @@ export const UserFormModal: React.FC<UserFormModalProps> = ({
     display_name: '',
   });
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | AppError | null>(null);
 
   const isEditMode = mode === 'edit';
 
@@ -162,8 +165,9 @@ export const UserFormModal: React.FC<UserFormModalProps> = ({
         }
       }
     } catch (err) {
-      setError(isEditMode ? '更新用户失败，请重试' : '创建用户失败，请重试');
-      console.error(isEditMode ? '更新用户失败:' : '创建用户失败:', err);
+      if (!isAdminRequestCancelled(err)) {
+        setError(toAdminAppError(err, isEditMode ? '更新用户失败，请重试' : '创建用户失败，请重试'));
+      }
     } finally {
       setLoading(false);
     }
@@ -184,11 +188,12 @@ export const UserFormModal: React.FC<UserFormModalProps> = ({
       className="max-w-lg"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
-        {error && (
+        {typeof error === 'string' && (
           <div className="p-3 text-sm text-red-600 bg-red-50 dark:bg-red-900/20 dark:text-red-400 rounded-lg">
             {error}
           </div>
         )}
+        {error && typeof error !== 'string' ? <RequestErrorNotice error={error} /> : null}
 
         <div>
           <label className="block text-sm font-medium text-surface-700 dark:text-surface-300 mb-1">

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { MainLayout } from '../../components/layout/MainLayout';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
@@ -13,7 +14,6 @@ import {
   Target,
   TrendingUp,
   TrendingDown,
-  AlertCircle,
   CheckCircle2,
   AlertTriangle,
   XCircle,
@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { teacherService } from '@/modules/teacher/services/teacherService';
 import type { StudentDetailData } from '@/modules/teacher/types/teacher';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 
 const getActivityIcon = (_type: string, status: string) => {
   if (status === 'success') return <CheckCircle2 className="h-4 w-4 text-emerald-500" />;
@@ -43,7 +44,8 @@ export const StudentDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const [data, setData] = useState<StudentDetailData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<AppError | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -51,20 +53,20 @@ export const StudentDetailPage: React.FC = () => {
       if (!id) return;
       try {
         setIsLoading(true);
-        setError('');
+        setError(null);
         const result = await teacherService.getStudentDetail(id, controller.signal);
         if (controller.signal.aborted) return;
         setData(result);
-      } catch {
+      } catch (loadError) {
         if (controller.signal.aborted) return;
-        setError('获取学生详情失败，请稍后重试');
+        setError(toAppError(loadError, '获取学生详情失败，请稍后重试'));
       } finally {
         if (!controller.signal.aborted) setIsLoading(false);
       }
     };
     void fetchData();
     return () => controller.abort();
-  }, [id]);
+  }, [id, reloadKey]);
 
   const student = data?.student;
 
@@ -106,13 +108,22 @@ export const StudentDetailPage: React.FC = () => {
     );
   }
 
-  if (error || !student) {
+  if (error || !data || !student) {
+    const displayError: AppError = error ?? {
+      kind: 'not_found',
+      message: '学生不存在',
+      retryable: false,
+      source: 'ui',
+    };
     return (
       <MainLayout>
         <div className="container mx-auto px-6 py-8 max-w-7xl">
-          <div className="flex flex-col items-center justify-center py-20 text-surface-500">
-            <AlertCircle className="h-12 w-12 mb-4 text-red-400" />
-            <p className="text-lg">{error || '学生不存在'}</p>
+          <div className="mx-auto max-w-2xl py-20">
+            <RequestErrorNotice
+              error={displayError}
+              onRetry={() => setReloadKey((key) => key + 1)}
+              onRefresh={() => setReloadKey((key) => key + 1)}
+            />
             <Button variant="outline" className="mt-4" onClick={() => window.history.back()}>
               返回
             </Button>

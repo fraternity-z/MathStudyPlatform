@@ -104,7 +104,8 @@ const MAX_HISTORY_PAGE_SIZE = 100;
 const fetchHistoryPage = async (
   sessionId: string,
   limit: number,
-  offset: number
+  offset: number,
+  signal?: AbortSignal
 ): Promise<HistoryResponse> => {
   sessionLogger.debug('Fetching history', { sessionId, limit, offset });
 
@@ -112,6 +113,7 @@ const fetchHistoryPage = async (
     `/session/${sessionId}/history`,
     {
       params: { limit, offset },
+      signal,
     }
   );
 
@@ -246,9 +248,10 @@ export const sessionService = {
   async getHistory(
     sessionId: string,
     limit: number = 50,
-    offset: number = 0
+    offset: number = 0,
+    signal?: AbortSignal
   ): Promise<HistoryResponse> {
-    return fetchHistoryPage(sessionId, limit, offset);
+    return fetchHistoryPage(sessionId, limit, offset, signal);
   },
 
   /**
@@ -259,19 +262,20 @@ export const sessionService = {
    */
   async getLatestHistory(
     sessionId: string,
-    limit: number = MAX_HISTORY_PAGE_SIZE
+    limit: number = MAX_HISTORY_PAGE_SIZE,
+    signal?: AbortSignal
   ): Promise<HistoryResponse> {
     const pageSize = Math.min(Math.max(Math.trunc(limit), 1), MAX_HISTORY_PAGE_SIZE);
-    const firstPage = await fetchHistoryPage(sessionId, pageSize, 0);
+    const firstPage = await fetchHistoryPage(sessionId, pageSize, 0, signal);
     if (!firstPage.has_more) return firstPage;
 
     const latestOffset = Math.max(firstPage.total - pageSize, 0);
-    const latestPage = await fetchHistoryPage(sessionId, pageSize, latestOffset);
+    const latestPage = await fetchHistoryPage(sessionId, pageSize, latestOffset, signal);
     if (!latestPage.has_more) return latestPage;
 
     // 消息可能在两次请求之间继续落库；最多重算一次最新偏移。
     const refreshedOffset = Math.max(latestPage.total - pageSize, 0);
-    return fetchHistoryPage(sessionId, pageSize, refreshedOffset);
+    return fetchHistoryPage(sessionId, pageSize, refreshedOffset, signal);
   },
 
   /**
@@ -284,7 +288,8 @@ export const sessionService = {
   async getSessions(
     limit: number = 20,
     offset: number = 0,
-    options: GetSessionsOptions = {}
+    options: GetSessionsOptions = {},
+    signal?: AbortSignal
   ): Promise<SessionListResponse> {
     sessionLogger.debug('Fetching sessions', { limit, offset, ...options });
 
@@ -294,6 +299,7 @@ export const sessionService = {
         offset,
         with_user_messages: options.withUserMessages || undefined,
       },
+      signal,
     });
 
     return response.data;
@@ -304,10 +310,10 @@ export const sessionService = {
    *
    * @param sessionId - 会话 ID
    */
-  async endSession(sessionId: string): Promise<void> {
+  async endSession(sessionId: string, signal?: AbortSignal): Promise<void> {
     sessionLogger.debug('Ending session', { sessionId });
 
-    await apiClient.post(`/session/${sessionId}/end`);
+    await apiClient.post(`/session/${sessionId}/end`, undefined, { signal });
 
     sessionLogger.info('Session ended', { sessionId });
   },
@@ -318,10 +324,10 @@ export const sessionService = {
    * @param taskId - 任务 ID
    * @returns 是否成功
    */
-  async cancelTask(taskId: string): Promise<boolean> {
+  async cancelTask(taskId: string, signal?: AbortSignal): Promise<boolean> {
     sessionLogger.debug('Cancelling task', { taskId });
 
-    const success = await cancelTask(taskId);
+    const success = await cancelTask(taskId, signal);
 
     if (success) {
       sessionLogger.info('Task cancelled', { taskId });
@@ -341,13 +347,15 @@ export const sessionService = {
    */
   async updateSessionMode(
     sessionId: string,
-    mode: SessionMode
+    mode: SessionMode,
+    signal?: AbortSignal,
   ): Promise<UpdateModeResponse> {
     sessionLogger.debug('Updating session mode', { sessionId, mode });
 
     const response = await apiClient.patch<UpdateModeResponse>(
       `/session/${sessionId}/mode`,
-      { mode }
+      { mode },
+      { signal },
     );
 
     sessionLogger.info('Session mode updated', { sessionId, mode });
@@ -361,11 +369,12 @@ export const sessionService = {
    * @param sessionId - 会话 ID
    * @returns 删除结果
    */
-  async deleteSession(sessionId: string): Promise<DeleteSessionResponse> {
+  async deleteSession(sessionId: string, signal?: AbortSignal): Promise<DeleteSessionResponse> {
     sessionLogger.debug('Deleting session', { sessionId });
 
     const response = await apiClient.delete<DeleteSessionResponse>(
-      `/session/${sessionId}`
+      `/session/${sessionId}`,
+      { signal },
     );
 
     if (response.data.success) {
@@ -383,12 +392,16 @@ export const sessionService = {
    * @param sessionIds - 会话 ID 列表
    * @returns 批量删除结果
    */
-  async batchDeleteSessions(sessionIds: string[]): Promise<BatchDeleteResponse> {
+  async batchDeleteSessions(
+    sessionIds: string[],
+    signal?: AbortSignal,
+  ): Promise<BatchDeleteResponse> {
     sessionLogger.debug('Batch deleting sessions', { count: sessionIds.length });
 
     const response = await apiClient.post<BatchDeleteResponse>(
       '/session/batch-delete',
-      { session_ids: sessionIds }
+      { session_ids: sessionIds },
+      { signal },
     );
 
     if (response.data.success) {

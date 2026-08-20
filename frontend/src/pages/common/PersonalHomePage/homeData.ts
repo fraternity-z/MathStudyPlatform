@@ -1,10 +1,16 @@
-import { apiClient } from '@/libs/http/apiClient';
+import { apiClient, toAppError } from '@/libs/http/apiClient';
 import { formatDateOrFallback } from '@/libs/utils/dateFormat';
 import { classService } from '@/modules/classroom/services/classService';
 import { sessionService } from '@/modules/session/services/sessionService';
 import { teacherService } from '@/modules/teacher/services/teacherService';
 import type { ClassInfo } from '@/modules/classroom/types/classroom';
-import type { PersonalHomeData, HomeActionItem, HomeRecentItem, HomeStat } from './types';
+import type {
+  PersonalHomeData,
+  HomeActionItem,
+  HomeRecentItem,
+  HomeStat,
+  HomeSectionError,
+} from './types';
 import { dailyQuestionService } from '@/modules/daily-question/services/dailyQuestionService';
 import {
   getDailyQuestionPresentation,
@@ -105,10 +111,24 @@ function resultValue<T>(result: PromiseSettledResult<T>): T | null {
   return result.status === 'fulfilled' ? result.value : null;
 }
 
-function collectFailures(
+function collectSectionErrors(
   entries: Array<[string, PromiseSettledResult<unknown>]>
-): string[] {
-  return entries.flatMap(([label, result]) => result.status === 'rejected' ? [label] : []);
+): HomeSectionError[] {
+  return entries.flatMap(([section, result]) => {
+    if (result.status !== 'rejected') return [];
+    const error = toAppError(result.reason, `${section}暂时无法加载，请稍后重试`);
+    // Navigation/retry cancellation is expected and must not become a visible
+    // partial-data warning on the next render.
+    if (error.kind === 'cancelled') return [];
+    return [{
+      section,
+      error,
+    }];
+  });
+}
+
+function failedSectionNames(sectionErrors: HomeSectionError[]): string[] {
+  return sectionErrors.map(({ section }) => section);
 }
 
 function buildStudentStats(overview: StudentOverviewResponse | null): HomeStat[] {
@@ -234,14 +254,18 @@ function buildStudentAffiliation(currentClass: ClassInfo | null, unavailable: bo
   };
 }
 
-export async function loadStudentHomeData(): Promise<PersonalHomeData> {
+export async function loadStudentHomeData(signal?: AbortSignal): Promise<PersonalHomeData> {
   const [overviewResult, masteryResult, sessionsResult, classResult, dailyQuestionResult] = await Promise.allSettled([
-    apiClient.get<StudentOverviewResponse>('/progress/overview').then((response) => response.data),
-    apiClient.get<StudentMasteryResponse>('/progress/mastery').then((response) => response.data),
-    sessionService.getSessions(4, 0, { withUserMessages: true }),
-    classService.getMyClass(),
-    dailyQuestionService.getToday(),
+    apiClient.get<StudentOverviewResponse>('/progress/overview', { signal }).then((response) => response.data),
+    apiClient.get<StudentMasteryResponse>('/progress/mastery', { signal }).then((response) => response.data),
+    sessionService.getSessions(4, 0, { withUserMessages: true }, signal),
+    classService.getMyClass(signal),
+    dailyQuestionService.getToday(signal),
   ]);
+
+  if (signal?.aborted) {
+    throw new DOMException('请求已取消', 'AbortError');
+  }
 
   const overview = resultValue(overviewResult);
   const mastery = resultValue(masteryResult);
@@ -249,6 +273,13 @@ export async function loadStudentHomeData(): Promise<PersonalHomeData> {
   const currentClass = resultValue(classResult)?.class_info ?? null;
   const dailyQuestion = resultValue(dailyQuestionResult);
   const recentItems = buildStudentRecentItems(sessions);
+  const sectionErrors = collectSectionErrors([
+    ['学习概览', overviewResult],
+    ['掌握度', masteryResult],
+    ['学习记录', sessionsResult],
+    ['班级信息', classResult],
+    ['每日一题', dailyQuestionResult],
+  ]);
 
   return {
     role: 'student',
@@ -261,13 +292,8 @@ export async function loadStudentHomeData(): Promise<PersonalHomeData> {
     actions: [buildDailyQuestionAction(dailyQuestion), ...buildStudentActions(mastery)],
     recentItems,
     affiliation: buildStudentAffiliation(currentClass, classResult.status === 'rejected'),
-    failedSections: collectFailures([
-      ['学习概览', overviewResult],
-      ['掌握度', masteryResult],
-      ['学习记录', sessionsResult],
-      ['班级信息', classResult],
-      ['每日一题', dailyQuestionResult],
-    ]),
+    failedSections: failedSectionNames(sectionErrors),
+    sectionErrors,
   };
 }
 
@@ -374,16 +400,25 @@ function buildTeacherAffiliation(classes: ClassInfo[], unavailable: boolean) {
   };
 }
 
-export async function loadTeacherHomeData(): Promise<PersonalHomeData> {
+export async function loadTeacherHomeData(signal?: AbortSignal): Promise<PersonalHomeData> {
   const [dashboardResult, analyticsResult, classesResult] = await Promise.allSettled([
-    teacherService.getDashboardStats(),
-    teacherService.getAnalytics('week'),
-    classService.listTeacherClasses(),
+    teacherService.getDashboardStats(signal),
+    teacherService.getAnalytics('week', signal),
+    classService.listTeacherClasses(signal),
   ]);
+
+  if (signal?.aborted) {
+    throw new DOMException('请求已取消', 'AbortError');
+  }
 
   const dashboard = resultValue(dashboardResult);
   const analytics = resultValue(analyticsResult);
   const classes = resultValue(classesResult)?.items ?? [];
+  const sectionErrors = collectSectionErrors([
+    ['教学概览', dashboardResult],
+    ['学情分析', analyticsResult],
+    ['班级信息', classesResult],
+  ]);
 
   return {
     role: 'teacher',
@@ -398,10 +433,7 @@ export async function loadTeacherHomeData(): Promise<PersonalHomeData> {
     actions: buildTeacherActions(analytics),
     recentItems: buildTeacherRecentItems(classes),
     affiliation: buildTeacherAffiliation(classes, classesResult.status === 'rejected'),
-    failedSections: collectFailures([
-      ['教学概览', dashboardResult],
-      ['学情分析', analyticsResult],
-      ['班级信息', classesResult],
-    ]),
+    failedSections: failedSectionNames(sectionErrors),
+    sectionErrors,
   };
 }

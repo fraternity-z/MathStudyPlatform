@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
@@ -15,13 +15,15 @@ import {
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
 import {
   systemSettingService,
   type StorageBackend,
   type StorageSettings,
   type StorageSettingsUpdate,
 } from '@/modules/admin/services/systemSettingService';
+import { isAdminRequestCancelled, toAdminAppError } from '@/modules/admin/utils/errorFeedback';
 
 interface StorageFormState {
   backend: StorageBackend;
@@ -107,31 +109,32 @@ export const StorageSettingsCard: React.FC = () => {
   const [form, setForm] = useState<StorageFormState>(emptyForm);
   const [settings, setSettings] = useState<StorageSettings | null>(null);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
+  const [requestError, setRequestError] = useState<AppError | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeAction, setActiveAction] = useState<'save' | 'test' | null>(null);
   const [visibleCredential, setVisibleCredential] = useState<string | null>(null);
 
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
+  const loadSettings = useCallback(async (signal?: AbortSignal) => {
+      setIsLoading(true);
+      setRequestError(null);
       try {
-        const data = await systemSettingService.getStorageSettings();
-        if (!active) return;
+        const data = await systemSettingService.getStorageSettings(signal);
+        if (signal?.aborted) return;
         setSettings(data);
         setForm(settingsToForm(data));
       } catch (error) {
-        if (active) {
-          setFeedback({ type: 'error', message: getApiErrorMessage(error, '加载存储配置失败') });
-        }
+        if (signal?.aborted || isAdminRequestCancelled(error)) return;
+        setRequestError(toAdminAppError(error, '加载存储配置失败'));
       } finally {
-        if (active) setIsLoading(false);
+        if (!signal?.aborted) setIsLoading(false);
       }
-    };
-    void load();
-    return () => {
-      active = false;
-    };
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadSettings(controller.signal);
+    return () => controller.abort();
+  }, [loadSettings]);
 
   const validateForm = (): boolean => {
     if (form.backend === 'local') {
@@ -214,6 +217,7 @@ export const StorageSettingsCard: React.FC = () => {
 
   const handleSave = async () => {
     setFeedback(null);
+    setRequestError(null);
     if (!validateForm()) return;
     setActiveAction('save');
     try {
@@ -222,7 +226,9 @@ export const StorageSettingsCard: React.FC = () => {
       setForm(settingsToForm(updated));
       setFeedback({ type: 'success', message: '存储配置已保存并即时生效' });
     } catch (error) {
-      setFeedback({ type: 'error', message: getApiErrorMessage(error, '保存存储配置失败') });
+      if (!isAdminRequestCancelled(error)) {
+        setRequestError(toAdminAppError(error, '保存存储配置失败'));
+      }
     } finally {
       setActiveAction(null);
     }
@@ -230,13 +236,16 @@ export const StorageSettingsCard: React.FC = () => {
 
   const handleTest = async () => {
     setFeedback(null);
+    setRequestError(null);
     if (!validateForm()) return;
     setActiveAction('test');
     try {
       const result = await systemSettingService.testStorageConnection(draftPayload());
       setFeedback({ type: 'success', message: `${result.message}（${result.latency_ms} ms）` });
     } catch (error) {
-      setFeedback({ type: 'error', message: getApiErrorMessage(error, '存储连接测试失败') });
+      if (!isAdminRequestCancelled(error)) {
+        setRequestError(toAdminAppError(error, '存储连接测试失败'));
+      }
     } finally {
       setActiveAction(null);
     }
@@ -253,6 +262,26 @@ export const StorageSettingsCard: React.FC = () => {
         </CardHeader>
         <CardContent className="flex min-h-40 items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin text-surface-400" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (requestError && !settings) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-xl">
+            <HardDrive className="h-5 w-5" />
+            对象存储
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <RequestErrorNotice
+            error={requestError}
+            onRetry={() => void loadSettings()}
+            onRefresh={() => void loadSettings()}
+          />
         </CardContent>
       </Card>
     );
@@ -287,6 +316,14 @@ export const StorageSettingsCard: React.FC = () => {
       </CardHeader>
 
       <CardContent className="space-y-6">
+        {requestError ? (
+          <RequestErrorNotice
+            error={requestError}
+            onRetry={settings ? undefined : () => void loadSettings()}
+            onRefresh={settings ? undefined : () => void loadSettings()}
+            onDismiss={() => setRequestError(null)}
+          />
+        ) : null}
         {feedback ? <Feedback feedback={feedback} /> : null}
 
         <div className="grid h-12 grid-cols-3 overflow-hidden rounded-md border border-surface-200 dark:border-surface-700">

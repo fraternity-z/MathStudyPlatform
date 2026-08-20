@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import axios from 'axios';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
@@ -10,6 +9,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { MainLayout } from '@/components/layout/MainLayout';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
@@ -24,7 +24,7 @@ import {
   getDifficultyBadge,
   getErrorTypeLabel,
 } from '@/modules/mistake/hooks/useMistakeBook';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 
 const uncategorizedKnowledgePointId = '00000000-0000-0000-0000-000000000001';
 const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -67,9 +67,7 @@ const validateReview = (review: ReviewExerciseResponse): string | null => {
 type LoadErrorKind = 'error' | 'not_due' | 'archived';
 
 const getResponseErrorCode = (error: unknown): string => {
-  if (!axios.isAxiosError(error)) return '';
-  const data = error.response?.data as { code?: unknown } | undefined;
-  return typeof data?.code === 'string' ? data.code.trim().toUpperCase() : '';
+  return toAppError(error).code?.trim().toUpperCase() ?? '';
 };
 
 const getSafeMistakeBookReturnPath = (value: string | null): string => {
@@ -95,6 +93,7 @@ export const MistakeRedoPage: React.FC = () => {
   const [review, setReview] = useState<ReviewExerciseResponse | null>(null);
   const [isLoadingReview, setIsLoadingReview] = useState(Boolean(attemptId));
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadRequestError, setLoadRequestError] = useState<AppError | null>(null);
   const [loadErrorKind, setLoadErrorKind] = useState<LoadErrorKind | null>(null);
   const [reloadVersion, setReloadVersion] = useState(0);
   const [resetKey, setResetKey] = useState(0);
@@ -109,6 +108,7 @@ export const MistakeRedoPage: React.FC = () => {
     solutionError,
     error,
     errorType,
+    errorSource,
     loadQuestion,
     clearQuestion,
     submitAnswer,
@@ -131,6 +131,7 @@ export const MistakeRedoPage: React.FC = () => {
     const loadReview = async () => {
       setIsLoadingReview(true);
       setLoadError(null);
+      setLoadRequestError(null);
       setLoadErrorKind(null);
       setReview(null);
       try {
@@ -147,15 +148,19 @@ export const MistakeRedoPage: React.FC = () => {
         setResetKey((current) => current + 1);
       } catch (loadFailure) {
         if (controller.signal.aborted) return;
+        const requestError = toAppError(loadFailure, '加载错题失败，请稍后重试');
         if (getResponseErrorCode(loadFailure) === 'REVIEW_NOT_DUE') {
           setLoadErrorKind('not_due');
           setLoadError('复习计划状态已变化，请返回错题本后重新进入');
-        } else if (axios.isAxiosError(loadFailure) && loadFailure.response?.status === 404) {
+        } else if (requestError.kind === 'not_found') {
           setLoadErrorKind('error');
-          setLoadError('错题记录不存在、已下架或当前不可重做');
+          setLoadRequestError({
+            ...requestError,
+            message: '错题记录不存在、已下架或当前不可重做',
+          });
         } else {
           setLoadErrorKind('error');
-          setLoadError(getApiErrorMessage(loadFailure, '加载错题失败，请稍后重试'));
+          setLoadRequestError(requestError);
         }
       } finally {
         if (!controller.signal.aborted) {
@@ -183,7 +188,7 @@ export const MistakeRedoPage: React.FC = () => {
     if (errorType === 'review_not_due') {
       handledReviewErrorRef.current = reviewErrorKey;
       setLoadErrorKind('not_due');
-      setLoadError(error || '复习计划状态已变化，请返回错题本后重新进入');
+      setLoadError(error?.message || '复习计划状态已变化，请返回错题本后重新进入');
       setReview(null);
       clearQuestion();
       return;
@@ -191,7 +196,7 @@ export const MistakeRedoPage: React.FC = () => {
     if (errorType === 'mistake_record_archived') {
       handledReviewErrorRef.current = reviewErrorKey;
       setLoadErrorKind('archived');
-      setLoadError(error || '这条错题记录已归档，请返回错题本');
+      setLoadError(error?.message || '这条错题记录已归档，请返回错题本');
       setReview(null);
       clearQuestion();
     }
@@ -238,23 +243,34 @@ export const MistakeRedoPage: React.FC = () => {
     );
   }
 
-  if (loadError || !review || !currentQuestion) {
+  if (loadError || loadRequestError || !review || !currentQuestion) {
     return (
       <MainLayout>
         <div className="container mx-auto flex min-h-[60vh] max-w-3xl flex-col items-center justify-center px-6 text-center">
-          <AlertCircle className="mb-4 h-12 w-12 text-red-400" />
-          <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-100">
-            {loadErrorKind === 'not_due'
-              ? '复习计划已更新'
-              : loadErrorKind === 'archived'
-                ? '错题记录已归档'
-                : '无法打开这道错题'}
-          </h1>
-          <p className="mt-2 text-surface-500 dark:text-surface-400">
-            {loadError || '错题内容暂不可用'}
-          </p>
+          {loadRequestError ? (
+            <RequestErrorNotice
+              error={loadRequestError}
+              onRetry={() => setReloadVersion((current) => current + 1)}
+              onRefresh={() => setReloadVersion((current) => current + 1)}
+              className="w-full max-w-xl text-left"
+            />
+          ) : (
+            <>
+              <AlertCircle className="mb-4 h-12 w-12 text-red-400" />
+              <h1 className="text-xl font-semibold text-surface-900 dark:text-surface-100">
+                {loadErrorKind === 'not_due'
+                  ? '复习计划已更新'
+                  : loadErrorKind === 'archived'
+                    ? '错题记录已归档'
+                    : '无法打开这道错题'}
+              </h1>
+              <p className="mt-2 text-surface-500 dark:text-surface-400">
+                {loadError || '错题内容暂不可用'}
+              </p>
+            </>
+          )}
           <div className="mt-6 flex flex-wrap justify-center gap-3">
-            {attemptId && loadErrorKind !== 'not_due' && loadErrorKind !== 'archived' ? (
+            {attemptId && !loadRequestError && loadErrorKind !== 'not_due' && loadErrorKind !== 'archived' ? (
               <Button variant="outline" onClick={() => setReloadVersion((current) => current + 1)}>
                 <RefreshCw className="mr-2 h-4 w-4" />
                 重新加载
@@ -357,6 +373,7 @@ export const MistakeRedoPage: React.FC = () => {
           solutionError={solutionError}
           error={error}
           errorType={errorType}
+          errorSource={errorSource}
           onNextQuestion={handlePanelNext}
           submitAnswer={submitAnswer}
           onLoadSolution={loadSolution}

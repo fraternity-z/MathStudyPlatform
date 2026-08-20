@@ -35,6 +35,15 @@ async function requestAccessToken(): Promise<string | null> {
     refreshLogger.info('Token 刷新成功');
     return newToken;
   } catch (error) {
+    if (axios.isCancel(error)) {
+      return null;
+    }
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      if (status === 401 || status === 403) {
+        return null;
+      }
+    }
     refreshLogger.error('Token 刷新失败', error);
     return null;
   }

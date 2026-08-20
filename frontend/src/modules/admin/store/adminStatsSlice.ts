@@ -14,7 +14,7 @@ import type {
   UserGrowthPeriod,
 } from '@/modules/admin/types/adminStats';
 import { adminStatsService } from '@/modules/admin/services/adminStatsService';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 
 // =============================================================================
 // State 类型定义
@@ -24,26 +24,26 @@ interface AdminStatsState {
   // 概览统计
   overview: OverviewStats | null;
   overviewLoading: LoadingState;
-  overviewError: string | null;
+  overviewError: AppError | null;
 
   // 用户增长
   userGrowth: UserGrowthResponse | null;
   userGrowthLoading: LoadingState;
-  userGrowthError: string | null;
+  userGrowthError: AppError | null;
   userGrowthPeriod: UserGrowthPeriod;
   userGrowthRequestId: string | null;
 
   // 最近活动
   recentActivities: ActivityItem[];
   activitiesLoading: LoadingState;
-  activitiesError: string | null;
+  activitiesError: AppError | null;
 
   // 系统状态
   systemStatus: SystemStatusResponse | null;
   systemStatusLoading: LoadingState;
-  systemStatusError: string | null;
+  systemStatusError: AppError | null;
   trafficResetLoading: LoadingState;
-  trafficResetError: string | null;
+  trafficResetError: AppError | null;
 }
 
 // =============================================================================
@@ -81,13 +81,12 @@ const initialState: AdminStatsState = {
  */
 export const fetchOverviewStats = createAsyncThunk(
   'adminStats/fetchOverview',
-  async (_, { rejectWithValue }) => {
+  async (_, { rejectWithValue, signal }) => {
     try {
-      return await adminStatsService.getOverview();
+      return await adminStatsService.getOverview(signal);
     } catch (error) {
-      return rejectWithValue(
-        error instanceof Error ? error.message : '获取概览统计失败'
-      );
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '获取概览统计失败'));
     }
   }
 );
@@ -102,9 +101,7 @@ export const fetchUserGrowth = createAsyncThunk(
       return await adminStatsService.getUserGrowth(period, signal);
     } catch (error) {
       if (signal.aborted) throw error;
-      return rejectWithValue(
-        error instanceof Error ? error.message : '获取用户增长数据失败'
-      );
+      return rejectWithValue(toAppError(error, '获取用户增长数据失败'));
     }
   }
 );
@@ -114,13 +111,12 @@ export const fetchUserGrowth = createAsyncThunk(
  */
 export const fetchRecentActivities = createAsyncThunk(
   'adminStats/fetchRecentActivities',
-  async (limit: number = 10, { rejectWithValue }) => {
+  async (limit: number = 10, { rejectWithValue, signal }) => {
     try {
-      return await adminStatsService.getRecentActivities(limit);
+      return await adminStatsService.getRecentActivities(limit, signal);
     } catch (error) {
-      return rejectWithValue(
-        error instanceof Error ? error.message : '获取最近活动失败'
-      );
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '获取最近活动失败'));
     }
   }
 );
@@ -134,9 +130,8 @@ export const fetchSystemStatus = createAsyncThunk(
     try {
       return await adminStatsService.getSystemStatus(signal);
     } catch (error) {
-      return rejectWithValue(
-        error instanceof Error ? error.message : '获取系统状态失败'
-      );
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '获取系统状态失败'));
     }
   }
 );
@@ -150,7 +145,7 @@ export const resetTrafficMetrics = createAsyncThunk(
     try {
       return await adminStatsService.resetTrafficMetrics();
     } catch (error) {
-      return rejectWithValue(getApiErrorMessage(error, '重置运维流量指标失败'));
+      return rejectWithValue(toAppError(error, '重置运维流量指标失败'));
     }
   }
 );
@@ -193,8 +188,12 @@ const adminStatsSlice = createSlice({
         state.overview = action.payload;
       })
       .addCase(fetchOverviewStats.rejected, (state, action) => {
+        if (action.meta.aborted) {
+          state.overviewLoading = state.overview ? 'success' : 'idle';
+          return;
+        }
         state.overviewLoading = 'error';
-        state.overviewError = action.payload as string;
+        state.overviewError = action.payload as AppError;
       });
 
     // 用户增长
@@ -222,7 +221,8 @@ const adminStatsSlice = createSlice({
           return;
         }
         state.userGrowthLoading = 'error';
-        state.userGrowthError = (action.payload as string | undefined) ?? action.error.message ?? '获取用户增长数据失败';
+        state.userGrowthError = (action.payload as AppError | undefined)
+          ?? toAppError(action.error, '获取用户增长数据失败');
       });
 
     // 最近活动
@@ -236,8 +236,12 @@ const adminStatsSlice = createSlice({
         state.recentActivities = action.payload.items;
       })
       .addCase(fetchRecentActivities.rejected, (state, action) => {
+        if (action.meta.aborted) {
+          state.activitiesLoading = state.recentActivities.length ? 'success' : 'idle';
+          return;
+        }
         state.activitiesLoading = 'error';
-        state.activitiesError = action.payload as string;
+        state.activitiesError = action.payload as AppError;
       });
 
     // 系统状态
@@ -251,8 +255,12 @@ const adminStatsSlice = createSlice({
         state.systemStatus = action.payload;
       })
       .addCase(fetchSystemStatus.rejected, (state, action) => {
+        if (action.meta.aborted) {
+          state.systemStatusLoading = state.systemStatus ? 'success' : 'idle';
+          return;
+        }
         state.systemStatusLoading = 'error';
-        state.systemStatusError = action.payload as string;
+        state.systemStatusError = action.payload as AppError;
       });
 
     // 运维流量统计窗口
@@ -266,7 +274,7 @@ const adminStatsSlice = createSlice({
       })
       .addCase(resetTrafficMetrics.rejected, (state, action) => {
         state.trafficResetLoading = 'error';
-        state.trafficResetError = action.payload as string;
+        state.trafficResetError = action.payload as AppError;
       });
   },
 });

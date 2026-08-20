@@ -5,6 +5,7 @@
  */
 
 import { createAsyncThunk, type AsyncThunk } from '@reduxjs/toolkit';
+import { toAppError, type AppError } from '@/libs/http/appError';
 
 /**
  * 创建带有统一错误处理的 AsyncThunk
@@ -27,15 +28,14 @@ export function createSafeThunk<Returned, ThunkArg = void>(
   typePrefix: string,
   payloadCreator: (arg: ThunkArg) => Promise<Returned>,
   defaultErrorMessage = '操作失败'
-): AsyncThunk<Returned, ThunkArg, { rejectValue: string }> {
-  return createAsyncThunk<Returned, ThunkArg, { rejectValue: string }>(
+): AsyncThunk<Returned, ThunkArg, { rejectValue: AppError }> {
+  return createAsyncThunk<Returned, ThunkArg, { rejectValue: AppError }>(
     typePrefix,
     async (arg, { rejectWithValue }) => {
       try {
         return await payloadCreator(arg);
       } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : defaultErrorMessage;
-        return rejectWithValue(message);
+        return rejectWithValue(toAppError(error, defaultErrorMessage));
       }
     }
   );
@@ -66,15 +66,14 @@ export function createSafeThunkWithState<Returned, ThunkArg, State>(
   typePrefix: string,
   payloadCreator: (arg: ThunkArg, getState: () => State) => Promise<Returned>,
   defaultErrorMessage = '操作失败'
-): AsyncThunk<Returned, ThunkArg, { rejectValue: string; state: State }> {
-  return createAsyncThunk<Returned, ThunkArg, { rejectValue: string; state: State }>(
+): AsyncThunk<Returned, ThunkArg, { rejectValue: AppError; state: State }> {
+  return createAsyncThunk<Returned, ThunkArg, { rejectValue: AppError; state: State }>(
     typePrefix,
     async (arg, { rejectWithValue, getState }) => {
       try {
         return await payloadCreator(arg, getState);
       } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : defaultErrorMessage;
-        return rejectWithValue(message);
+        return rejectWithValue(toAppError(error, defaultErrorMessage));
       }
     }
   );

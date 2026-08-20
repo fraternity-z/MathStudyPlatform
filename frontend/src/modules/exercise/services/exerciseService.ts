@@ -173,7 +173,11 @@ export const exerciseService = {
   /**
    * 获取下一道自适应练习题
    */
-  async fetchNextQuestion(conceptId?: string, difficulty?: number): Promise<Question | null> {
+  async fetchNextQuestion(
+    conceptId?: string,
+    difficulty?: number,
+    signal?: AbortSignal,
+  ): Promise<Question | null> {
     exerciseLogger.debug('Fetching next question', { conceptId, difficulty });
 
     const params: Record<string, string> = {};
@@ -182,6 +186,7 @@ export const exerciseService = {
 
     const res = await apiClient.get<ExerciseQuestionResponse | null>('/exercise/next', {
       params,
+      signal,
     });
 
     const data = res.data;
@@ -194,7 +199,10 @@ export const exerciseService = {
   /**
    * 按指定知识点和难度生成一道学生自主练习题
    */
-  async generateQuestion(payload: GenerateQuestionPayload): Promise<Question> {
+  async generateQuestion(
+    payload: GenerateQuestionPayload,
+    signal?: AbortSignal,
+  ): Promise<Question> {
     exerciseLogger.debug('Generating question', {
       conceptId: payload.conceptId,
       difficulty: payload.difficulty,
@@ -207,6 +215,7 @@ export const exerciseService = {
       question_type: payload.questionType,
     }, {
       timeout: 60000,
+      signal,
     });
 
     return mapExerciseQuestion(res.data);
@@ -215,7 +224,7 @@ export const exerciseService = {
   /**
    * 提交答案
    */
-  async submitAnswer(payload: SubmitPayload): Promise<SubmitResult> {
+  async submitAnswer(payload: SubmitPayload, signal?: AbortSignal): Promise<SubmitResult> {
     exerciseLogger.debug('Submitting answer', {
       exerciseId: payload.exerciseId,
     });
@@ -262,6 +271,7 @@ export const exerciseService = {
       time_spent_seconds: payload.timeSpentSeconds,
     }, {
       timeout: submitTimeoutMs,
+      signal,
     });
 
     const data = res.data;
@@ -311,6 +321,7 @@ export const exerciseService = {
     reviewTaskRevision?: number,
     originalAttemptId?: string,
     solutionAttemptId?: string,
+    signal?: AbortSignal,
   ): Promise<ExerciseSolution> {
     const normalizedDailyAssignmentId = dailyAssignmentId?.trim();
     const normalizedReviewTaskId = reviewTaskId?.trim();
@@ -346,6 +357,7 @@ export const exerciseService = {
           ? { attempt_id: normalizedSolutionAttemptId }
           : {}),
       },
+      signal,
     });
 
     return {

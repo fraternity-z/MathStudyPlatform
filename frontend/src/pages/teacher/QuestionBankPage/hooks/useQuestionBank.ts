@@ -4,7 +4,7 @@ import { useToast } from '../../../../components/ui/Toast';
 import { questionService } from '@/modules/question/services/questionService';
 import type { Question, QuestionStats } from '@/modules/question/types/question';
 import { logger } from '../../../../libs/utils/logger';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 
 const log = logger.createContextLogger('QuestionBankPage');
 
@@ -27,7 +27,9 @@ export function useQuestionBank() {
   const [stats, setStats] = useState<QuestionStats | null>(null);
   const [groups, setGroups] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<AppError | null>(null);
+  const [statsError, setStatsError] = useState<AppError | null>(null);
+  const [groupsError, setGroupsError] = useState<AppError | null>(null);
 
   // 导入/导出模态框状态
   const [importModalOpen, setImportModalOpen] = useState(false);
@@ -36,6 +38,7 @@ export function useQuestionBank() {
   // 更多操作下拉菜单状态
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const questionRequestRef = useRef(0);
 
   // 筛选状态计算
   const hasActiveFilters = selectedDifficulty !== '' || selectedType !== '' || selectedStatus !== '' || selectedGroup !== '' || searchTerm !== '';
@@ -51,6 +54,8 @@ export function useQuestionBank() {
 
   // 加载题目列表
   const loadQuestions = useCallback(async () => {
+    const requestID = questionRequestRef.current + 1;
+    questionRequestRef.current = requestID;
     setLoading(true);
     setError(null);
     try {
@@ -65,44 +70,69 @@ export function useQuestionBank() {
         sortBy: 'created_at',
         sortOrder: 'desc',
       });
+      if (questionRequestRef.current !== requestID) return;
       setQuestions(response.items);
       setTotal(response.total);
       log.info('题目列表加载成功', { total: response.total });
     } catch (err) {
+      if (questionRequestRef.current !== requestID) return;
       log.error('加载题目列表失败', err);
-      setError('加载题目列表失败，请稍后重试');
+      setError(toAppError(err, '加载题目列表失败，请稍后重试'));
     } finally {
-      setLoading(false);
+      if (questionRequestRef.current === requestID) setLoading(false);
     }
   }, [currentPage, pageSize, debouncedSearchTerm, selectedDifficulty, selectedType, selectedStatus, selectedGroup]);
 
   // 加载统计数据
   const loadStats = async () => {
+    setStatsError(null);
     try {
       const statsData = await questionService.getStats();
       setStats(statsData);
       log.info('统计数据加载成功', statsData);
     } catch (err) {
       log.error('加载统计数据失败', err);
+      setStatsError(toAppError(err, '题目统计加载失败，请稍后重试'));
     }
   };
 
   // 加载分组列表
   const loadGroups = async () => {
+    setGroupsError(null);
     try {
       const groupsData = await questionService.getGroups();
       setGroups(groupsData);
     } catch (err) {
       log.error('加载分组列表失败', err);
+      setGroupsError(toAppError(err, '题目分组加载失败，请稍后重试'));
     }
   };
 
   // 初始加载
   useEffect(() => {
-    loadQuestions();
-    loadStats();
-    loadGroups();
+    void loadQuestions();
+    void loadStats();
+    void loadGroups();
+    return () => {
+      questionRequestRef.current += 1;
+    };
   }, [loadQuestions]);
+
+  const notifyRequestError = useCallback((requestError: unknown, fallback: string) => {
+    const appError = toAppError(requestError, fallback);
+    if (appError.kind === 'cancelled' || appError.kind === 'rate_limited') return;
+    const details = [
+      appError.retryAfter !== undefined && appError.retryAfter > 0
+        ? `可在 ${appError.retryAfter} 秒后重试`
+        : '',
+      appError.requestId ? `请求编号：${appError.requestId}` : '',
+    ].filter(Boolean);
+    toast({
+      type: 'error',
+      title: appError.message,
+      description: details.length > 0 ? details.join('；') : undefined,
+    });
+  }, [toast]);
 
   // 筛选条件变化时重置到第1页
   useEffect(() => {
@@ -152,7 +182,7 @@ export function useQuestionBank() {
       await loadStats();
     } catch (err) {
       log.error('批量发布失败', err);
-      toast({ type: 'error', title: '批量发布失败，请稍后重试' });
+      notifyRequestError(err, '批量发布失败，请稍后重试');
     } finally {
       setLoading(false);
     }
@@ -176,7 +206,7 @@ export function useQuestionBank() {
       await loadStats();
     } catch (err) {
       log.error('批量删除失败', err);
-      toast({ type: 'error', title: getApiErrorMessage(err, '批量删除失败，请稍后重试') });
+      notifyRequestError(err, '批量删除失败，请稍后重试');
     } finally {
       setLoading(false);
     }
@@ -199,7 +229,7 @@ export function useQuestionBank() {
       await loadStats();
     } catch (err) {
       log.error('批量复制失败', err);
-      toast({ type: 'error', title: '批量复制失败，请稍后重试' });
+      notifyRequestError(err, '批量复制失败，请稍后重试');
     } finally {
       setLoading(false);
     }
@@ -217,8 +247,8 @@ export function useQuestionBank() {
       } else {
         toast({ type: 'error', title: '复制失败' });
       }
-    } catch {
-      toast({ type: 'error', title: '复制失败，请稍后重试' });
+    } catch (error) {
+      notifyRequestError(error, '复制失败，请稍后重试');
     }
   };
 
@@ -236,7 +266,7 @@ export function useQuestionBank() {
       await loadQuestions();
       await loadStats();
     } catch (statusError) {
-      toast({ type: 'error', title: getApiErrorMessage(statusError, '状态更新失败，请稍后重试') });
+      notifyRequestError(statusError, '状态更新失败，请稍后重试');
     }
   };
 
@@ -255,8 +285,8 @@ export function useQuestionBank() {
         title: enabled ? '已设为每日题候选' : '已取消每日题候选',
       });
       await loadQuestions();
-    } catch {
-      toast({ type: 'error', title: '每日题候选状态更新失败，请稍后重试' });
+    } catch (error) {
+      notifyRequestError(error, '每日题候选状态更新失败，请稍后重试');
     } finally {
       setDailyCandidateUpdatingIds((ids) => ids.filter((id) => id !== questionId));
     }
@@ -272,7 +302,7 @@ export function useQuestionBank() {
       await loadQuestions();
       await loadStats();
     } catch (deleteError) {
-      toast({ type: 'error', title: getApiErrorMessage(deleteError, '删除失败，请稍后重试') });
+      notifyRequestError(deleteError, '删除失败，请稍后重试');
     }
   };
 
@@ -288,7 +318,7 @@ export function useQuestionBank() {
     hasActiveFilters,
     resetFilters,
     // 数据
-    questions, total, stats, groups, loading, error, dailyCandidateUpdatingIds,
+    questions, total, stats, groups, loading, error, statsError, groupsError, dailyCandidateUpdatingIds,
     // 选择
     selectedQuestions, toggleSelectQuestion, toggleSelectAll,
     // 批量操作

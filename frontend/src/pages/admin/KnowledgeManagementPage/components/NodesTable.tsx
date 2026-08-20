@@ -3,15 +3,18 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { Badge } from '@/components/ui/Badge';
-import { Search, Plus, Edit, Trash2, Loader2, AlertCircle } from 'lucide-react';
+import { Search, Plus, Edit, Trash2, Loader2 } from 'lucide-react';
 import { NODE_TYPE_LABELS } from '@/modules/admin/types/knowledgeAdmin';
 import { NODE_TYPE_OPTIONS } from '../constants';
 import type { KnowledgeNodeAdmin } from '@/modules/admin/types/knowledgeAdmin';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/apiClient';
 
 interface NodesTableProps {
   nodes: KnowledgeNodeAdmin[];
   loading: boolean;
-  error: string | null;
+  error: AppError | null;
+  onRetry: () => void;
   searchInput: string;
   chapterFilter: string;
   typeFilter: string;
@@ -33,6 +36,7 @@ export const NodesTable = React.memo<NodesTableProps>(
     nodes,
     loading,
     error,
+    onRetry,
     searchInput,
     chapterFilter,
     typeFilter,
@@ -80,9 +84,7 @@ export const NodesTable = React.memo<NodesTableProps>(
             <span className="ml-2 text-surface-500">加载中...</span>
           </div>
         ) : error ? (
-          <div className="flex items-center justify-center py-12 text-red-500">
-            <AlertCircle className="h-5 w-5 mr-2" /> {error}
-          </div>
+          <RequestErrorNotice error={error} onRetry={onRetry} onRefresh={onRetry} />
         ) : nodes.length === 0 ? (
           <div className="text-center py-12 text-surface-400">暂无知识节点数据</div>
         ) : (

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { MainLayout } from '@/components/layout/MainLayout';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
@@ -26,6 +27,13 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/libs/utils/cn';
+import {
+  formatAppErrorDescription,
+  isRequestCancelled,
+  toAppError,
+  toAppErrorFeedback,
+  type AppError,
+} from '@/libs/http/appError';
 import { formatRelativeTime } from '@/libs/utils/dateFormat';
 import { useSerialPolling } from '@/hooks/useSerialPolling';
 import {
@@ -165,9 +173,12 @@ export const MessageCenterPage: React.FC = () => {
   const {
     summary,
     error: summaryError,
-    isRefreshing: summaryRefreshing,
     refresh: refreshSummary,
   } = useMessageCenterSummary();
+  const notifyRequestError = useCallback((error: unknown, fallback: string) => {
+    const feedback = toAppErrorFeedback(error, fallback);
+    if (feedback) toast(feedback);
+  }, [toast]);
   const pageVisible = usePageVisibility();
   const { ref: conversationDetailRef, isVisible: conversationDetailVisible } = useObservedVisibility<HTMLDivElement>();
   const { ref: threadDetailRef, isVisible: threadDetailVisible } = useObservedVisibility<HTMLDivElement>();
@@ -177,7 +188,7 @@ export const MessageCenterPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState(initialTab);
   const [initialLoad, setInitialLoad] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState('');
+  const [loadError, setLoadError] = useState<AppError | null>(null);
 
   // conversations
   const [convItems, setConvItems] = useState<ReturnType<typeof mapConversationItem>[]>([]);
@@ -187,7 +198,7 @@ export const MessageCenterPage: React.FC = () => {
   const conversationListModeRef = useRef(!activeConvId);
   const conversationDetailLoadingRef = useRef(Boolean(activeConvId));
   const [conversationDetailLoading, setConversationDetailLoading] = useState(Boolean(activeConvId));
-  const [conversationDetailError, setConversationDetailError] = useState('');
+  const [conversationDetailError, setConversationDetailError] = useState<AppError | null>(null);
   const [messageDrafts, setMessageDrafts] = useState<Record<string, string>>({});
   const messageDraft = activeConvId ? messageDrafts[activeConvId] ?? '' : '';
   const [messageAttachmentDrafts, setMessageAttachmentDrafts] = useState<Record<string, MessageAttachment[]>>({});
@@ -231,7 +242,7 @@ export const MessageCenterPage: React.FC = () => {
   const [activeNoticeId, setActiveNoticeId] = useState(initialTab === 'notices' ? initialItemID : '');
   const activeNoticeIDRef = useRef(activeNoticeId);
   const [noticeDetailLoading, setNoticeDetailLoading] = useState(false);
-  const [noticeDetailError, setNoticeDetailError] = useState('');
+  const [noticeDetailError, setNoticeDetailError] = useState<AppError | null>(null);
   const [noticeStatus, setNoticeStatus] = useState('全部');
   const [confirming, setConfirming] = useState('');
   const [noticePage, setNoticePage] = useState(1);
@@ -244,7 +255,7 @@ export const MessageCenterPage: React.FC = () => {
   const activeQuestionIDRef = useRef(activeQuestionId);
   const threadDetailLoadingRef = useRef(Boolean(activeQuestionId));
   const [threadDetailLoading, setThreadDetailLoading] = useState(Boolean(activeQuestionId));
-  const [threadDetailError, setThreadDetailError] = useState('');
+  const [threadDetailError, setThreadDetailError] = useState<AppError | null>(null);
   const [questionDraft, setQuestionDraft] = useState('');
   const [questionAttachments, setQuestionAttachments] = useState<MessageAttachment[]>([]);
   const [questionUploading, setQuestionUploading] = useState(false);
@@ -265,7 +276,7 @@ export const MessageCenterPage: React.FC = () => {
   const [questionTotal, setQuestionTotal] = useState(0);
   const [loadingMoreList, setLoadingMoreList] = useState('');
   const loadingMoreListRef = useRef(false);
-  const [listLoadError, setListLoadError] = useState('');
+  const [listLoadError, setListLoadError] = useState<AppError | null>(null);
   const tabCounts = {
     private: summary?.conversation_count ?? 0,
     notices: summary?.notice_count ?? 0,
@@ -324,7 +335,7 @@ export const MessageCenterPage: React.FC = () => {
     setConversationSearchError('');
     conversationDetailLoadingRef.current = Boolean(id);
     setConversationDetailLoading(Boolean(id));
-    setConversationDetailError('');
+    setConversationDetailError(null);
     return true;
   }, []);
 
@@ -338,7 +349,7 @@ export const MessageCenterPage: React.FC = () => {
     setLoadingOlderThreadMessages(false);
     threadDetailLoadingRef.current = Boolean(id);
     setThreadDetailLoading(Boolean(id));
-    setThreadDetailError('');
+    setThreadDetailError(null);
     return true;
   }, []);
 
@@ -349,7 +360,7 @@ export const MessageCenterPage: React.FC = () => {
     setActiveNoticeId(id);
     setActiveNotice(null);
     setNoticeDetailLoading(Boolean(id));
-    setNoticeDetailError('');
+    setNoticeDetailError(null);
     return true;
   }, []);
 
@@ -390,7 +401,10 @@ export const MessageCenterPage: React.FC = () => {
         setImportTeacherId((current) => current || list[0].id);
       }
       return true;
-    } catch { return false; }
+    } catch (error) {
+      if (!isRequestCancelled(error)) setLoadError(toAppError(error, '联系人加载失败'));
+      return false;
+    }
   }, []);
 
   // ---- load conversations ---------------------------------------------
@@ -430,7 +444,11 @@ export const MessageCenterPage: React.FC = () => {
         else if (conversationListModeRef.current && activeConvIDRef.current) activateConversation('');
       }
       return true;
-    } catch { return options.signal?.aborted || request !== conversationListRequest.current || queryKey !== conversationQueryRef.current; }
+    } catch (error) {
+      const stale = options.signal?.aborted || request !== conversationListRequest.current || queryKey !== conversationQueryRef.current;
+      if (!stale && !isRequestCancelled(error)) setListLoadError(toAppError(error, '私信列表加载失败'));
+      return stale;
+    }
   }, [activateConversation, consumePendingDeepLink, conversationPage, serverSearch]);
 
   const loadConversationDetail = useCallback(async (id: string, preserveLoadedMessages = false): Promise<boolean> => {
@@ -440,7 +458,7 @@ export const MessageCenterPage: React.FC = () => {
       conversationScrollIntentRef.current = { type: 'bottom', conversationID: id };
       setConversationDetailLoading(true);
     }
-    setConversationDetailError('');
+    setConversationDetailError(null);
     try {
       const detail = await conversationService.get(id);
       if (request === conversationRequest.current && activeConvIDRef.current === id) {
@@ -454,11 +472,13 @@ export const MessageCenterPage: React.FC = () => {
         setConversationDetailLoading(false);
       }
       return true;
-    } catch {
+    } catch (error) {
       if (request === conversationRequest.current && activeConvIDRef.current === id) {
         if (!preserveLoadedMessages) {
           setActiveConv(null);
-          setConversationDetailError('私信详情加载失败，请稍后重试。');
+          if (!isRequestCancelled(error)) {
+            setConversationDetailError(toAppError(error, '私信详情加载失败，请稍后重试'));
+          }
         }
         conversationDetailLoadingRef.current = false;
         setConversationDetailLoading(false);
@@ -504,13 +524,17 @@ export const MessageCenterPage: React.FC = () => {
         if (deepLinkID) activateNotice(deepLinkID);
       }
       return true;
-    } catch { return options.signal?.aborted || request !== noticeListRequest.current || queryKey !== noticeQueryRef.current; }
+    } catch (error) {
+      const stale = options.signal?.aborted || request !== noticeListRequest.current || queryKey !== noticeQueryRef.current;
+      if (!stale && !isRequestCancelled(error)) setListLoadError(toAppError(error, '通知列表加载失败'));
+      return stale;
+    }
   }, [activateNotice, consumePendingDeepLink, noticePage, serverSearch, noticeStatus]);
 
   const loadNoticeDetail = useCallback(async (id: string): Promise<boolean> => {
     const request = ++noticeRequest.current;
     setNoticeDetailLoading(true);
-    setNoticeDetailError('');
+    setNoticeDetailError(null);
     try {
       const detail = await noticeService.get(id);
       if (!('confirmed' in detail)) throw new Error('unexpected teacher notice detail');
@@ -519,10 +543,12 @@ export const MessageCenterPage: React.FC = () => {
         setNoticeDetailLoading(false);
       }
       return true;
-    } catch {
+    } catch (error) {
       if (request === noticeRequest.current && activeNoticeIDRef.current === id) {
         setActiveNotice(null);
-        setNoticeDetailError('通知详情加载失败，请稍后重试。');
+        if (!isRequestCancelled(error)) {
+          setNoticeDetailError(toAppError(error, '通知详情加载失败，请稍后重试'));
+        }
         setNoticeDetailLoading(false);
       }
       return false;
@@ -565,14 +591,18 @@ export const MessageCenterPage: React.FC = () => {
         if (deepLinkID) activateQuestion(deepLinkID);
       }
       return true;
-    } catch { return options.signal?.aborted || request !== questionListRequest.current || queryKey !== questionQueryRef.current; }
+    } catch (error) {
+      const stale = options.signal?.aborted || request !== questionListRequest.current || queryKey !== questionQueryRef.current;
+      if (!stale && !isRequestCancelled(error)) setListLoadError(toAppError(error, '答疑列表加载失败'));
+      return stale;
+    }
   }, [activateQuestion, consumePendingDeepLink, questionPage, serverSearch]);
 
   const loadThreadDetail = useCallback(async (id: string, preserveLoadedMessages = false): Promise<boolean> => {
     const request = ++threadRequest.current;
     threadDetailLoadingRef.current = true;
     setThreadDetailLoading(true);
-    setThreadDetailError('');
+    setThreadDetailError(null);
     try {
       const detail = await qaThreadService.get(id);
       if (request === threadRequest.current && activeQuestionIDRef.current === id) {
@@ -586,10 +616,12 @@ export const MessageCenterPage: React.FC = () => {
         setThreadDetailLoading(false);
       }
       return true;
-    } catch {
+    } catch (error) {
       if (request === threadRequest.current && activeQuestionIDRef.current === id) {
         setActiveThread(null);
-        setThreadDetailError('答疑详情加载失败，请稍后重试。');
+        if (!isRequestCancelled(error)) {
+          setThreadDetailError(toAppError(error, '答疑详情加载失败，请稍后重试'));
+        }
         threadDetailLoadingRef.current = false;
         setThreadDetailLoading(false);
       }
@@ -609,7 +641,7 @@ export const MessageCenterPage: React.FC = () => {
       setActiveConv(null);
       conversationDetailLoadingRef.current = false;
       setConversationDetailLoading(false);
-      setConversationDetailError('');
+      setConversationDetailError(null);
       return;
     }
     setActiveConv(null);
@@ -634,19 +666,22 @@ export const MessageCenterPage: React.FC = () => {
     const cutoffKey = activeConv && throughMessageID ? `${activeConv.id}:${throughMessageID}` : '';
     if (!pageVisible || !conversationDetailVisible || activeTab !== 'private' || !activeConv || !throughMessageID || activeConv.id !== activeConvId || acknowledgedConversationCutoff.current === cutoffKey || acknowledgingConversationCutoff.current === cutoffKey) return;
     const conversationID = activeConv.id;
+    const controller = new AbortController();
     acknowledgingConversationCutoff.current = cutoffKey;
     conversationListRequest.current++;
-    void conversationService.acknowledgeRead(conversationID, throughMessageID).then(async () => {
+    void conversationService.acknowledgeRead(conversationID, throughMessageID, controller.signal).then(async () => {
       acknowledgedConversationCutoff.current = cutoffKey;
       const loaded = await loadConversations(1, false, false, { refreshLoadedPages: true });
-      if (!loaded) setListLoadError('私信列表刷新失败，请稍后重试。');
+      if (!loaded && !listLoadError) setListLoadError(toAppError(null, '私信列表刷新失败，请稍后重试'));
       refreshMessageCenterSummaryAfterMutation();
-    }).catch(() => {
-      toast({ type: 'error', title: '私信已显示，但同步已读状态失败' });
+    }).catch((error) => {
+      if (controller.signal.aborted) return;
+      notifyRequestError(error, '私信已显示，但同步已读状态失败');
     }).finally(() => {
       if (acknowledgingConversationCutoff.current === cutoffKey) acknowledgingConversationCutoff.current = '';
     });
-  }, [activeConv, activeConvId, activeTab, conversationDetailVisible, loadConversations, pageVisible, toast]);
+    return () => controller.abort();
+  }, [activeConv, activeConvId, activeTab, conversationDetailVisible, listLoadError, loadConversations, notifyRequestError, pageVisible]);
 
   useEffect(() => {
     if (activeTab !== 'notices') {
@@ -657,7 +692,7 @@ export const MessageCenterPage: React.FC = () => {
       noticeRequest.current++;
       setActiveNotice(null);
       setNoticeDetailLoading(false);
-      setNoticeDetailError('');
+      setNoticeDetailError(null);
       return;
     }
     setActiveNotice(null);
@@ -676,7 +711,7 @@ export const MessageCenterPage: React.FC = () => {
       setActiveThread(null);
       threadDetailLoadingRef.current = false;
       setThreadDetailLoading(false);
-      setThreadDetailError('');
+      setThreadDetailError(null);
       return;
     }
     setActiveThread(null);
@@ -688,24 +723,28 @@ export const MessageCenterPage: React.FC = () => {
     const cutoffKey = activeThread && throughMessageID ? `${activeThread.id}:${throughMessageID}` : '';
     if (!pageVisible || !threadDetailVisible || activeTab !== 'questions' || !activeThread || !throughMessageID || activeThread.id !== activeQuestionId || acknowledgedThreadCutoff.current === cutoffKey || acknowledgingThreadCutoff.current === cutoffKey) return;
     const threadID = activeThread.id;
+    const controller = new AbortController();
     acknowledgingThreadCutoff.current = cutoffKey;
     questionListRequest.current++;
-    void qaThreadService.acknowledgeRead(threadID, throughMessageID).then(async () => {
+    void qaThreadService.acknowledgeRead(threadID, throughMessageID, controller.signal).then(async () => {
       acknowledgedThreadCutoff.current = cutoffKey;
       const loaded = await loadQuestions(1, false, false, { refreshLoadedPages: true });
-      if (!loaded) setListLoadError('答疑列表刷新失败，请稍后重试。');
+      if (!loaded && !listLoadError) setListLoadError(toAppError(null, '答疑列表刷新失败，请稍后重试'));
       refreshMessageCenterSummaryAfterMutation();
-    }).catch(() => {
-      toast({ type: 'error', title: '答疑已显示，但同步已读状态失败' });
+    }).catch((error) => {
+      if (controller.signal.aborted) return;
+      notifyRequestError(error, '答疑已显示，但同步已读状态失败');
     }).finally(() => {
       if (acknowledgingThreadCutoff.current === cutoffKey) acknowledgingThreadCutoff.current = '';
     });
-  }, [activeQuestionId, activeTab, activeThread, loadQuestions, pageVisible, threadDetailVisible, toast]);
+    return () => controller.abort();
+  }, [activeQuestionId, activeTab, activeThread, listLoadError, loadQuestions, notifyRequestError, pageVisible, threadDetailVisible]);
 
   const reloadInitialData = useCallback(async (preserveCurrent = false) => {
     const request = ++reloadRequest.current;
     setLoading(true);
-    setLoadError('');
+    setLoadError(null);
+    setListLoadError(null);
     const refreshOptions: ListLoadOptions = preserveCurrent ? { refreshLoadedPages: true } : {};
     const results = await Promise.all([
       loadContacts(),
@@ -714,8 +753,7 @@ export const MessageCenterPage: React.FC = () => {
       loadQuestions(1, false, false, refreshOptions),
     ]);
     if (request !== reloadRequest.current) return;
-    if (results.some((success) => !success)) setLoadError('部分消息中心数据加载失败，请检查网络后重试。');
-    else setListLoadError('');
+    if (results.every(Boolean)) setListLoadError(null);
     setLoading(false);
     setInitialLoad(false);
   }, [loadContacts, loadConversations, loadNotices, loadQuestions]);
@@ -739,7 +777,7 @@ export const MessageCenterPage: React.FC = () => {
         loadNotices(),
         loadQuestions(),
       ]);
-      if (active) setListLoadError(results.every(Boolean) ? '' : '当前筛选结果加载失败，正在显示上次结果。');
+      if (active && results.every(Boolean)) setListLoadError(null);
     };
     void load();
     return () => { active = false; };
@@ -820,12 +858,13 @@ export const MessageCenterPage: React.FC = () => {
         if (request === contactSearchRequest.current) {
           setGlobalSearchResults(list.filter((c) => !availableContacts.some((a) => a.id === c.id)));
         }
-      } catch {
+      } catch (error) {
         if (request === contactSearchRequest.current) setGlobalSearchResults([]);
+        if (request === contactSearchRequest.current) notifyRequestError(error, '用户搜索失败');
       }
     }, 300);
     return () => clearTimeout(timer);
-  }, [contactSearch, availableContacts]);
+  }, [contactSearch, availableContacts, notifyRequestError]);
 
   const allSearchResults = useMemo(() => {
     const local = filteredAvailableContacts;
@@ -874,11 +913,11 @@ export const MessageCenterPage: React.FC = () => {
       }
       await loadConversations(1, false, false, { refreshLoadedPages: true });
       refreshMessageCenterSummaryAfterMutation();
-    } catch {
-      toast({ type: 'error', title: '发送私信失败，请稍后重试' });
+    } catch (error) {
+      notifyRequestError(error, '发送私信失败，请稍后重试');
     }
     finally { setSendingMsg(false); }
-  }, [activeConv, activeConvId, messageAttachments, messageDraft, messageUploading, sendingMsg, loadConversationDetail, loadConversations, toast]);
+  }, [activeConv, activeConvId, messageAttachments, messageDraft, messageUploading, sendingMsg, loadConversationDetail, loadConversations, notifyRequestError]);
 
   const loadOlderConversationMessages = useCallback(async () => {
     if (!activeConv || activeConv.id !== activeConvIDRef.current || loadingOlderMessagesRef.current || conversationSearchLoadingRef.current || activeConv.messages.length >= activeConv.messages_total) return;
@@ -929,15 +968,17 @@ export const MessageCenterPage: React.FC = () => {
         messages_total: messagesTotal,
         messages_page: nextPage,
       } : current);
-    } catch {
-      if (request === conversationRequest.current && activeConvIDRef.current === conversationID) toast({ type: 'error', title: '加载更早私信失败，请稍后重试' });
+    } catch (error) {
+      if (request === conversationRequest.current && activeConvIDRef.current === conversationID) {
+        notifyRequestError(error, '加载更早私信失败，请稍后重试');
+      }
     } finally {
       if (activeConvIDRef.current === conversationID) {
         loadingOlderMessagesRef.current = false;
         setLoadingOlderMessages(false);
       }
     }
-  }, [activeConv, toast]);
+  }, [activeConv, notifyRequestError]);
 
   const toggleConversationSearch = useCallback(async () => {
     if (!activeConv || activeConv.id !== activeConvIDRef.current || conversationSearchLoadingRef.current) return;
@@ -971,9 +1012,9 @@ export const MessageCenterPage: React.FC = () => {
         messages_page: history.page,
         messages_page_size: pageSize,
       } : current);
-    } catch {
+    } catch (error) {
       if (request === conversationRequest.current && activeConvIDRef.current === conversationID) {
-        setConversationSearchError('完整聊天记录加载失败，当前仅搜索已加载的消息。');
+        setConversationSearchError(formatAppErrorDescription(toAppError(error, '完整聊天记录加载失败，当前仅搜索已加载的消息')));
       }
     } finally {
       if (activeConvIDRef.current === conversationID) {
@@ -988,39 +1029,36 @@ export const MessageCenterPage: React.FC = () => {
     loadingMoreListRef.current = true;
     setLoadingMoreList('conversations');
     try {
-      const loaded = await loadConversations(conversationPage + 1, true);
-      if (!loaded) toast({ type: 'error', title: '加载更多私信失败，请稍后重试' });
+      await loadConversations(conversationPage + 1, true);
     } finally {
       loadingMoreListRef.current = false;
       setLoadingMoreList('');
     }
-  }, [convItems.length, conversationTotal, loadConversations, conversationPage, toast]);
+  }, [convItems.length, conversationTotal, loadConversations, conversationPage]);
 
   const loadMoreNotices = useCallback(async () => {
     if (loadingMoreListRef.current || notices.length >= noticeTotal) return;
     loadingMoreListRef.current = true;
     setLoadingMoreList('notices');
     try {
-      const loaded = await loadNotices(noticePage + 1, true);
-      if (!loaded) toast({ type: 'error', title: '加载更多通知失败，请稍后重试' });
+      await loadNotices(noticePage + 1, true);
     } finally {
       loadingMoreListRef.current = false;
       setLoadingMoreList('');
     }
-  }, [notices.length, noticeTotal, loadNotices, noticePage, toast]);
+  }, [notices.length, noticeTotal, loadNotices, noticePage]);
 
   const loadMoreQuestions = useCallback(async () => {
     if (loadingMoreListRef.current || questions.length >= questionTotal) return;
     loadingMoreListRef.current = true;
     setLoadingMoreList('questions');
     try {
-      const loaded = await loadQuestions(questionPage + 1, true);
-      if (!loaded) toast({ type: 'error', title: '加载更多提问失败，请稍后重试' });
+      await loadQuestions(questionPage + 1, true);
     } finally {
       loadingMoreListRef.current = false;
       setLoadingMoreList('');
     }
-  }, [questions.length, questionTotal, loadQuestions, questionPage, toast]);
+  }, [questions.length, questionTotal, loadQuestions, questionPage]);
 
   const createConversation = useCallback(async () => {
     if (!selectedTeacherId || creatingConv) return;
@@ -1040,11 +1078,11 @@ export const MessageCenterPage: React.FC = () => {
       await loadConversations();
       activateConversation(detail.id);
       refreshMessageCenterSummaryAfterMutation();
-    } catch {
-      toast({ type: 'error', title: '创建私信失败，请稍后重试' });
+    } catch (error) {
+      notifyRequestError(error, '创建私信失败，请稍后重试');
     }
     finally { setCreatingConv(false); }
-  }, [activateConversation, selectedTeacherId, newConvAttachments, newConvDraft, creatingConv, loadConversations, contacts, toast]);
+  }, [activateConversation, selectedTeacherId, newConvAttachments, newConvDraft, creatingConv, loadConversations, contacts, notifyRequestError]);
 
   const archiveSelectedConversations = useCallback(async () => {
     if (archivingConversations || selectedConversationIds.length === 0) return;
@@ -1075,7 +1113,11 @@ export const MessageCenterPage: React.FC = () => {
 
       if (failedIDs.length > 0) {
         setSelectedConversationIds(failedIDs);
-        toast({ type: 'error', title: archivedIDs.size > 0 ? '部分私信归档失败，请重试' : '归档私信失败，请稍后重试' });
+        const firstFailure = results.find((result) => result.status === 'rejected');
+        notifyRequestError(
+          firstFailure?.status === 'rejected' ? firstFailure.reason : null,
+          archivedIDs.size > 0 ? '部分私信归档失败，请重试' : '归档私信失败，请稍后重试',
+        );
       } else {
         setSelectedConversationIds([]);
         setConversationSelectionMode(false);
@@ -1083,7 +1125,7 @@ export const MessageCenterPage: React.FC = () => {
     } finally {
       setArchivingConversations(false);
     }
-  }, [activateConversation, archivingConversations, clearItemDeepLink, loadConversations, selectedConversationIds, toast]);
+  }, [activateConversation, archivingConversations, clearItemDeepLink, loadConversations, notifyRequestError, selectedConversationIds]);
 
   // ---- actions: notices -----------------------------------------------
   const confirmNotice = useCallback(async (id: string) => {
@@ -1095,13 +1137,13 @@ export const MessageCenterPage: React.FC = () => {
       await noticeService.confirm(id);
       setActiveNotice((current) => current?.id === id ? { ...current, confirmed: true } : current);
       const loaded = await loadNotices(1, false, false, { refreshLoadedPages: true });
-      if (!loaded) setListLoadError('通知列表刷新失败，请稍后重试。');
+      if (!loaded && !listLoadError) setListLoadError(toAppError(null, '通知列表刷新失败，请稍后重试'));
       refreshMessageCenterSummaryAfterMutation();
-    } catch {
-      toast({ type: 'error', title: '确认通知失败，请稍后重试' });
+    } catch (error) {
+      notifyRequestError(error, '确认通知失败，请稍后重试');
     }
     finally { setConfirming(''); }
-  }, [confirming, loadNotices, toast]);
+  }, [confirming, listLoadError, loadNotices, notifyRequestError]);
 
   // ---- actions: questions ---------------------------------------------
   const createQuestion = useCallback(async () => {
@@ -1114,22 +1156,22 @@ export const MessageCenterPage: React.FC = () => {
       setQuestionAttachments([]);
       await loadQuestions(1, false, false, { refreshLoadedPages: true });
       refreshMessageCenterSummaryAfterMutation();
-    } catch {
-      toast({ type: 'error', title: '提交提问失败，请稍后重试' });
+    } catch (error) {
+      notifyRequestError(error, '提交提问失败，请稍后重试');
     }
     finally { setSubmittingQ(false); }
-  }, [questionAttachments, questionDraft, questionUploading, selectedQTeacherId, submittingQ, loadQuestions, toast]);
+  }, [questionAttachments, questionDraft, questionUploading, selectedQTeacherId, submittingQ, loadQuestions, notifyRequestError]);
 
   const loadMistakesForImport = useCallback(async () => {
     setLoadingMistakes(true);
     try {
       const res = await fetchMistakes({ page: 1, pageSize: 50 });
       setMistakes(res.items);
-    } catch {
-      toast({ type: 'error', title: '错题列表加载失败，请稍后重试' });
+    } catch (error) {
+      notifyRequestError(error, '错题列表加载失败，请稍后重试');
     }
     finally { setLoadingMistakes(false); }
-  }, [toast]);
+  }, [notifyRequestError]);
 
   const importQuestion = useCallback(async () => {
     if (importing) return;
@@ -1160,11 +1202,11 @@ export const MessageCenterPage: React.FC = () => {
       setImportOpen(false);
       await loadQuestions(1, false, false, { refreshLoadedPages: true });
       refreshMessageCenterSummaryAfterMutation();
-    } catch {
-      toast({ type: 'error', title: '导入提问失败，请稍后重试' });
+    } catch (error) {
+      notifyRequestError(error, '导入提问失败，请稍后重试');
     }
     finally { setImporting(false); }
-  }, [importing, mistakes, selectedMistakeId, importTeacherId, importQuestionText, loadQuestions, toast]);
+  }, [importing, mistakes, selectedMistakeId, importTeacherId, importQuestionText, loadQuestions, notifyRequestError]);
 
   const createFollowUp = useCallback(async () => {
     if ((!followUpDraft.trim() && followUpAttachments.length === 0) || !activeThread || activeThread.id !== activeQuestionId || sendingFollowUp || followUpUploading) return;
@@ -1191,11 +1233,11 @@ export const MessageCenterPage: React.FC = () => {
       if (activeQuestionIDRef.current === threadID) await loadThreadDetail(threadID, true);
       await loadQuestions(1, false, false, { refreshLoadedPages: true });
       refreshMessageCenterSummaryAfterMutation();
-    } catch {
-      toast({ type: 'error', title: '发送追问失败，请稍后重试' });
+    } catch (error) {
+      notifyRequestError(error, '发送追问失败，请稍后重试');
     }
     finally { setSendingFollowUp(false); }
-  }, [followUpAttachments, followUpDraft, followUpUploading, activeQuestionId, activeThread, sendingFollowUp, loadThreadDetail, loadQuestions, toast]);
+  }, [followUpAttachments, followUpDraft, followUpUploading, activeQuestionId, activeThread, sendingFollowUp, loadThreadDetail, loadQuestions, notifyRequestError]);
 
   const loadOlderThreadMessages = useCallback(async () => {
     if (!activeThread || activeThread.id !== activeQuestionIDRef.current || loadingOlderThreadMessagesRef.current || activeThread.messages.length >= activeThread.messages_total) return;
@@ -1237,15 +1279,17 @@ export const MessageCenterPage: React.FC = () => {
         messages_total: messagesTotal,
         messages_page: nextPage,
       } : current);
-    } catch {
-      if (request === threadRequest.current && activeQuestionIDRef.current === threadID) toast({ type: 'error', title: '加载更早答疑消息失败，请稍后重试' });
+    } catch (error) {
+      if (request === threadRequest.current && activeQuestionIDRef.current === threadID) {
+        notifyRequestError(error, '加载更早答疑消息失败，请稍后重试');
+      }
     } finally {
       if (activeQuestionIDRef.current === threadID) {
         loadingOlderThreadMessagesRef.current = false;
         setLoadingOlderThreadMessages(false);
       }
     }
-  }, [activeThread, toast]);
+  }, [activeThread, notifyRequestError]);
 
   const selectQuestion = useCallback((id: string) => {
     clearItemDeepLink('questions');
@@ -1287,7 +1331,7 @@ export const MessageCenterPage: React.FC = () => {
     if (activeTab === 'private') loaded = await loadConversations(1, false, false, { refreshLoadedPages: true });
     if (activeTab === 'notices') loaded = await loadNotices(1, false, false, { refreshLoadedPages: true });
     if (activeTab === 'questions') loaded = await loadQuestions(1, false, false, { refreshLoadedPages: true });
-    setListLoadError(loaded ? '' : '当前列表加载失败，请稍后重试。');
+    if (loaded) setListLoadError(null);
   }, [activeTab, loadConversations, loadNotices, loadQuestions]);
 
   const visibleConversationMessages = useMemo(() => {
@@ -1330,9 +1374,32 @@ export const MessageCenterPage: React.FC = () => {
           </div>}
         </div>
 
-        {loadError && <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200"><span>{loadError}</span><Button variant="outline" size="sm" onClick={() => void reloadInitialData(true)} disabled={loading}>重新加载</Button></div>}
-        {listLoadError && <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200"><span>{listLoadError}</span><Button variant="outline" size="sm" onClick={() => void retryActiveList()}>重试</Button></div>}
-        {summaryError && <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200"><span>{summary ? '消息计数刷新失败，当前显示上次结果。' : '消息计数加载失败，页签角标暂不可用。'}</span><Button variant="outline" size="sm" onClick={() => void refreshSummary().catch(() => undefined)} disabled={summaryRefreshing}>重试</Button></div>}
+        {loadError ? (
+          <RequestErrorNotice
+            error={loadError}
+            onRetry={() => void reloadInitialData(true)}
+            onRefresh={() => void reloadInitialData(true)}
+            onDismiss={() => setLoadError(null)}
+            className="mb-4"
+          />
+        ) : null}
+        {listLoadError ? (
+          <RequestErrorNotice
+            error={listLoadError}
+            onRetry={() => void retryActiveList()}
+            onRefresh={() => void retryActiveList()}
+            onDismiss={() => setListLoadError(null)}
+            className="mb-4"
+          />
+        ) : null}
+        {summaryError ? (
+          <RequestErrorNotice
+            error={toAppError(summaryError, summary ? '消息计数刷新失败，当前显示上次结果' : '消息计数加载失败，页签角标暂不可用')}
+            onRetry={() => void refreshSummary().catch(() => undefined)}
+            onRefresh={() => void refreshSummary().catch(() => undefined)}
+            className="mb-4"
+          />
+        ) : null}
 
         <Tabs
           defaultValue="private"
@@ -1447,10 +1514,14 @@ export const MessageCenterPage: React.FC = () => {
                       <Button variant="ghost" size="sm" className="lg:hidden" onClick={showConversationList}><ArrowLeft className="mr-1 h-4 w-4" />返回列表</Button>
                     </div>
                   ) : conversationDetailError ? (
-                    <div className="flex min-h-64 flex-col items-center justify-center gap-3 p-6 text-center text-sm text-surface-500 dark:text-surface-400">
-                      <span>{conversationDetailError}</span>
+                    <div className="flex min-h-64 flex-col items-center justify-center gap-3 p-6">
+                      <RequestErrorNotice
+                        error={conversationDetailError}
+                        onRetry={() => activeConvId && void loadConversationDetail(activeConvId)}
+                        onRefresh={() => activeConvId && void loadConversationDetail(activeConvId)}
+                        className="w-full max-w-lg"
+                      />
                       <div className="flex gap-2">
-                        <Button variant="outline" size="sm" onClick={() => activeConvId && void loadConversationDetail(activeConvId)}>重新加载</Button>
                         <Button variant="ghost" size="sm" className="lg:hidden" onClick={showConversationList}><ArrowLeft className="mr-1 h-4 w-4" />返回列表</Button>
                       </div>
                     </div>
@@ -1531,6 +1602,7 @@ export const MessageCenterPage: React.FC = () => {
                           }}
                           onUploadingChange={setMessageUploading}
                           onError={(message) => toast({ type: 'error', title: message })}
+                          onFeedback={(feedback) => toast(feedback)}
                           onSend={sendPrivateMessage}
                           placeholder="输入给老师的消息"
                           sendLabel="发送私信"
@@ -1591,9 +1663,13 @@ export const MessageCenterPage: React.FC = () => {
                       <Loader2 className="h-6 w-6 animate-spin text-primary-500" />
                     </div>
                   ) : noticeDetailError ? (
-                    <div className="flex min-h-48 flex-col items-center justify-center gap-3 text-center text-sm text-surface-500 dark:text-surface-400">
-                      <span>{noticeDetailError}</span>
-                      <Button variant="outline" size="sm" onClick={() => activeNoticeId && loadNoticeDetail(activeNoticeId)}>重新加载</Button>
+                    <div className="flex min-h-48 items-center justify-center">
+                      <RequestErrorNotice
+                        error={noticeDetailError}
+                        onRetry={() => activeNoticeId && void loadNoticeDetail(activeNoticeId)}
+                        onRefresh={() => activeNoticeId && void loadNoticeDetail(activeNoticeId)}
+                        className="w-full max-w-lg"
+                      />
                     </div>
                   ) : activeNotice ? (
                     <div className="space-y-5">
@@ -1643,6 +1719,7 @@ export const MessageCenterPage: React.FC = () => {
                       onAttachmentsChange={setQuestionAttachments}
                       onUploadingChange={setQuestionUploading}
                       onError={(message) => toast({ type: 'error', title: message })}
+                      onFeedback={(feedback) => toast(feedback)}
                       onSend={createQuestion}
                       placeholder="输入你的问题..."
                       sendLabel="提交问题"
@@ -1680,9 +1757,13 @@ export const MessageCenterPage: React.FC = () => {
                       <Loader2 className="h-6 w-6 animate-spin text-primary-500" />
                     </div>
                   ) : threadDetailError ? (
-                    <div className="flex min-h-48 flex-col items-center justify-center gap-3 text-center text-sm text-surface-500 dark:text-surface-400">
-                      <span>{threadDetailError}</span>
-                      <Button variant="outline" size="sm" onClick={() => activeQuestionId && void loadThreadDetail(activeQuestionId)}>重新加载</Button>
+                    <div className="flex min-h-48 items-center justify-center">
+                      <RequestErrorNotice
+                        error={threadDetailError}
+                        onRetry={() => activeQuestionId && void loadThreadDetail(activeQuestionId)}
+                        onRefresh={() => activeQuestionId && void loadThreadDetail(activeQuestionId)}
+                        className="w-full max-w-lg"
+                      />
                     </div>
                   ) : activeThread && activeThread.id === activeQuestionId ? (
                     <div className="space-y-5">
@@ -1732,6 +1813,7 @@ export const MessageCenterPage: React.FC = () => {
                           }}
                           onUploadingChange={setFollowUpUploading}
                           onError={(message) => toast({ type: 'error', title: message })}
+                          onFeedback={(feedback) => toast(feedback)}
                           onSend={createFollowUp}
                           placeholder="继续追问这个问题"
                           sendLabel="追问"
@@ -1884,6 +1966,7 @@ export const MessageCenterPage: React.FC = () => {
               onChange={setNewConvAttachments}
               onUploadingChange={setNewConvUploading}
               onError={(message) => toast({ type: 'error', title: message })}
+              onFeedback={(feedback) => toast(feedback)}
               disabled={creatingConv}
             />
             <div className="flex justify-end gap-2">

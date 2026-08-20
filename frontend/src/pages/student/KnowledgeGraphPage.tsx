@@ -18,12 +18,12 @@ import {
   SlidersHorizontal,
 } from 'lucide-react';
 import { MainLayout } from '@/components/layout/MainLayout';
-import { Button } from '@/components/ui/Button';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { useToast } from '@/components/ui/Toast';
 import { buildKnowledgeGraphIndex } from '@/libs/graph';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, toAppErrorFeedback, type AppError } from '@/libs/http/apiClient';
 import { cn } from '@/libs/utils/cn';
 import {
   KnowledgeGraph,
@@ -79,12 +79,14 @@ export const KnowledgeGraphPage = () => {
   const focusNodeId = searchParams.get('focus')?.trim() || null;
   const appliedFocusNodeId = useRef<string | null>(null);
   const { toast } = useToast();
-  const { nodes, edges, statistics, filters, selectedNodeId, loadingState, error } = useAppSelector(
+  const { nodes, edges, statistics, filters, selectedNodeId, loadingState, requestError } = useAppSelector(
     (state) => state.knowledge,
   );
 
   const [localSearchTerm, setLocalSearchTerm] = useState('');
   const [chapterOptions, setChapterOptions] = useState([{ value: '', label: '全部章节' }]);
+  const [chapterError, setChapterError] = useState<AppError | null>(null);
+  const [chapterRequestKey, setChapterRequestKey] = useState(0);
   const [masteryFilter, setMasteryFilter] = useState<MasteryFilter>('all');
   const [experienceMode, setExperienceMode] = useState<KnowledgeGraphExperienceMode>('explore');
   const [viewMode, setViewMode] = useState<KnowledgeGraphViewMode>(readStoredKnowledgeGraphViewMode);
@@ -94,10 +96,10 @@ export const KnowledgeGraphPage = () => {
   const [targetNodeId, setTargetNodeId] = useState<string | null>(null);
   const [goalLoading, setGoalLoading] = useState(true);
   const [goalSaving, setGoalSaving] = useState(false);
-  const [goalError, setGoalError] = useState<string | null>(null);
+  const [goalError, setGoalError] = useState<AppError | null>(null);
   const [path, setPath] = useState<LearningPathItem[]>([]);
   const [pathLoading, setPathLoading] = useState(false);
-  const [pathError, setPathError] = useState<string | null>(null);
+  const [pathError, setPathError] = useState<AppError | null>(null);
   const [pathRequestVersion, setPathRequestVersion] = useState(0);
 
   useEffect(() => {
@@ -109,7 +111,7 @@ export const KnowledgeGraphPage = () => {
       })
       .catch((requestError) => {
         if (!controller.signal.aborted) {
-          setGoalError(getApiErrorMessage(requestError, '学习目标加载失败'));
+          setGoalError(toAppError(requestError, '学习目标加载失败'));
         }
       })
       .finally(() => {
@@ -119,18 +121,31 @@ export const KnowledgeGraphPage = () => {
   }, []);
 
   useEffect(() => {
-    void knowledgeService.getChapters()
+    const controller = new AbortController();
+    setChapterError(null);
+    void knowledgeService.getChapters(controller.signal)
       .then((chapters) => {
+        if (controller.signal.aborted) return;
         setChapterOptions([
           { value: '', label: '全部章节' },
           ...chapters.map((chapter) => ({ value: chapter, label: chapter })),
         ]);
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setChapterError(toAppError(error, '章节筛选加载失败'));
+        }
+      });
+    return () => controller.abort();
+  }, [chapterRequestKey]);
+
+  const retryChapters = useCallback(() => {
+    setChapterRequestKey((value) => value + 1);
   }, []);
 
   useEffect(() => {
-    dispatch(fetchKnowledgeGraph(filters));
+    const request = dispatch(fetchKnowledgeGraph(filters));
+    return () => request.abort();
   }, [dispatch, filters]);
 
   useEffect(() => {
@@ -156,7 +171,7 @@ export const KnowledgeGraphPage = () => {
       .then((response) => setPath(response.path))
       .catch((requestError) => {
         if (!controller.signal.aborted) {
-          setPathError(getApiErrorMessage(requestError, '目标路径加载失败'));
+          setPathError(toAppError(requestError, '目标路径加载失败'));
         }
       })
       .finally(() => {
@@ -244,9 +259,10 @@ export const KnowledgeGraphPage = () => {
       toast({ type: 'success', title: '学习目标已更新', description: node.label });
     } catch (requestError) {
       setTargetNodeId(previousTarget);
-      const message = getApiErrorMessage(requestError, '学习目标保存失败');
-      setGoalError(message);
-      toast({ type: 'error', title: message });
+      const appError = toAppError(requestError, '学习目标保存失败');
+      setGoalError(appError);
+      const feedback = toAppErrorFeedback(appError);
+      if (feedback) toast(feedback);
     } finally {
       setGoalSaving(false);
     }
@@ -354,15 +370,28 @@ export const KnowledgeGraphPage = () => {
           onMasteryChange={(value) => setMasteryFilter(value as MasteryFilter)}
         />
 
+        {chapterError ? (
+          <RequestErrorNotice
+            error={chapterError}
+            onRetry={retryChapters}
+            onRefresh={retryChapters}
+            onDismiss={() => setChapterError(null)}
+            className="mb-3"
+          />
+        ) : null}
+
         {initialLoading ? (
           <div className="flex min-h-[560px] flex-1 items-center justify-center rounded-md border border-surface-200 bg-white text-sm text-surface-500 dark:border-surface-700 dark:bg-surface-900 dark:text-surface-400">
             正在加载知识星图...
           </div>
         ) : initialError ? (
-          <div className="flex min-h-[560px] flex-1 flex-col items-center justify-center gap-3 rounded-md border border-surface-200 bg-white px-6 text-center dark:border-surface-700 dark:bg-surface-900">
-            <p className="font-medium text-surface-900 dark:text-surface-100">知识星图加载失败</p>
-            <p className="text-sm text-surface-500 dark:text-surface-400">{error}</p>
-            <Button size="sm" onClick={() => dispatch(fetchKnowledgeGraph(filters))}>重新加载</Button>
+          <div className="flex min-h-[560px] flex-1 items-center justify-center rounded-md border border-surface-200 bg-white px-6 dark:border-surface-700 dark:bg-surface-900">
+            <RequestErrorNotice
+              error={requestError ?? toAppError(null, '知识星图加载失败')}
+              onRetry={() => void dispatch(fetchKnowledgeGraph(filters))}
+              onRefresh={() => void dispatch(fetchKnowledgeGraph(filters))}
+              className="w-full max-w-xl"
+            />
           </div>
         ) : (
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_360px]">

@@ -6,26 +6,49 @@
 
 import { logger } from '../utils/logger';
 import { authTokenStorage } from '../auth/tokenStorage';
+import {
+  isRequestCancelled,
+  parseRetryAfterSeconds,
+  toAppError,
+  type AppError,
+} from './appError';
 
 const sseLogger = logger.createContextLogger('SSE');
 const MAX_SSE_BUFFER_CHARS = 1024 * 1024;
 const MAX_SSE_EVENT_DATA_CHARS = 1024 * 1024;
 
-export interface SSEError {
+export type SSEError = AppError & { code: string };
+
+interface StructuredSSEError {
   code: string;
   message: string;
+  requestId?: string;
+  retryAfter?: number;
+  source: 'sse';
   status?: number;
 }
 
+type SSEResponseMetadata = Pick<StructuredSSEError, 'requestId' | 'retryAfter'>;
+
 class SSERequestError extends Error {
   readonly code: string;
+  readonly requestId?: string;
+  readonly retryAfter?: number;
   readonly status: number;
 
-  constructor(code: string, message: string, status: number) {
+  constructor(
+    code: string,
+    message: string,
+    status: number,
+    requestId?: string,
+    retryAfter?: number
+  ) {
     super(message);
     this.name = 'SSERequestError';
     this.code = code;
     this.status = status;
+    this.requestId = requestId;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -80,6 +103,7 @@ export function createSSEConnection(
   let taskId: string | null = null;
   let abortController: AbortController | null = new AbortController();
   let isClosed = false;
+  let responseMetadata: SSEResponseMetadata = {};
 
   const close = () => {
     if (isClosed) return;
@@ -106,16 +130,20 @@ export function createSSEConnection(
         signal: abortController?.signal,
         credentials: 'include',
       });
+      responseMetadata = {
+        requestId: response.headers.get('X-Request-ID')?.trim() || undefined,
+        retryAfter: parseRetryAfterSeconds(response.headers.get('Retry-After')),
+      };
 
       if (!response.ok) {
         const rawError: unknown = await response.json().catch(() => ({}));
         const errorData = isRecord(rawError) ? rawError : {};
         throw new SSERequestError(
-          stringValue(errorData.code, `HTTP_${response.status}`),
-          stringValue(errorData.message) ||
-            stringValue(errorData.detail) ||
-            `HTTP ${response.status}`,
-          response.status
+          sseErrorCode(errorData, `HTTP_${response.status}`),
+          sseErrorMessage(errorData) || `HTTP ${response.status}`,
+          response.status,
+          responseMetadata.requestId,
+          responseMetadata.retryAfter
         );
       }
 
@@ -143,7 +171,7 @@ export function createSSEConnection(
           if (currentData) {
             processEvent(currentEvent, currentData, handlers, (id) => {
               taskId = id;
-            });
+            }, responseMetadata);
           }
           break;
         }
@@ -168,30 +196,35 @@ export function createSSEConnection(
             // 空行表示事件结束
             processEvent(currentEvent, currentData, handlers, (id) => {
               taskId = id;
-            });
+            }, responseMetadata);
             currentEvent = '';
             currentData = '';
           }
         }
       }
     } catch (error) {
-      if ((error as Error).name === 'AbortError') {
+      if (error instanceof Error && error.name === 'AbortError') {
         sseLogger.debug('SSE connection aborted');
         return;
       }
 
       sseLogger.error('SSE connection error', error);
       if (error instanceof SSERequestError) {
-        handlers.onError?.({
+        handlers.onError?.(asSSEError({
           code: error.code,
           message: error.message,
           status: error.status,
-        });
+          requestId: error.requestId,
+          retryAfter: error.retryAfter,
+          source: 'sse',
+        }));
       } else {
-        handlers.onError?.({
+        handlers.onError?.(asSSEError({
           code: 'CONNECTION_ERROR',
-          message: (error as Error).message || '连接失败',
-        });
+          message: '连接中断，请检查网络后重试',
+          ...responseMetadata,
+          source: 'sse',
+        }));
       }
     } finally {
       close();
@@ -224,6 +257,52 @@ function stringValue(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value : fallback;
 }
 
+function asSSEError(error: StructuredSSEError): SSEError {
+  return { ...toAppError(error), code: error.code };
+}
+
+function sseErrorCode(payload: Record<string, unknown>, fallback: string): string {
+  const nested = isRecord(payload.error) ? payload.error : undefined;
+  return stringValue(payload.code)
+    || (nested ? stringValue(nested.code) : '')
+    || fallback;
+}
+
+function sseErrorMessage(payload: Record<string, unknown>): string {
+  const nested = isRecord(payload.error) ? payload.error : undefined;
+  const detail = payload.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail.trim();
+  if (Array.isArray(detail)) {
+    for (const item of detail) {
+      if (!isRecord(item)) continue;
+      const message = stringValue(item.msg).trim();
+      if (message) return message;
+    }
+  }
+  return stringValue(payload.message).trim()
+    || (nested ? stringValue(nested.message).trim() : '');
+}
+
+function metadataForPayload(
+  payload: Record<string, unknown>,
+  fallback: SSEResponseMetadata
+): SSEResponseMetadata {
+  const nested = isRecord(payload.error) ? payload.error : undefined;
+  const requestId = stringValue(payload.request_id).trim()
+    || stringValue(payload.requestId).trim()
+    || (nested
+      ? stringValue(nested.request_id).trim() || stringValue(nested.requestId).trim()
+      : '')
+    || fallback.requestId;
+  const retryAfterValue = payload.retry_after ?? payload.retryAfter
+    ?? nested?.retry_after ?? nested?.retryAfter;
+  const retryAfter = parseRetryAfterSeconds(retryAfterValue) ?? fallback.retryAfter;
+  return {
+    ...(requestId ? { requestId } : {}),
+    ...(retryAfter !== undefined ? { retryAfter } : {}),
+  };
+}
+
 function nullableStringValue(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
@@ -252,7 +331,8 @@ function processEvent(
   event: string,
   data: string,
   handlers: SSEHandlers,
-  setTaskId: (id: string) => void
+  setTaskId: (id: string) => void,
+  metadata: SSEResponseMetadata
 ): void {
   try {
     const parsed: unknown = JSON.parse(data);
@@ -283,10 +363,12 @@ function processEvent(
         break;
 
       case 'error':
-        handlers.onError?.({
-          code: stringValue(parsed.code, 'UNKNOWN_ERROR'),
-          message: stringValue(parsed.message, '未知错误'),
-        });
+        handlers.onError?.(asSSEError({
+          code: sseErrorCode(parsed, 'UNKNOWN_ERROR'),
+          message: sseErrorMessage(parsed) || '未知错误',
+          ...metadataForPayload(parsed, metadata),
+          source: 'sse',
+        }));
         break;
 
       case 'cancelled':
@@ -300,10 +382,12 @@ function processEvent(
         if (isStreamChunkType(stringValue(parsed.type)) || parsed.type === 'done') {
           handleMessageEvent(parsed, handlers);
         } else if (parsed.type === 'error') {
-          handlers.onError?.({
-            code: stringValue(parsed.code, 'UNKNOWN_ERROR'),
-            message: stringValue(parsed.message, '未知错误'),
-          });
+          handlers.onError?.(asSSEError({
+            code: sseErrorCode(parsed, 'UNKNOWN_ERROR'),
+            message: sseErrorMessage(parsed) || '未知错误',
+            ...metadataForPayload(parsed, metadata),
+            source: 'sse',
+          }));
         }
     }
   } catch (e) {
@@ -321,7 +405,7 @@ function processEvent(
  * @param taskId - 任务 ID
  * @returns 是否成功
  */
-export async function cancelTask(taskId: string): Promise<boolean> {
+export async function cancelTask(taskId: string, signal?: AbortSignal): Promise<boolean> {
   try {
     const normalizedTaskId = taskId.trim();
     if (!normalizedTaskId) {
@@ -338,16 +422,39 @@ export async function cancelTask(taskId: string): Promise<boolean> {
         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
       },
       credentials: 'include',
+      signal,
     });
 
+    const requestId = response.headers.get('X-Request-ID')?.trim() || undefined;
+    const retryAfter = parseRetryAfterSeconds(response.headers.get('Retry-After'));
+    const rawResult: unknown = await response.json().catch(() => ({}));
+    const result = isRecord(rawResult) ? rawResult : {};
+
     if (!response.ok) {
-      return false;
+      throw toAppError({
+        status: response.status,
+        code: stringValue(result.code, `HTTP_${response.status}`),
+        message: stringValue(result.message)
+          || stringValue(result.detail)
+          || '取消任务失败',
+        requestId,
+        retryAfter,
+        source: 'http',
+      }, '取消任务失败');
     }
 
-    const result = await response.json();
     return result.success === true;
   } catch (error) {
+    if (isRequestCancelled(error)) throw error;
     sseLogger.error('Failed to cancel task', { taskId, error });
-    return false;
+    const appError = toAppError(error, '取消任务失败');
+    if (appError.kind === 'unknown') {
+      throw toAppError({
+        code: 'NETWORK_ERROR',
+        message: '无法连接到服务器，请检查网络',
+        source: 'http',
+      }, '取消任务失败');
+    }
+    throw appError;
   }
 }

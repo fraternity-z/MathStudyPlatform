@@ -35,24 +35,25 @@ export const classService = {
     }
   },
 
-  async listTeacherClasses(): Promise<ClassListResponse> {
+  async listTeacherClasses(signal?: AbortSignal): Promise<ClassListResponse> {
     try {
-      const response = await apiClient.get<ClassListResponse>(`${BASE_PATH}/teacher`);
+      const response = await apiClient.get<ClassListResponse>(`${BASE_PATH}/teacher`, { signal });
       return response.data;
     } catch (error) {
-      classLogger.error('获取班级列表失败', error);
+      if (!signal?.aborted) classLogger.error('获取班级列表失败', error);
       throw error;
     }
   },
 
-  async getTeacherClassDetail(classId: string): Promise<ClassDetailResponse> {
+  async getTeacherClassDetail(classId: string, signal?: AbortSignal): Promise<ClassDetailResponse> {
     try {
       const response = await apiClient.get<ClassDetailResponse>(
-        `${BASE_PATH}/teacher/${classId}`
+        `${BASE_PATH}/teacher/${classId}`,
+        { signal }
       );
       return response.data;
     } catch (error) {
-      classLogger.error('获取班级详情失败', { classId, error });
+      if (!signal?.aborted) classLogger.error('获取班级详情失败', { classId, error });
       throw error;
     }
   },
@@ -81,14 +82,15 @@ export const classService = {
     }
   },
 
-  async lookupClass(code: string): Promise<ClassLookupResponse> {
+  async lookupClass(code: string, signal?: AbortSignal): Promise<ClassLookupResponse> {
     try {
       const response = await apiClient.get<ClassLookupResponse>(`${BASE_PATH}/lookup`, {
         params: { code },
+        signal,
       });
       return response.data;
     } catch (error) {
-      classLogger.error('查询班级失败', { code, error });
+      if (!signal?.aborted) classLogger.error('查询班级失败', { code, error });
       throw error;
     }
   },
@@ -116,12 +118,12 @@ export const classService = {
     }
   },
 
-  async getMyClass(): Promise<StudentClassResponse> {
+  async getMyClass(signal?: AbortSignal): Promise<StudentClassResponse> {
     try {
-      const response = await apiClient.get<StudentClassResponse>(`${BASE_PATH}/me`);
+      const response = await apiClient.get<StudentClassResponse>(`${BASE_PATH}/me`, { signal });
       return response.data;
     } catch (error) {
-      classLogger.error('获取当前班级失败', error);
+      if (!signal?.aborted) classLogger.error('获取当前班级失败', error);
       throw error;
     }
   },

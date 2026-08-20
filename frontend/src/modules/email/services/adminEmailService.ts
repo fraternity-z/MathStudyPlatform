@@ -17,8 +17,8 @@ const templatePath = (event: string, locale: string): string =>
   `${SETTINGS_PATH}/email-templates/${encodeURIComponent(event)}/${encodeURIComponent(locale)}`;
 
 export const adminEmailService = {
-  async getSettings(): Promise<EmailSettings> {
-    const response = await apiClient.get<EmailSettings>(`${SETTINGS_PATH}/email`);
+  async getSettings(signal?: AbortSignal): Promise<EmailSettings> {
+    const response = await apiClient.get<EmailSettings>(`${SETTINGS_PATH}/email`, { signal });
     return response.data;
   },
 
@@ -43,9 +43,10 @@ export const adminEmailService = {
     return response.data;
   },
 
-  async listTemplates(): Promise<EmailTemplateListResponse> {
+  async listTemplates(signal?: AbortSignal): Promise<EmailTemplateListResponse> {
     const response = await apiClient.get<EmailTemplateListResponse>(
       `${SETTINGS_PATH}/email-templates`,
+      { signal },
     );
     return response.data;
   },

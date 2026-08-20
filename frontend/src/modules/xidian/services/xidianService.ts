@@ -31,8 +31,8 @@ export interface XidianBindCompleteResponse {
 }
 
 export const xidianService = {
-  async getBindingStatus(): Promise<XidianBindingStatus> {
-    const response = await apiClient.get<XidianBindingStatus>('/xidian/binding');
+  async getBindingStatus(signal?: AbortSignal): Promise<XidianBindingStatus> {
+    const response = await apiClient.get<XidianBindingStatus>('/xidian/binding', { signal });
     return response.data;
   },
 

@@ -16,6 +16,8 @@ import { Button } from '@/components/ui/Button';
 import { Progress } from '@/components/ui/Progress';
 import { MarkdownContent } from '@/components/chat/MarkdownContent';
 import { cn } from '@/libs/utils/cn';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/appError';
 import type { KnowledgeGraphIndex } from '@/libs/graph';
 import type {
   KnowledgeNode,
@@ -29,9 +31,9 @@ interface KnowledgeGraphInspectorProps {
   targetNodeId: string | null;
   path: LearningPathItem[];
   pathLoading: boolean;
-  pathError: string | null;
+  pathError: AppError | null;
   goalSaving: boolean;
-  goalError: string | null;
+  goalError: AppError | null;
   onSelectNode: (nodeId: string) => void;
   onExplain: (node: KnowledgeNode) => void;
   onPractice: (node: KnowledgeNode) => void;
@@ -185,7 +187,7 @@ function NodeDetails({
   successors: KnowledgeNode[];
   graphIndex: KnowledgeGraphIndex;
   goalSaving: boolean;
-  goalError: string | null;
+  goalError: AppError | null;
   onSelectNode: (nodeId: string) => void;
   onExplain: (node: KnowledgeNode) => void;
   onPractice: (node: KnowledgeNode) => void;
@@ -281,7 +283,7 @@ function NodeDetails({
           <Target className="mr-1.5 h-4 w-4" />{target ? '当前目标' : '设为目标'}
         </Button>
       </div>
-      {goalError ? <p className="mt-3 text-sm text-red-600 dark:text-red-400">{goalError}</p> : null}
+      {goalError ? <RequestErrorNotice error={goalError} className="mt-3" /> : null}
     </section>
   );
 }
@@ -297,7 +299,7 @@ function PathSection({
 }: {
   path: LearningPathItem[];
   loading: boolean;
-  error: string | null;
+  error: AppError | null;
   graphIndex: KnowledgeGraphIndex;
   onSelectNode: (nodeId: string) => void;
   onRetry: () => void;
@@ -323,10 +325,7 @@ function PathSection({
 
       {loading ? <p className="mt-3 text-sm text-surface-400">正在计算路径...</p> : null}
       {error ? (
-        <div className="mt-3 flex items-center justify-between gap-3 text-sm text-red-600 dark:text-red-400">
-          <span>{error}</span>
-          <button type="button" onClick={onRetry} className="shrink-0 font-medium hover:underline">重试</button>
-        </div>
+        <RequestErrorNotice error={error} onRetry={onRetry} onRefresh={onRetry} className="mt-3" />
       ) : null}
       {!loading && !error && path.length === 0 ? (
         <p className="mt-3 text-sm leading-6 text-surface-500 dark:text-surface-400">

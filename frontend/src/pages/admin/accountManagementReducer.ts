@@ -1,4 +1,5 @@
 import type { UserItem, UserAccountStats, UserRole, UserStatus } from '@/modules/admin/types/adminUsers';
+import type { AppError } from '@/libs/http/apiClient';
 
 /**
  * 账户管理页面状态类型
@@ -35,8 +36,8 @@ export interface AccountManagementState {
 
   // 错误状态
   errors: {
-    stats: string | null;
-    users: string | null;
+    stats: AppError | null;
+    users: AppError | null;
   };
 
   // 模态框状态
@@ -72,8 +73,8 @@ export type AccountManagementAction =
   | { type: 'SET_EXPORT_LOADING'; payload: boolean }
 
   // 错误状态相关
-  | { type: 'SET_STATS_ERROR'; payload: string | null }
-  | { type: 'SET_USERS_ERROR'; payload: string | null }
+  | { type: 'SET_STATS_ERROR'; payload: AppError | null }
+  | { type: 'SET_USERS_ERROR'; payload: AppError | null }
 
   // 模态框相关
   | { type: 'OPEN_ADD_USER_MODAL' }

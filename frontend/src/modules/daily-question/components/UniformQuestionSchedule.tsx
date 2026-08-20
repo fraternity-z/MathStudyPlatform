@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import axios from 'axios';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowDown,
@@ -10,7 +9,6 @@ import {
   Loader2,
   LockKeyhole,
   Plus,
-  RefreshCw,
   Save,
   Trash2,
   Undo2,
@@ -18,12 +16,13 @@ import {
   X,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Pagination } from '@/components/ui/Pagination';
 import { Select } from '@/components/ui/Select';
 import { useToast } from '@/components/ui/Toast';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppError, type AppError } from '@/libs/http/apiClient';
 import { MathText } from '@/libs/math/MathText';
 import { questionService } from '@/modules/question/services/questionService';
 import type { Question, QuestionCreateData } from '@/modules/question/types/question';
@@ -208,12 +207,6 @@ function writeStoredDraft(
   }
 }
 
-function getApiErrorCode(error: unknown): string {
-  if (!axios.isAxiosError(error)) return '';
-  const data = error.response?.data as { code?: unknown } | undefined;
-  return typeof data?.code === 'string' ? data.code.trim().toUpperCase() : '';
-}
-
 export function UniformQuestionSchedule({
   classId,
   onSaved,
@@ -238,8 +231,8 @@ export function UniformQuestionSchedule({
   const [isQuestionBankLoading, setIsQuestionBankLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [questionBankError, setQuestionBankError] = useState<string | null>(null);
+  const [error, setError] = useState<AppError | null>(null);
+  const [questionBankError, setQuestionBankError] = useState<AppError | null>(null);
   const [loadedScheduleClassId, setLoadedScheduleClassId] = useState<string | null>(null);
   const questionBankRequestRef = useRef(0);
   const draftItemsRef = useRef<ScheduleDraftItem[]>([]);
@@ -291,7 +284,7 @@ export function UniformQuestionSchedule({
       setLoadedScheduleClassId(classId);
     } catch (loadError) {
       if (signal?.aborted) return;
-      setError(getApiErrorMessage(loadError, '统一题日程加载失败'));
+      setError(toAppError(loadError, '统一题日程加载失败'));
     } finally {
       if (!signal?.aborted) setIsLoading(false);
     }
@@ -326,13 +319,40 @@ export function UniformQuestionSchedule({
       if (questionBankRequestRef.current !== requestID) return;
       setQuestionOptions([]);
       setQuestionBankTotal(0);
-      setQuestionBankError(getApiErrorMessage(loadError, '题库加载失败'));
+      setQuestionBankError(toAppError(loadError, '题库加载失败'));
     } finally {
       if (questionBankRequestRef.current === requestID) {
         setIsQuestionBankLoading(false);
       }
     }
   }, [questionBankPage, selectedGroup]);
+
+  const formatRequestError = useCallback((requestError: unknown, fallback: string): string => {
+    const appError = toAppError(requestError, fallback);
+    return [
+      appError.message,
+      appError.retryAfter !== undefined && appError.retryAfter > 0
+        ? `可在 ${appError.retryAfter} 秒后重试`
+        : '',
+      appError.requestId ? `请求编号：${appError.requestId}` : '',
+    ].filter(Boolean).join('；');
+  }, []);
+
+  const notifyRequestError = useCallback((requestError: unknown, fallback: string) => {
+    const appError = toAppError(requestError, fallback);
+    if (appError.kind === 'cancelled' || appError.kind === 'rate_limited') return;
+    const details = [
+      appError.retryAfter !== undefined && appError.retryAfter > 0
+        ? `可在 ${appError.retryAfter} 秒后重试`
+        : '',
+      appError.requestId ? `请求编号：${appError.requestId}` : '',
+    ].filter(Boolean);
+    toast({
+      type: 'error',
+      title: appError.message,
+      description: details.length > 0 ? details.join('；') : undefined,
+    });
+  }, [toast]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -423,7 +443,7 @@ export function UniformQuestionSchedule({
         }
       } catch (loadError) {
         if (!cancelled) {
-          toast({ type: 'error', title: getApiErrorMessage(loadError, '新建题目读取失败') });
+          notifyRequestError(loadError, '新建题目读取失败');
         }
       } finally {
         if (!cancelled) {
@@ -438,7 +458,7 @@ export function UniformQuestionSchedule({
     return () => {
       cancelled = true;
     };
-  }, [isLoading, isScheduleLoaded, normalizeDraftDates, scheduleStartDate, searchParams, setSearchParams, toast]);
+  }, [isLoading, isScheduleLoaded, normalizeDraftDates, notifyRequestError, scheduleStartDate, searchParams, setSearchParams, toast]);
 
   const toggleQuestionSelection = (question: Question) => {
     if (draftItems.some((item) => item.contentId === question.id)) {
@@ -546,7 +566,6 @@ export function UniformQuestionSchedule({
     if (isSaving || !isDirty || !isScheduleLoaded) return;
     if (hasDuplicateContentIDs(draftItems)) {
       const message = '日程中存在重复题目，同一道题不能安排两次';
-      setError(message);
       toast({ type: 'error', title: message });
       return;
     }
@@ -585,15 +604,13 @@ export function UniformQuestionSchedule({
       });
       onSaved?.();
     } catch (saveError) {
-      const message = getApiErrorMessage(saveError, '统一题日程保存失败');
-      if (getApiErrorCode(saveError) === 'UNIFORM_SCHEDULE_CHANGED') {
+      const appError = toAppError(saveError, '统一题日程保存失败');
+      if (appError.kind === 'conflict') {
         writeStoredDraft(classId, scheduleVersion, null);
-        await loadSchedule();
-        toast({ type: 'error', title: message });
+        setError(appError);
         return;
       }
-      setError(message);
-      toast({ type: 'error', title: message });
+      notifyRequestError(appError, '统一题日程保存失败');
     } finally {
       setIsSaving(false);
     }
@@ -608,7 +625,7 @@ export function UniformQuestionSchedule({
       try {
         createdQuestions.push(await questionService.createQuestion(question));
       } catch (createError) {
-        errors.push(`第 ${index + 1} 题：${getApiErrorMessage(createError, '导入失败')}`);
+        errors.push(`第 ${index + 1} 题：${formatRequestError(createError, '导入失败')}`);
       }
     }
 
@@ -661,15 +678,16 @@ export function UniformQuestionSchedule({
   if (!isScheduleLoaded) {
     return (
       <section className="border-y border-surface-200 py-6 dark:border-surface-700">
-        <div className="flex min-h-32 flex-col items-center justify-center gap-4 text-center">
-          <p className="text-sm text-red-600 dark:text-red-400">
-            {error || '统一题日程尚未加载，请重试'}
-          </p>
-          <Button variant="outline" onClick={() => void loadSchedule()}>
-            <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
-            重新加载日程
-          </Button>
-        </div>
+        <RequestErrorNotice
+          error={error ?? {
+            kind: 'unknown',
+            message: '统一题日程尚未加载，请重试',
+            retryable: true,
+            source: 'ui',
+          }}
+          onRetry={() => void loadSchedule()}
+          onRefresh={() => void loadSchedule()}
+        />
       </section>
     );
   }
@@ -694,13 +712,11 @@ export function UniformQuestionSchedule({
       </div>
 
       {error ? (
-        <div className="flex items-center justify-between gap-3 text-sm text-red-600 dark:text-red-400">
-          <span>{error}</span>
-          <Button variant="ghost" size="sm" onClick={() => void loadSchedule()}>
-            <RefreshCw className="mr-1.5 h-4 w-4" aria-hidden="true" />
-            重试
-          </Button>
-        </div>
+        <RequestErrorNotice
+          error={error}
+          onRetry={() => void loadSchedule()}
+          onRefresh={() => void loadSchedule()}
+        />
       ) : null}
 
       <fieldset
@@ -756,13 +772,11 @@ export function UniformQuestionSchedule({
         </div>
 
         {questionBankError ? (
-          <div className="flex items-center justify-between gap-3 text-sm text-red-600 dark:text-red-400">
-            <span>{questionBankError}</span>
-            <Button variant="ghost" size="sm" onClick={() => void loadQuestionBank()}>
-              <RefreshCw className="mr-1.5 h-4 w-4" aria-hidden="true" />
-              重试
-            </Button>
-          </div>
+          <RequestErrorNotice
+            error={questionBankError}
+            onRetry={() => void loadQuestionBank()}
+            onRefresh={() => void loadQuestionBank()}
+          />
         ) : null}
 
         {questionBankError ? null : isQuestionBankLoading ? (

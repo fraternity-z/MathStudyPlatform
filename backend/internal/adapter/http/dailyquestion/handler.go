@@ -344,6 +344,7 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, err error, fallback s
 		writeDailyQuestionError(w, http.StatusForbidden, "FORBIDDEN", "无权访问该每日一题资源")
 		return
 	case errors.Is(err, dailyquestionapp.ErrRateLimited):
+		w.Header().Set("Retry-After", "60")
 		writeDailyQuestionError(w, http.StatusTooManyRequests, "RATE_LIMITED", "AI 出题过于频繁，请稍后重试")
 		return
 	case errors.Is(err, dailyquestionapp.ErrReminderUnavailable):

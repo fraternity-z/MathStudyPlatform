@@ -1,7 +1,9 @@
 import React from 'react';
 import { MessageItem } from '../../../../components/chat/MessageItem';
-import { Loader2, AlertCircle } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import type { SessionMessage } from '../../../../types';
+import { RequestErrorNotice } from '@/components/feedback';
+import type { AppError } from '@/libs/http/appError';
 
 interface ChatMessagesProps {
   messages: SessionMessage[];
@@ -9,12 +11,13 @@ interface ChatMessagesProps {
   draftModeName?: string;
   streamingMessageId: string | null;
   isLoading: boolean;
-  error: string | null;
+  error: AppError | null;
+  onRetry?: () => void;
   messagesContainerRef: React.RefObject<HTMLDivElement | null>;
 }
 
 export const ChatMessages = React.memo<ChatMessagesProps>(
-  ({ messages, draftWelcome, draftModeName, streamingMessageId, isLoading, error, messagesContainerRef }) => {
+  ({ messages, draftWelcome, draftModeName, streamingMessageId, isLoading, error, onRetry, messagesContainerRef }) => {
     return (
       <div
         ref={messagesContainerRef}
@@ -28,11 +31,8 @@ export const ChatMessages = React.memo<ChatMessagesProps>(
             </div>
           </div>
         ) : error ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="flex items-center gap-2 text-red-500">
-              <AlertCircle className="w-5 h-5" />
-              <span>{error}</span>
-            </div>
+          <div className="flex items-center justify-center h-full px-4">
+            <RequestErrorNotice error={error} onRetry={onRetry} onRefresh={onRetry} className="w-full max-w-xl" />
           </div>
         ) : draftWelcome && messages.length === 0 ? (
           <MessageItem

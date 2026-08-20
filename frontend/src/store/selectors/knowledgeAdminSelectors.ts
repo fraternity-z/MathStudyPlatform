@@ -178,6 +178,7 @@ export const selectRelationsData = createSelector(
   (state) => ({
     relations: state.relations,
     relationsLoading: state.relationsLoading,
+    relationsError: state.relationsError,
   })
 );
 
@@ -197,6 +198,7 @@ export const selectModalState = createSelector(
     allNodesLoading: state.allNodesLoading,
     allNodesError: state.allNodesError,
     chapters: state.chapters,
+    requestError: state.requestError,
   })
 );
 
@@ -279,4 +281,3 @@ export const selectIsAnyLoading = createSelector(
     return statsLoading || nodesLoading || relationsLoading || saving;
   }
 );
-

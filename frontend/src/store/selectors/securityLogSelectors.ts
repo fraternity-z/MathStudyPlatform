@@ -23,3 +23,5 @@ export const selectSecurityLogExportLoading = (state: RootState) => state.securi
 export const selectSecurityLogSelectedIds = (state: RootState) => state.securityLog.selectedIds;
 
 export const selectSecurityLogQueryParams = (state: RootState) => state.securityLog.queryParams;
+
+export const selectSecurityLogError = (state: RootState) => state.securityLog.error;

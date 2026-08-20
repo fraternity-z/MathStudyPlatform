@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { MainLayout } from '../../components/layout/MainLayout';
+import { RequestErrorNotice } from '@/components/feedback';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
@@ -18,6 +19,7 @@ import {
 import { fetchMistakeDetail } from '@/modules/mistake/services/mistakeService';
 import type { MistakeDetail } from '@/modules/mistake/services/mistakeService';
 import type { BadgeProps } from '../../components/ui/Badge';
+import { toAppError, type AppError } from '@/libs/http/appError';
 
 type BadgeVariant = NonNullable<BadgeProps['variant']>;
 
@@ -40,26 +42,29 @@ export const DiagnosisReportPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const [data, setData] = useState<MistakeDetail | null>(null);
   const [loading, setLoading] = useState(() => Boolean(id));
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<AppError | null>(null);
+  const [reloadVersion, setReloadVersion] = useState(0);
 
   useEffect(() => {
     if (!id) return;
 
     let active = true;
+    const controller = new AbortController();
 
     const loadDiagnosisReport = async () => {
       setLoading(true);
       setError(null);
 
       try {
-        const detail = await fetchMistakeDetail(id);
+        const detail = await fetchMistakeDetail(id, controller.signal);
         if (active) {
           setData(detail);
         }
-      } catch {
+      } catch (loadError) {
+        if (controller.signal.aborted) return;
         if (active) {
           setData(null);
-          setError('加载诊断报告失败，请稍后重试');
+          setError(toAppError(loadError, '加载诊断报告失败，请稍后重试'));
         }
       } finally {
         if (active) {
@@ -72,8 +77,9 @@ export const DiagnosisReportPage: React.FC = () => {
 
     return () => {
       active = false;
+      controller.abort();
     };
-  }, [id]);
+  }, [id, reloadVersion]);
 
   const routeError = id ? null : '缺少诊断报告 ID';
 
@@ -91,8 +97,19 @@ export const DiagnosisReportPage: React.FC = () => {
     return (
       <MainLayout>
         <div className="flex flex-col items-center justify-center min-h-[60vh] text-surface-500">
-          <XCircle className="h-12 w-12 mb-4 text-red-400" />
-          <p className="text-lg mb-4">{routeError || error || '未找到诊断报告'}</p>
+          {error ? (
+            <RequestErrorNotice
+              error={error}
+              onRetry={() => setReloadVersion((value) => value + 1)}
+              onRefresh={() => setReloadVersion((value) => value + 1)}
+              className="mb-4 w-full max-w-xl"
+            />
+          ) : (
+            <>
+              <XCircle className="h-12 w-12 mb-4 text-red-400" />
+              <p className="text-lg mb-4">{routeError || '未找到诊断报告'}</p>
+            </>
+          )}
           <Button variant="outline" onClick={() => window.history.back()}>
             <ArrowLeft className="h-4 w-4 mr-2" />
             返回

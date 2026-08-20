@@ -3,6 +3,7 @@ import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import { cn } from '../utils/cn';
 import { logger } from '../utils/logger';
+import { katexStrict } from './katexStrict';
 
 const mathLogger = logger.createContextLogger('MathRenderer');
 
@@ -22,6 +23,7 @@ export const MathRenderer: React.FC<MathRendererProps> = ({ expression, block = 
           displayMode: block,
           throwOnError: false,
           output: 'mathml', // Accessibility
+          strict: katexStrict,
         });
       } catch (error) {
         mathLogger.error('KaTeX rendering error', {

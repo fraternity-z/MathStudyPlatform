@@ -6,6 +6,7 @@
 
 import { createSlice, createAsyncThunk, type PayloadAction } from '@reduxjs/toolkit';
 import { resourceService } from '@/modules/resource/services/resourceService';
+import { toAppError, type AppError } from '@/libs/http/appError';
 import type {
   Resource,
   ResourceFilter,
@@ -37,8 +38,9 @@ interface ResourceState {
   statsLoading: boolean;
   actionLoading: boolean;
 
-  // 错误信息
-  error: string | null;
+  loadError: AppError | null;
+  statsError: AppError | null;
+  actionError: AppError | null;
 }
 
 // =============================================================================
@@ -60,7 +62,15 @@ const initialState: ResourceState = {
   statsLoading: false,
   actionLoading: false,
 
-  error: null,
+  loadError: null,
+  statsError: null,
+  actionError: null,
+};
+
+type ResourceThunkConfig = { rejectValue: AppError };
+type FetchResourcesResult = {
+  response: Awaited<ReturnType<typeof resourceService.getResources>>;
+  filter: ResourceFilter | undefined;
 };
 
 // =============================================================================
@@ -70,15 +80,15 @@ const initialState: ResourceState = {
 /**
  * 获取资源列表
  */
-export const fetchResources = createAsyncThunk(
+export const fetchResources = createAsyncThunk<FetchResourcesResult, ResourceFilter | undefined, ResourceThunkConfig>(
   'resource/fetchResources',
-  async (filter: ResourceFilter | undefined, { rejectWithValue }) => {
+  async (filter, { rejectWithValue, signal }) => {
     try {
-      const response = await resourceService.getResources(filter);
+      const response = await resourceService.getResources(filter, signal);
       return { response, filter };
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '获取资源列表失败';
-      return rejectWithValue(message);
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '获取资源列表失败'));
     }
   }
 );
@@ -86,14 +96,18 @@ export const fetchResources = createAsyncThunk(
 /**
  * 获取资源统计
  */
-export const fetchResourceStats = createAsyncThunk(
+export const fetchResourceStats = createAsyncThunk<
+  Awaited<ReturnType<typeof resourceService.getStats>>,
+  void,
+  ResourceThunkConfig
+>(
   'resource/fetchStats',
-  async (_, { rejectWithValue }) => {
+  async (_, { rejectWithValue, signal }) => {
     try {
-      return await resourceService.getStats();
+      return await resourceService.getStats(signal);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '获取资源统计失败';
-      return rejectWithValue(message);
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '获取资源统计失败'));
     }
   }
 );
@@ -101,15 +115,19 @@ export const fetchResourceStats = createAsyncThunk(
 /**
  * 切换收藏状态
  */
-export const toggleFavorite = createAsyncThunk(
+export const toggleFavorite = createAsyncThunk<
+  Awaited<ReturnType<typeof resourceService.toggleFavorite>>,
+  string,
+  ResourceThunkConfig
+>(
   'resource/toggleFavorite',
-  async (resourceId: string, { rejectWithValue }) => {
+  async (resourceId, { rejectWithValue, signal }) => {
     try {
-      const response = await resourceService.toggleFavorite(resourceId);
+      const response = await resourceService.toggleFavorite(resourceId, signal);
       return response;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '操作失败';
-      return rejectWithValue(message);
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '收藏状态更新失败'));
     }
   }
 );
@@ -117,14 +135,18 @@ export const toggleFavorite = createAsyncThunk(
 /**
  * 创建资源
  */
-export const createResource = createAsyncThunk(
+export const createResource = createAsyncThunk<
+  Awaited<ReturnType<typeof resourceService.createResource>>,
+  ResourceCreateRequest,
+  ResourceThunkConfig
+>(
   'resource/create',
-  async (data: ResourceCreateRequest, { rejectWithValue }) => {
+  async (data, { rejectWithValue, signal }) => {
     try {
-      return await resourceService.createResource(data);
+      return await resourceService.createResource(data, signal);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '创建资源失败';
-      return rejectWithValue(message);
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '创建资源失败'));
     }
   }
 );
@@ -132,14 +154,18 @@ export const createResource = createAsyncThunk(
 /**
  * 更新资源
  */
-export const updateResource = createAsyncThunk(
+export const updateResource = createAsyncThunk<
+  Awaited<ReturnType<typeof resourceService.updateResource>>,
+  { id: string; data: ResourceUpdateRequest },
+  ResourceThunkConfig
+>(
   'resource/update',
-  async ({ id, data }: { id: string; data: ResourceUpdateRequest }, { rejectWithValue }) => {
+  async ({ id, data }, { rejectWithValue, signal }) => {
     try {
-      return await resourceService.updateResource(id, data);
+      return await resourceService.updateResource(id, data, signal);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '更新资源失败';
-      return rejectWithValue(message);
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '更新资源失败'));
     }
   }
 );
@@ -147,15 +173,15 @@ export const updateResource = createAsyncThunk(
 /**
  * 删除资源
  */
-export const deleteResource = createAsyncThunk(
+export const deleteResource = createAsyncThunk<string, string, ResourceThunkConfig>(
   'resource/delete',
-  async (id: string, { rejectWithValue }) => {
+  async (id, { rejectWithValue, signal }) => {
     try {
-      await resourceService.deleteResource(id);
+      await resourceService.deleteResource(id, signal);
       return id;
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : '删除资源失败';
-      return rejectWithValue(message);
+      if (signal.aborted) throw error;
+      return rejectWithValue(toAppError(error, '删除资源失败'));
     }
   }
 );
@@ -186,7 +212,9 @@ const resourceSlice = createSlice({
      * 清除错误
      */
     clearError: (state) => {
-      state.error = null;
+      state.loadError = null;
+      state.statsError = null;
+      state.actionError = null;
     },
 
     /**
@@ -199,7 +227,7 @@ const resourceSlice = createSlice({
     builder
       .addCase(fetchResources.pending, (state) => {
         state.loading = true;
-        state.error = null;
+        state.loadError = null;
       })
       .addCase(fetchResources.fulfilled, (state, action) => {
         state.loading = false;
@@ -214,13 +242,14 @@ const resourceSlice = createSlice({
       })
       .addCase(fetchResources.rejected, (state, action) => {
         state.loading = false;
-        state.error = action.payload as string;
+        if (!action.meta.aborted && action.payload) state.loadError = action.payload;
       });
 
     // 获取资源统计
     builder
       .addCase(fetchResourceStats.pending, (state) => {
         state.statsLoading = true;
+        state.statsError = null;
       })
       .addCase(fetchResourceStats.fulfilled, (state, action) => {
         state.statsLoading = false;
@@ -228,13 +257,14 @@ const resourceSlice = createSlice({
       })
       .addCase(fetchResourceStats.rejected, (state, action) => {
         state.statsLoading = false;
-        state.error = action.payload as string;
+        if (!action.meta.aborted && action.payload) state.statsError = action.payload;
       });
 
     // 切换收藏
     builder
       .addCase(toggleFavorite.pending, (state) => {
         state.actionLoading = true;
+        state.actionError = null;
       })
       .addCase(toggleFavorite.fulfilled, (state, action) => {
         state.actionLoading = false;
@@ -250,13 +280,14 @@ const resourceSlice = createSlice({
       })
       .addCase(toggleFavorite.rejected, (state, action) => {
         state.actionLoading = false;
-        state.error = action.payload as string;
+        if (!action.meta.aborted && action.payload) state.actionError = action.payload;
       });
 
     // 创建资源
     builder
       .addCase(createResource.pending, (state) => {
         state.actionLoading = true;
+        state.actionError = null;
       })
       .addCase(createResource.fulfilled, (state, action) => {
         state.actionLoading = false;
@@ -271,13 +302,14 @@ const resourceSlice = createSlice({
       })
       .addCase(createResource.rejected, (state, action) => {
         state.actionLoading = false;
-        state.error = action.payload as string;
+        if (!action.meta.aborted && action.payload) state.actionError = action.payload;
       });
 
     // 更新资源
     builder
       .addCase(updateResource.pending, (state) => {
         state.actionLoading = true;
+        state.actionError = null;
       })
       .addCase(updateResource.fulfilled, (state, action) => {
         state.actionLoading = false;
@@ -288,13 +320,14 @@ const resourceSlice = createSlice({
       })
       .addCase(updateResource.rejected, (state, action) => {
         state.actionLoading = false;
-        state.error = action.payload as string;
+        if (!action.meta.aborted && action.payload) state.actionError = action.payload;
       });
 
     // 删除资源
     builder
       .addCase(deleteResource.pending, (state) => {
         state.actionLoading = true;
+        state.actionError = null;
       })
       .addCase(deleteResource.fulfilled, (state, action) => {
         state.actionLoading = false;
@@ -311,7 +344,7 @@ const resourceSlice = createSlice({
       })
       .addCase(deleteResource.rejected, (state, action) => {
         state.actionLoading = false;
-        state.error = action.payload as string;
+        if (!action.meta.aborted && action.payload) state.actionError = action.payload;
       });
   },
 });

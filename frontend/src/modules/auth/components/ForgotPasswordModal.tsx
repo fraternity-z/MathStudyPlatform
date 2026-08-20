@@ -11,7 +11,11 @@ import {
 } from '@/libs/form';
 import { forgotPasswordSchema, type ForgotPasswordFormData } from '@/libs/validation';
 import { passwordResetService } from '@/modules/password-reset/services/passwordResetService';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import {
+  formatAppErrorDescription,
+  isRequestCancelled,
+  toAppError,
+} from '@/libs/http/apiClient';
 
 interface ForgotPasswordModalProps {
   isOpen: boolean;
@@ -50,10 +54,12 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
         setError('root', { type: 'manual', message: res.message });
       }
     } catch (err) {
-      setError('root', {
-        type: 'manual',
-        message: getApiErrorMessage(err, '提交失败，请稍后重试'),
-      });
+      if (!isRequestCancelled(err)) {
+        setError('root', {
+          type: 'manual',
+          message: formatAppErrorDescription(toAppError(err, '提交失败，请稍后重试')),
+        });
+      }
     }
   };
 

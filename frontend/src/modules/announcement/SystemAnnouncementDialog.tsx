@@ -6,7 +6,7 @@ import { useToast } from '@/components/ui/Toast';
 import { useSerialPolling } from '@/hooks/useSerialPolling';
 import { useAppSelector } from '@/store';
 import { selectCurrentUser, selectIsAuthenticated } from '@/modules/auth/store/authSlice';
-import { getApiErrorMessage } from '@/libs/http/apiClient';
+import { toAppErrorFeedback } from '@/libs/http/apiClient';
 import { formatDateOrFallback } from '@/libs/utils/dateFormat';
 import { AnnouncementContent } from './AnnouncementContent';
 import { announcementService } from './announcementService';
@@ -64,11 +64,8 @@ export function SystemAnnouncementDialog() {
       await announcementService.dismiss(current.id);
       setAnnouncements((items) => items.filter((item) => item.id !== current.id));
     } catch (error) {
-      toast({
-        type: 'error',
-        title: '操作失败',
-        description: getApiErrorMessage(error, '暂时无法关闭该公告'),
-      });
+      const feedback = toAppErrorFeedback(error, '暂时无法关闭该公告');
+      if (feedback) toast(feedback);
     } finally {
       setIsDismissing(false);
     }
