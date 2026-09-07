@@ -2,7 +2,7 @@
 
 本文是仓库唯一的当前待办清单。技术文档和历史记录只引用这里，不再维护独立路线图。
 
-**更新时间**：2026-09-06
+**更新时间**：2026-09-07
 
 ## 优先级说明
 
@@ -20,7 +20,7 @@
 
 ### 资源中心向量检索
 
-- [ ] 按 P0-P6 分阶段接入 Qdrant：P0-P3/M3 的开发与测试环境验收已全部完成。2026-09-06 完成四格式真实入库、租约重试、发布与回收、对账重建和状态界面；60 篇原创讲义、100 条固定查询使用管理员真实模型，Recall/MRR/nDCG@5 均为 1.0，500 次引用核验通过。10 万条/5 并发本地与完整检索 P95 为 427/622 ms，达到冻结门槛；百万档完成趋势评测并记录降级。明确授权后的 5 次真实 Tutor 无答案问答成功，逐条核对无错误资料引用，M3 已通过，P4-P6 保留独立生产与高级能力范围。证据见[专项进度](plans/resource-center-qdrant/PROGRESS.md)和[本轮验收](plans/resource-center-qdrant/TEST-ACCEPTANCE-2026-09-06.md)。
+- [ ] 按 P0-P6 分阶段接入 Qdrant：P0-P3/M3 已通过真实模型、质量与容量验收；2026-09-07 完成 P4 本地准生产范围的三节点 TLS、双 worker、发布审批与回滚、观测审计、加密备份恢复和真实告警闭环。项目负责人明确外部上线另行安排；P5/P6 和正式部署仍待后续推进。证据见[专项进度](plans/resource-center-qdrant/PROGRESS.md)、[P3 验收](plans/resource-center-qdrant/TEST-ACCEPTANCE-2026-09-06.md)及 [P4 验收](plans/resource-center-qdrant/TEST-ACCEPTANCE-2026-09-07.md)。
 
 ### AI 学习闭环
 

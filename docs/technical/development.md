@@ -117,9 +117,11 @@ go run ./cmd/migrate
 go run ./cmd/migrate  # 重复执行应无待应用版本
 ```
 
-当前迁移链是 `0001` 至 `0021`。`0017` 建立资源中心版本/chunk、generation、job 和可靠 outbox 基础，`0018` 提供管理员 embedding 不可变配置，`0019` 增加 `pg_trgm`、检索索引与会话引用元数据，`0020` 补齐入库任务、幂等和对账游标，`0021` 补齐终态任务快照与上传 staging。空库首次记录 version 1 至 21，version 19 库顺序应用 20、21，version 20 库只新增 21，复跑无待应用版本。迁移账户须可在 `public` 安装 `pg_trgm` 并创建索引；先停止 API/worker 写入、迁移，再启动新进程。曾执行旧草稿 10 至 13 或旧错题草稿占用 version 11 的本地库，按 [迁移策略](../../backend/migrations/README.md) 校准，不能删除账本重放。runner 校验版本、名称和未知记录；后续从 `0022` 起追加。
+当前迁移链是 `0001` 至 `0022`。`0017` 至 `0021` 建立资源中心数据、模型、检索、异步任务和保留清理契约；`0022` 增加 generation 发布审批门和事务运维审计。空库首次记录 22 个版本，version 21 库只新增 22，复跑无待应用版本。迁移账户须可在 `public` 安装 `pg_trgm` 并创建索引；先停止 API/worker 写入、备份、迁移，再启动新进程。历史草稿按 [迁移策略](../../backend/migrations/README.md) 校准，不能删除账本重放；后续从 `0023` 起追加。
 
 ## 环境配置
+
+P4 生产向量配置要求 HTTPS、显式分片、至少三副本与写一致性 2，以及稳定 Fernet key。可选 `QDRANT_CA_FILE` 信任私有 CA，六类运行口令支持 `NAME_FILE`，与对应明文环境变量互斥。本地单节点 profile 必须显式使用 `ENVIRONMENT=development` 或 `test`，保留 0/0/0 的 provider 默认策略。Worker 默认回环管理；非回环管理必须同时提供 TLS 证书/私钥和 token 文件，`/live` 与 `/ready` 分开。生产/准生产入口见 `deploy/vector/` 与[运行手册](vector-operations.md)。
 
 仓库根目录 `.env` 是本地和部署环境的统一文件名，`.env.example` 是唯一模板。至少应按环境修改：
 
@@ -176,7 +178,7 @@ go run ./cmd/vector-worker rebuild --knowledge-base='<knowledge-base-uuid>'
 go run ./cmd/vector-worker rebuild --knowledge-base='<knowledge-base-uuid>' --apply
 ```
 
-`reconcile --apply` 必须指定 canonical generation UUID；可额外用 `--knowledge-base` 收窄范围。`rebuild` 必须指定知识库且始终读取管理员当前 active 模型，创建独立新代任务后由 `run` worker 完成，旧代持续服务直至原子切换。`--max-pages` 默认 200、范围 1-10000；`--timeout` 默认 2 分钟、范围 1 秒至 10 分钟。`complete=false` 表示还有后续页，应用模式保存游标并在下一轮续作，不能把部分扫描当作零差异验收。
+`reconcile --apply` 必须指定 canonical generation UUID；可额外用 `--knowledge-base` 收窄范围。`rebuild` 必须指定知识库且始终读取管理员当前 active 模型；独立新代构建后停在 `ready`，旧代持续服务。完成完整对账及质量验收后，使用 `promote --generation=... --actor=... --evidence-sha256=... --apply` 原子切换；保留期内可按相同参数执行 `rollback`，不完整、过期或模型失效的旧代拒绝回滚。`status` 和鉴权管理 `/operations` 提供有界运维摘要，失败任务通过 `retry-job` 显式处理。详见[运行手册](vector-operations.md)。`--max-pages` 默认 200、范围 1-10000；`--timeout` 默认 2 分钟、范围 1 秒至 10 分钟。`complete=false` 不能当作零差异验收。
 
 持续维护默认每 5 分钟执行（`--reconcile-interval`），覆盖缺失/错配修复、多余向量删除、7 天退役代向量保留和 30 天终态 job/outbox 回收；每轮最多清理各 1000 条历史记录，并保留文档最后任务快照。上传 staging 超过 24 小时且没有任何文档/版本/资产引用才领取，单轮最多 8 个、删除租约 15 分钟。已登记、下线或删除文档的原对象不属于未引用 staging，不能借此批量删除业务文件。回收失败记录固定指标/错误码，之后按租约重新接管，禁止把来源 URL、签名、正文或密钥写入日志。
 
@@ -192,7 +194,7 @@ P3 的 `POST /api/v1/resources/search` 最小 JSON 为 `{"query":"导数"}`；�
 
 `GET /api/v1/resources/citations/{chunk_id}?knowledge_base_id=...&document_version_id=...&generation=...` 返回重新授权的 `SearchHit`；失效/撤权统一 404，禁止缓存。资源中心“知识搜索”和聊天引用均使用该入口。Session 请求检索最多 1500 ms，知识最多 8 KiB，并与问题、模式、附件和历史共享原有 16 KiB 动态输入预算；固定系统规则另占模型容量。整块无法容纳则跳过，引用只对应实际输入。首次、续聊、SSE done 与历史返回相同 `knowledge` 元数据；不会在会话表保存资料正文，也不会把旧知识助手回复再次注入历史。无知识或检索失败时继续普通聊天。
 
-`/metrics` 提供 `msp_resource_search_requests_total`、阶段耗时直方图、候选/过滤/引用/空结果计数及降级原因计数。标签为固定 mode/outcome/stage/source/reason，不含查询、用户、资源、trace 或 provider 原始错误。结构化检索日志只记录状态、时长和数量。完整验证证据和边界见 [P3 计划](../plans/resource-center-qdrant/03-retrieval-and-rag-integration.md)。
+`/metrics` 提供 `msp_resource_search_requests_total`、阶段耗时直方图、候选/过滤/引用/空结果计数及降级原因计数。标签为固定 mode/outcome/stage/source/reason，不含查询、用户、资源、trace 或 provider 原始错误。结构化检索日志记录已校验的 trace ID、固定阶段耗时、状态和数量；trace 不进入指标标签。完整验证证据和边界见 [P3 计划](../plans/resource-center-qdrant/03-retrieval-and-rag-integration.md)。
 
 管理端的智能体参数覆盖不再提供或发送 Top P。新发现模型保存 Temperature `1.0`、Max Tokens `4096`、超时 `1800` 秒和最大重试 `3` 次作为配置基线；其中 Temperature、Max Tokens 和最大重试默认不启用，输入留空时前两项不写入 provider 请求且应用层不重试，只有显式覆盖才生效。超时留空时使用模型的 `1800` 秒总请求时限；这与 Cherry Studio 流式请求收到数据后重新计时的 idle timeout 并不完全等价。Agent 的 `MaxIterations` 固定使用独立默认值 `8`，不得再从重试次数推导。数值和开关语义参考 Cherry Studio 当前的 [Assistant 默认设置](https://github.com/CherryHQ/cherry-studio/blob/12498d68ecb4fb261670843ca7a8e4e64a37526a/src/shared/data/types/assistant.ts)、[请求超时](https://github.com/CherryHQ/cherry-studio/blob/12498d68ecb4fb261670843ca7a8e4e64a37526a/src/main/ai/constants.ts) 和 [模型重试策略](https://github.com/CherryHQ/cherry-studio/blob/12498d68ecb4fb261670843ca7a8e4e64a37526a/docs/references/ai/model-retry.md)。`0014_ai_generation_defaults` 会清空历史 Top P，并只校准仍使用旧默认值的模型；显式自定义的其他数值不变。数据库中的旧 Top P 列和后端兼容 JSON 字段暂时保留，但运行时一律忽略。
 
@@ -254,7 +256,7 @@ WECHAT_QA_MESSAGE_TEMPLATE_ID=
 
 若测试号页面没有消息加解密模式选项，使用 `plain`。不要自行编造 `AES_KEY`，兼容模式和安全模式必须使用微信后台对应的 `EncodingAESKey`。
 
-消息中心与微信公众号基础分别由 `0003`、`0004` 交付；运行前应用当前全部 `0001` 至 `0021` 迁移。空库首次记录 21 个版本，已有库只新增尚未应用的版本，第二次运行无待应用版本。
+消息中心与微信公众号基础分别由 `0003`、`0004` 交付；运行前应用当前全部 `0001` 至 `0022` 迁移。空库首次记录 22 个版本，已有库只新增尚未应用的版本，第二次运行无待应用版本。
 
 ```powershell
 Set-Location backend

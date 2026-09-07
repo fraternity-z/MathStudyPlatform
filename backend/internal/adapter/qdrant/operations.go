@@ -21,10 +21,13 @@ type collectionInfoResponse struct {
 }
 
 type collectionInfo struct {
-	Status       string           `json:"status"`
-	PointsCount  int64            `json:"points_count"`
-	IndexedCount int64            `json:"indexed_vectors_count"`
-	Config       collectionConfig `json:"config"`
+	Status        string           `json:"status"`
+	PointsCount   int64            `json:"points_count"`
+	IndexedCount  int64            `json:"indexed_vectors_count"`
+	Config        collectionConfig `json:"config"`
+	PayloadSchema map[string]struct {
+		DataType string `json:"data_type"`
+	} `json:"payload_schema"`
 }
 
 type collectionConfig struct {
@@ -32,7 +35,10 @@ type collectionConfig struct {
 }
 
 type collectionParams struct {
-	Vectors json.RawMessage `json:"vectors"`
+	Vectors                json.RawMessage `json:"vectors"`
+	ShardNumber            int             `json:"shard_number"`
+	ReplicationFactor      int             `json:"replication_factor"`
+	WriteConsistencyFactor int             `json:"write_consistency_factor"`
 }
 
 type countResponse struct {
@@ -104,6 +110,9 @@ func (c *Client) EnsureCollection(ctx context.Context, spec resourceapp.VectorCo
 	if err := verifyCollectionInfo(route, info, spec); err != nil {
 		return err
 	}
+	if err := c.verifyTopology(info); err != nil {
+		return err
+	}
 	c.setExpectedSchema(route, spec.Dimension)
 	indexes := spec.PayloadIndexes
 	if len(indexes) == 0 {
@@ -132,6 +141,18 @@ func (c *Client) VerifyCollection(ctx context.Context, spec resourceapp.VectorCo
 	}
 	if err := verifyCollectionInfo(route, info, spec); err != nil {
 		return resourceapp.VectorCollectionStatus{}, err
+	}
+	if err := c.verifyTopology(info); err != nil {
+		return resourceapp.VectorCollectionStatus{}, err
+	}
+	for _, field := range spec.PayloadIndexes {
+		kind := field.Kind
+		if kind == "" {
+			kind = "keyword"
+		}
+		if info.PayloadSchema[field.Field].DataType != kind {
+			return resourceapp.VectorCollectionStatus{}, &Error{Operation: "payload schema", Code: resourceapp.ErrVectorInvalid}
+		}
 	}
 	var count countResponse
 	if err := c.request(ctx, "count", http.MethodPost, c.endpoint("collections", route, "points", "count"), nil, map[string]any{"exact": true}, &count, c.timeout); err != nil {
@@ -164,7 +185,20 @@ func (c *Client) createCollection(ctx context.Context, route string, spec resour
 			"distance": qdrantDistance(spec.Distance),
 		},
 	}
+	for key, value := range map[string]int{"shard_number": c.shardNumber, "replication_factor": c.replicationFactor, "write_consistency_factor": c.writeConsistencyFactor} {
+		if value > 0 {
+			payload[key] = value
+		}
+	}
 	return c.request(ctx, "create collection", http.MethodPut, c.endpoint("collections", route), nil, payload, nil, c.timeout)
+}
+
+func (c *Client) verifyTopology(info collectionInfo) error {
+	p := info.Config.Params
+	if c.shardNumber > 0 && p.ShardNumber != c.shardNumber || c.replicationFactor > 0 && p.ReplicationFactor != c.replicationFactor || c.writeConsistencyFactor > 0 && p.WriteConsistencyFactor != c.writeConsistencyFactor {
+		return &Error{Operation: "collection topology", Code: resourceapp.ErrVectorInvalid, Detail: "collection topology differs from deployment policy; rebuild before switching"}
+	}
+	return nil
 }
 
 func (c *Client) ensurePayloadIndex(ctx context.Context, route string, index resourceapp.VectorPayloadIndex) error {

@@ -141,6 +141,7 @@ func (s *SearchService) Search(ctx context.Context, userID string, request Searc
 	defer func() {
 		if s.observer != nil {
 			observation.Duration = time.Since(started)
+			observation.TraceID = response.TraceID
 			observation.Mode, observation.Failed = response.Mode, err != nil
 			observation.References, observation.Empty = len(response.Items)+len(response.Adjacent), len(response.Items) == 0
 			observation.DegradedReasons = response.DegradedReasons

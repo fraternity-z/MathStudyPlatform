@@ -148,6 +148,8 @@ func main() {
 			MaxBatchSize:   cfg.QdrantMaxBatchSize,
 			WaitForChanges: cfg.QdrantWaitForChanges,
 			PayloadIndexes: cfg.QdrantPayloadIndexFields,
+			CAFile:         cfg.QdrantCAFile, ShardNumber: cfg.QdrantShardNumber,
+			ReplicationFactor: cfg.QdrantReplicationFactor, WriteConsistencyFactor: cfg.QdrantWriteConsistency,
 		}, qdrantadapter.WithResourceCollections())
 		if err != nil {
 			logger.Error("configure qdrant vector index", "error", err)

@@ -16,7 +16,8 @@ FROM alpine:3.22
 
 WORKDIR /app
 
-RUN apk add --no-cache ca-certificates poppler-utils \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates poppler-utils \
     && adduser -D -u 1000 appuser && mkdir -p /app/uploads && chown -R appuser:appuser /app
 
 COPY --from=builder /out/msp-api /usr/local/bin/msp-api

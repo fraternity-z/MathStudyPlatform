@@ -35,6 +35,7 @@ type resourceSearchStats struct {
 	durations                                    [len(resourceSearchStages)]resourceSearchHistogram
 	reasons                                      [len(resourceSearchReasons)]uint64
 	lexical, vector, filtered, references, empty uint64
+	degraded                                     uint64
 }
 
 func (s *Store) ObserveResourceSearch(observation ResourceSearchObservation) {
@@ -54,6 +55,9 @@ func (s *Store) ObserveResourceSearch(observation ResourceSearchObservation) {
 		failed = 1
 	}
 	s.resourceSearch.requests[mode][failed]++
+	if len(observation.DegradedReasons) > 0 {
+		s.resourceSearch.degraded++
+	}
 	if observation.Empty && !observation.Failed {
 		s.resourceSearch.empty++
 	}
@@ -124,6 +128,7 @@ func (s *Store) renderResourceSearchMetrics(b *strings.Builder) {
 		{"filtered", "Candidates removed by PostgreSQL authorization.", stats.filtered},
 		{"references", "Authorized references returned by retrieval.", stats.references},
 		{"empty", "Successful retrieval requests without results.", stats.empty},
+		{"degraded_requests", "Retrieval requests with at least one degradation.", stats.degraded},
 	} {
 		name := "msp_resource_search_" + item.name + "_total"
 		fmt.Fprintf(b, "# HELP %s %s\n# TYPE %s counter\n%s %d\n", name, item.help, name, name, item.value)

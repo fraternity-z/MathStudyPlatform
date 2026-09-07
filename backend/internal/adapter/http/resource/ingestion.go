@@ -86,6 +86,7 @@ func (h *Handler) uploadDocument(w http.ResponseWriter, r *http.Request) {
 		Title: r.FormValue("title"), Chapter: r.FormValue("chapter"), Topic: r.FormValue("topic"), ClientRequestID: r.FormValue("client_request_id"),
 		Filename: header.Filename, MIMEType: header.Header.Get("Content-Type"), ByteSize: header.Size, Reader: file,
 	})
+	h.auditIngestion(w, owner, "upload", result, err)
 	if err != nil {
 		h.writeIngestionError(w, err)
 		return
@@ -157,6 +158,7 @@ func (h *Handler) changeIngestion(w http.ResponseWriter, r *http.Request, action
 	} else {
 		result, err = h.ingestionService.Withdraw(r.Context(), owner, r.PathValue("resource_id"), action == "delete")
 	}
+	h.auditIngestion(w, owner, action, result, err)
 	if err != nil {
 		h.writeIngestionError(w, err)
 		return
@@ -193,4 +195,10 @@ func (h *Handler) writeIngestionError(w http.ResponseWriter, err error) {
 		h.logger.Error("resource ingestion request failed", "error_code", "ingestion_internal")
 		writeResourceError(w, http.StatusInternalServerError, "INGESTION_ERROR", "文档处理失败，请稍后重试")
 	}
+}
+
+func (h *Handler) auditIngestion(w http.ResponseWriter, actor, action string, result resourceapp.IngestionStatus, err error) {
+	h.logger.Info("resource ingestion audit", "actor_id", actor, "action", action,
+		"resource_id", result.ResourceID, "document_version_id", result.DocumentVersionID,
+		"job_id", result.JobID, "trace_id", w.Header().Get("X-Request-ID"), "success", err == nil)
 }

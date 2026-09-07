@@ -97,9 +97,9 @@ func (r ResourceRepository) ingestionGenerationForModel(ctx context.Context, kbI
 	}
 	collection := "resource_" + strings.ReplaceAll(kbID, "-", "") + "_" + strings.ReplaceAll(id, "-", "")
 	_, err = r.DB().Exec(ctx, `INSERT INTO public.vector_index_generations
-		(id,tenant_id,knowledge_base_id,model_version_id,generation,collection_name,dimension,distance,state,created_at)
-		SELECT $1::varchar,$2::varchar,$3::varchar,$4::varchar,coalesce(max(generation),0)+1,$5::varchar,$6::integer,$7::public.distancemetric,'building',$8::timestamp
-		FROM public.vector_index_generations WHERE knowledge_base_id=$3`, id, resourceSearchDefaultTenantID, kbID, modelID, collection, model.Dimension, metric, now)
+		(id,tenant_id,knowledge_base_id,model_version_id,generation,collection_name,dimension,distance,state,created_at,release_approved)
+		SELECT $1::varchar,$2::varchar,$3::varchar,$4::varchar,coalesce(max(generation),0)+1,$5::varchar,$6::integer,$7::public.distancemetric,'building',$8::timestamp,$9::boolean
+		FROM public.vector_index_generations WHERE knowledge_base_id=$3`, id, resourceSearchDefaultTenantID, kbID, modelID, collection, model.Dimension, metric, now, active == 0)
 	if err != nil {
 		return g, err
 	}
@@ -161,6 +161,18 @@ func (r ResourceRepository) BeginIngestionRebuild(ctx context.Context, kbID, mod
 	err := r.withIngestionTx(ctx, func(tx ResourceRepository) error {
 		var err error
 		g, err = tx.ingestionGenerationForModel(ctx, kbID, modelID, true, now)
+		if err == nil {
+			err = tx.enqueueGenerationVersions(ctx, g, now)
+		}
+		if err == nil {
+			_, err = tx.DB().Exec(ctx, `UPDATE public.vector_index_generations SET release_approved=false WHERE id=$1 AND state IN ('building','ready')`, g.ID)
+		}
+		if err == nil {
+			err = tx.activateIngestionGeneration(ctx, g, now)
+		}
+		if err == nil {
+			g, err = scanIngestionGeneration(tx.DB().QueryRow(ctx, ingestionGenerationSelect+` WHERE g.id=$1`, g.ID))
+		}
 		return err
 	})
 	return g, err
@@ -245,7 +257,15 @@ func (r ResourceRepository) IngestionQueueStats(ctx context.Context) (map[string
 		count(*) FILTER(WHERE status IN ('dead','failed')),
 		coalesce(greatest(0,extract(epoch FROM (statement_timestamp() AT TIME ZONE 'UTC' - min(created_at) FILTER(WHERE status='pending'))))::bigint,0)
 		FROM (`+ingestionJobStateSQL+`) jobs WHERE tenant_id=$1 AND generation_id IS NOT NULL`, resourceSearchDefaultTenantID).Scan(&queued, &running, &dead, &oldest)
-	return map[string]int64{"queued": queued, "running": running, "dead": dead, "oldest_wait_seconds": oldest}, err
+	if err != nil {
+		return nil, err
+	}
+	var expired, outboxPending, outboxDead int64
+	err = r.DB().QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM public.resource_processing_jobs WHERE tenant_id=$1 AND generation_id IS NOT NULL AND status='running' AND lease_expires_at<=statement_timestamp() AT TIME ZONE 'UTC'),
+		count(*) FILTER(WHERE processed_at IS NULL AND dead_at IS NULL),count(*) FILTER(WHERE dead_at IS NOT NULL)
+		FROM public.outbox_events WHERE tenant_id=$1 AND aggregate_type='resource_ingestion'`, resourceSearchDefaultTenantID).Scan(&expired, &outboxPending, &outboxDead)
+	return map[string]int64{"queued": queued, "running": running, "dead": dead, "oldest_wait_seconds": oldest, "expired_leases": expired, "outbox_pending": outboxPending, "outbox_dead": outboxDead}, err
 }
 
 func (r ResourceRepository) ScheduleIngestionRepair(ctx context.Context, generationID, versionID string, now time.Time) (bool, error) {
@@ -333,6 +353,14 @@ func (r ResourceRepository) activateIngestionGeneration(ctx context.Context, g r
 	}
 	if incomplete {
 		return r.enqueueGenerationVersions(ctx, g, now)
+	}
+	var approved bool
+	if err := r.DB().QueryRow(ctx, `SELECT release_approved FROM public.vector_index_generations WHERE id=$1`, g.ID).Scan(&approved); err != nil {
+		return err
+	}
+	if !approved {
+		_, err := r.DB().Exec(ctx, `UPDATE public.vector_index_generations SET state='ready' WHERE id=$1 AND state='building'`, g.ID)
+		return err
 	}
 	_, err := r.DB().Exec(ctx, `UPDATE public.document_versions v SET process_status='succeeded',index_status='ready',
 		index_generation=$2,model_version_id=$3,published_at=coalesce(v.published_at,$4),error_code=NULL,error_message=NULL

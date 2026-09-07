@@ -18,6 +18,7 @@ func WithSearchObserver(observer SearchObserver) SearchOption {
 
 // SearchObservation contains bounded operational data, never queries or source text.
 type SearchObservation struct {
+	TraceID            string
 	Duration           time.Duration
 	Stages             map[string]time.Duration
 	Mode               string

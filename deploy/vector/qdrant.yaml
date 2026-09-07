@@ -1,0 +1,26 @@
+log_level: INFO
+telemetry_disabled: true
+service:
+  enable_tls: true
+  enable_cors: false
+  max_request_size_mb: 16
+  max_workers: 2
+cluster:
+  enabled: true
+  p2p:
+    port: 6335
+    enable_tls: true
+storage:
+  storage_path: /qdrant/storage
+  snapshots_path: /qdrant/snapshots
+  collection:
+    replication_factor: 3
+    write_consistency_factor: 2
+  performance:
+    max_search_threads: 2
+    max_optimization_threads: 1
+tls:
+  cert: /run/secrets/vector_cert
+  key: /run/secrets/vector_key
+  ca_cert: /run/secrets/vector_ca
+  cert_ttl: 3600

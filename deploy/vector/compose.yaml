@@ -1,0 +1,85 @@
+# Three peers on one Docker host are a staging topology, not host-level HA.
+# Run each peer on a separate failure domain for production; see the runbook.
+name: msp-vector
+x-node: &node
+  image: ${VECTOR_QDRANT_IMAGE:-msp-qdrant:1.14.1-p4}
+  build:
+    context: .
+  restart: unless-stopped
+  init: true
+  user: "1000:1000"
+  read_only: true
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  tmpfs: ["/tmp:size=64m,noexec,nosuid"]
+  stop_grace_period: 60s
+  networks: [vector]
+  secrets: [qdrant_api_key, qdrant_read_key, vector_cert, vector_key, vector_ca]
+  configs:
+    - source: qdrant_config
+      target: /qdrant/config/production.yaml
+  environment:
+    RUN_MODE: production
+  entrypoint: ["bash", "-ec"]
+  deploy:
+    resources:
+      limits: {cpus: "2", memory: 2G}
+      reservations: {memory: 512M}
+services:
+  qdrant-1:
+    <<: *node
+    command:
+      - 'export QDRANT__SERVICE__API_KEY="$$(</run/secrets/qdrant_api_key)" QDRANT__SERVICE__READ_ONLY_API_KEY="$$(</run/secrets/qdrant_read_key)"; exec ./qdrant --uri https://qdrant-1:6335'
+    volumes: ["node1:/qdrant/storage", "snapshots1:/qdrant/snapshots"]
+  qdrant-2:
+    <<: *node
+    command:
+      - 'export QDRANT__SERVICE__API_KEY="$$(</run/secrets/qdrant_api_key)" QDRANT__SERVICE__READ_ONLY_API_KEY="$$(</run/secrets/qdrant_read_key)"; exec ./qdrant --bootstrap https://qdrant-1:6335 --uri https://qdrant-2:6335'
+    volumes: ["node2:/qdrant/storage", "snapshots2:/qdrant/snapshots"]
+    depends_on: [qdrant-1]
+  qdrant-3:
+    <<: *node
+    command:
+      - 'export QDRANT__SERVICE__API_KEY="$$(</run/secrets/qdrant_api_key)" QDRANT__SERVICE__READ_ONLY_API_KEY="$$(</run/secrets/qdrant_read_key)"; exec ./qdrant --bootstrap https://qdrant-1:6335 --uri https://qdrant-3:6335'
+    volumes: ["node3:/qdrant/storage", "snapshots3:/qdrant/snapshots"]
+    depends_on: [qdrant-1]
+  vector-gateway:
+    image: haproxy:3.0-alpine
+    restart: unless-stopped
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    secrets: [vector_ca]
+    configs:
+      - source: gateway_config
+        target: /usr/local/etc/haproxy/haproxy.cfg
+    ports: ["127.0.0.1:16333:6333"]
+    networks: [vector, gateway]
+    depends_on: [qdrant-1, qdrant-2, qdrant-3]
+networks:
+  vector:
+    internal: true
+  gateway:
+volumes:
+  node1:
+  node2:
+  node3:
+  snapshots1:
+  snapshots2:
+  snapshots3:
+configs:
+  qdrant_config:
+    file: ./qdrant.yaml
+  gateway_config:
+    file: ./haproxy.cfg
+secrets:
+  qdrant_api_key:
+    file: ${VECTOR_SECRET_DIR:?set private secret directory}/qdrant-api-key
+  qdrant_read_key:
+    file: ${VECTOR_SECRET_DIR:?set private secret directory}/qdrant-read-key
+  vector_cert:
+    file: ${VECTOR_SECRET_DIR:?set private secret directory}/tls.crt
+  vector_key:
+    file: ${VECTOR_SECRET_DIR:?set private secret directory}/tls.key
+  vector_ca:
+    file: ${VECTOR_SECRET_DIR:?set private secret directory}/ca.crt

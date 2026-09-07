@@ -1,0 +1,19 @@
+{
+  "title": "Resource Vector Operations",
+  "uid": "msp-resource-vector",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "templating": {"list": [{"name": "DS_PROMETHEUS", "type": "datasource", "query": "prometheus"}]},
+  "panels": [
+    {"id": 1, "type": "timeseries", "title": "Queue and Dead Jobs", "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "targets": [{"expr": "max by(state) (msp_resource_ingestion_queue_jobs)", "legendFormat": "{{state}}"}]},
+    {"id": 2, "type": "timeseries", "title": "Oldest Waiting Job", "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "s"}}, "targets": [{"expr": "max(msp_resource_ingestion_oldest_wait_seconds)"}]},
+    {"id": 3, "type": "timeseries", "title": "Retrieval P95 by Stage", "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "s"}}, "targets": [{"expr": "histogram_quantile(0.95, sum by(le, stage) (rate(msp_resource_search_duration_seconds_bucket[5m])))", "legendFormat": "{{stage}}"}]},
+    {"id": 4, "type": "timeseries", "title": "Ingestion P95 by Stage", "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "s"}}, "targets": [{"expr": "histogram_quantile(0.95, sum by(le, stage) (rate(msp_resource_ingestion_stage_duration_seconds_bucket[5m])))", "legendFormat": "{{stage}}"}]},
+    {"id": 5, "type": "timeseries", "title": "Retrieval Degradation", "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "targets": [{"expr": "sum by(reason) (rate(msp_resource_search_degradations_total[5m]))", "legendFormat": "{{reason}}"}]},
+    {"id": 6, "type": "timeseries", "title": "Drift and Repairs", "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "targets": [{"expr": "sum by(kind) (increase(msp_resource_ingestion_reconcile_differences_total[10m]))", "legendFormat": "{{kind}}"}]},
+    {"id": 7, "type": "timeseries", "title": "Worker Availability", "gridPos": {"x": 0, "y": 24, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "targets": [{"expr": "up{job=\"vector-worker\"}", "legendFormat": "{{instance}}"}]},
+    {"id": 8, "type": "stat", "title": "Frozen Quality Probe", "gridPos": {"x": 12, "y": 24, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "targets": [{"expr": "msp_vector_quality_probe_success"}]}
+  ]
+}

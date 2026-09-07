@@ -33,14 +33,18 @@ var resourceCollectionPattern = regexp.MustCompile(`^resource_[0-9a-f]{32}_[0-9a
 // identity and vector dimensions are supplied by the application generation
 // contract, not guessed by this adapter.
 type Config struct {
-	BaseURL        string
-	APIKey         string
-	Collection     string
-	Timeout        time.Duration
-	HealthTimeout  time.Duration
-	MaxBatchSize   int
-	WaitForChanges bool
-	PayloadIndexes []string
+	BaseURL                string
+	APIKey                 string
+	Collection             string
+	Timeout                time.Duration
+	HealthTimeout          time.Duration
+	MaxBatchSize           int
+	WaitForChanges         bool
+	PayloadIndexes         []string
+	CAFile                 string
+	ShardNumber            int
+	ReplicationFactor      int
+	WriteConsistencyFactor int
 }
 
 // Option customizes a Client, primarily for deterministic tests.
@@ -64,15 +68,18 @@ func WithHTTPClient(httpClient *http.Client) Option {
 
 // Client is a small REST adapter for the Qdrant API.
 type Client struct {
-	baseURL        *url.URL
-	apiKey         string
-	collection     string
-	timeout        time.Duration
-	healthTimeout  time.Duration
-	maxBatchSize   int
-	waitForChanges bool
-	payloadIndexes []resourceapp.VectorPayloadIndex
-	httpClient     *http.Client
+	baseURL                *url.URL
+	apiKey                 string
+	collection             string
+	timeout                time.Duration
+	healthTimeout          time.Duration
+	maxBatchSize           int
+	waitForChanges         bool
+	payloadIndexes         []resourceapp.VectorPayloadIndex
+	httpClient             *http.Client
+	shardNumber            int
+	replicationFactor      int
+	writeConsistencyFactor int
 
 	mu                  sync.RWMutex
 	resourceCollections bool
@@ -81,6 +88,9 @@ type Client struct {
 
 // New validates connection settings and creates a Qdrant client.
 func New(cfg Config, options ...Option) (*Client, error) {
+	if cfg.ShardNumber < 0 || cfg.ShardNumber > 1024 || cfg.ReplicationFactor < 0 || cfg.ReplicationFactor > 32 || cfg.WriteConsistencyFactor < 0 || cfg.WriteConsistencyFactor > cfg.ReplicationFactor {
+		return nil, errors.New("invalid qdrant collection topology")
+	}
 	baseURL, err := parseBaseURL(cfg.BaseURL)
 	if err != nil {
 		return nil, err
@@ -115,17 +125,24 @@ func New(cfg Config, options ...Option) (*Client, error) {
 		}
 		payloadIndexes = append(payloadIndexes, resourceapp.VectorPayloadIndex{Field: field, Kind: "keyword"})
 	}
+	httpClient, err := secureHTTPClient(cfg.CAFile, requestTimeout)
+	if err != nil {
+		return nil, err
+	}
 	client := &Client{
-		baseURL:            baseURL,
-		apiKey:             strings.TrimSpace(cfg.APIKey),
-		collection:         collection,
-		timeout:            requestTimeout,
-		healthTimeout:      healthTimeout,
-		maxBatchSize:       maxBatchSize,
-		waitForChanges:     cfg.WaitForChanges,
-		payloadIndexes:     payloadIndexes,
-		httpClient:         &http.Client{Timeout: requestTimeout},
-		expectedDimensions: make(map[string]int),
+		baseURL:                baseURL,
+		apiKey:                 strings.TrimSpace(cfg.APIKey),
+		collection:             collection,
+		timeout:                requestTimeout,
+		healthTimeout:          healthTimeout,
+		maxBatchSize:           maxBatchSize,
+		waitForChanges:         cfg.WaitForChanges,
+		payloadIndexes:         payloadIndexes,
+		httpClient:             httpClient,
+		shardNumber:            cfg.ShardNumber,
+		replicationFactor:      cfg.ReplicationFactor,
+		writeConsistencyFactor: cfg.WriteConsistencyFactor,
+		expectedDimensions:     make(map[string]int),
 	}
 	for _, option := range options {
 		if option == nil {

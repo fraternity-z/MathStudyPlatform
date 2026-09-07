@@ -85,6 +85,10 @@ type Config struct {
 	QdrantHealthTimeout      time.Duration
 	QdrantMaxBatchSize       int
 	QdrantWaitForChanges     bool
+	QdrantCAFile             string
+	QdrantShardNumber        int
+	QdrantReplicationFactor  int
+	QdrantWriteConsistency   int
 
 	JWTSecretKey          string
 	JWTAlgorithm          string
@@ -213,6 +217,10 @@ func Load() (Config, error) {
 		QdrantHealthTimeout:       envSeconds("QDRANT_HEALTH_TIMEOUT_SECONDS", 3*time.Second),
 		QdrantMaxBatchSize:        envInt("QDRANT_MAX_BATCH_SIZE", 64),
 		QdrantWaitForChanges:      envBool("QDRANT_WAIT_FOR_CHANGES", true),
+		QdrantCAFile:              envString("QDRANT_CA_FILE", ""),
+		QdrantShardNumber:         envInt("QDRANT_SHARD_NUMBER", 0),
+		QdrantReplicationFactor:   envInt("QDRANT_REPLICATION_FACTOR", 0),
+		QdrantWriteConsistency:    envInt("QDRANT_WRITE_CONSISTENCY_FACTOR", 0),
 		JWTSecretKey:              envString("JWT_SECRET_KEY", defaultJWTSecretKey),
 		JWTAlgorithm:              strings.ToUpper(envString("JWT_ALGORITHM", "HS256")),
 		JWTAccessTokenExpire:      time.Duration(envInt("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", 30)) * time.Minute,
@@ -275,6 +283,9 @@ func Load() (Config, error) {
 		EinoMaxIterations:                        envInt("EINO_MAX_ITERATIONS", 8),
 	}
 
+	if err := loadSecretFiles(&cfg); err != nil {
+		return Config{}, err
+	}
 	if cfg.Port <= 0 || cfg.Port > 65535 {
 		return Config{}, fmt.Errorf("GO_API_PORT must be between 1 and 65535, got %d", cfg.Port)
 	}
@@ -897,6 +908,20 @@ func validateQdrantConfig(cfg Config) error {
 	}
 	if isStrictEnvironment(cfg.Environment) && strings.TrimSpace(cfg.QdrantAPIKey) == "" {
 		return errors.New("QDRANT_API_KEY must not be empty when QDRANT_ENABLED=true outside development")
+	}
+	if cfg.QdrantShardNumber < 0 || cfg.QdrantShardNumber > 1024 || cfg.QdrantReplicationFactor < 0 || cfg.QdrantReplicationFactor > 32 || cfg.QdrantWriteConsistency < 0 || cfg.QdrantWriteConsistency > cfg.QdrantReplicationFactor {
+		return errors.New("invalid QDRANT shard, replication or write consistency limits")
+	}
+	if isStrictEnvironment(cfg.Environment) {
+		if parsed.Scheme != "https" {
+			return errors.New("QDRANT_URL must use HTTPS outside development")
+		}
+		if cfg.QdrantShardNumber < 1 || cfg.QdrantReplicationFactor < 3 || cfg.QdrantWriteConsistency < 2 {
+			return errors.New("production Qdrant requires explicit shards, at least 3 replicas and write consistency 2")
+		}
+		if cfg.FernetSecretKey == "" {
+			return errors.New("FERNET_SECRET_KEY is required for production vector credentials")
+		}
 	}
 	return nil
 }

@@ -43,6 +43,7 @@ type IngestionWorker struct {
 	leaseLost  atomic.Uint64
 	inflight   atomic.Int64
 	durationMS atomic.Uint64
+	stages     ingestionStageMetrics
 }
 
 func NewIngestionWorker(repo IngestionRepository, objects ObjectReader, parser DocumentParser, chunker Chunker, models IngestionModelProvider, embeddings EmbeddingProvider, index IngestionVectorIndex, logger *slog.Logger, cfg IngestionWorkerConfig) (*IngestionWorker, error) {
@@ -113,6 +114,7 @@ func (w *IngestionWorker) Run(ctx context.Context) error {
 func (w *IngestionWorker) ProcessOne(ctx context.Context, owner string) (bool, error) {
 	now := time.Now().UTC()
 	work, ok, err := w.repo.ClaimIngestionJob(ctx, owner, now, now.Add(w.config.LeaseDuration))
+	w.stages.observe(0, now, err)
 	if err != nil || !ok {
 		return ok, err
 	}
@@ -142,6 +144,9 @@ func (w *IngestionWorker) ProcessOne(ctx context.Context, owner string) (bool, e
 		}
 	}()
 	err = w.process(jobCtx, work)
+	w.logger.Info("resource processing trace", "trace_id", work.Lease.JobID, "attempt", work.Lease.Attempt,
+		"resource_id", work.Job.ResourceID, "document_version_id", work.Job.DocumentVersionID, "generation_id", work.Generation.ID,
+		"action", work.Job.Type, "success", err == nil, "duration_ms", time.Since(started).Milliseconds())
 	cancel()
 	<-heartbeatDone
 	if err == nil {
@@ -208,7 +213,9 @@ func (w *IngestionWorker) process(ctx context.Context, work IngestionWork) error
 		}
 	}
 	if len(chunks) == 0 || work.Job.Type == IngestionJobIngest {
+		started := time.Now()
 		reader, metadata, err := w.objects.Open(ctx, work.Source)
+		w.stages.observe(1, started, err)
 		if err != nil {
 			return err
 		}
@@ -217,12 +224,16 @@ func (w *IngestionWorker) process(ctx context.Context, work IngestionWork) error
 			return ErrObjectUnsupported
 		}
 		metadata.Filename = work.Metadata.Filename
+		started = time.Now()
 		document, parseErr := w.parser.Parse(ctx, ParseInput{Reader: reader, Metadata: metadata})
+		w.stages.observe(2, started, parseErr)
 		reader.Close()
 		if parseErr != nil {
 			return parseErr
 		}
+		started = time.Now()
 		drafts, err := w.chunker.Chunk(ctx, document, ChunkPolicy{MaxTokens: min(model.MaxTokens, 4096), OverlapTokens: min(model.MaxTokens/8, 256), MaxCharacters: 1200})
+		w.stages.observe(3, started, err)
 		if err != nil {
 			return err
 		}
@@ -237,7 +248,7 @@ func (w *IngestionWorker) process(ctx context.Context, work IngestionWork) error
 	if len(chunks) == 0 {
 		return ErrParseFailed
 	}
-	if err := w.index.EnsureCollection(ctx, ingestionCollectionSpec(work.Generation)); err != nil {
+	if err := w.index.EnsureCollection(ctx, IngestionCollectionSpec(work.Generation)); err != nil {
 		return err
 	}
 	receipts := make([]ManifestReceipt, 0, len(chunks))
@@ -272,7 +283,9 @@ func (w *IngestionWorker) writeBatch(ctx context.Context, work IngestionWork, ch
 	for i, chunk := range chunks {
 		inputs[i] = chunk.Draft.Content
 	}
+	started := time.Now()
 	response, err := w.embeddings.Embed(ctx, EmbeddingRequest{Model: work.Generation.Model, Inputs: inputs})
+	w.stages.observe(4, started, err)
 	if err != nil {
 		return nil, err
 	}
@@ -300,7 +313,10 @@ func (w *IngestionWorker) writeBatch(ctx context.Context, work IngestionWork, ch
 		}}
 		receipts[i] = ManifestReceipt{ID: chunk.ManifestID, EmbeddingSHA256: hash}
 	}
-	if err := w.index.Upsert(ctx, VectorBatch{Route: work.Generation.Collection, Points: points, Wait: true}); err != nil {
+	started = time.Now()
+	writeErr := w.index.Upsert(ctx, VectorBatch{Route: work.Generation.Collection, Points: points, Wait: true})
+	w.stages.observe(5, started, writeErr)
+	if err := writeErr; err != nil {
 		return nil, err
 	}
 	verified, err := w.index.GetPoints(ctx, work.Generation.Collection, ids)
@@ -328,7 +344,9 @@ func (w *IngestionWorker) complete(ctx context.Context, lease IngestionLease, re
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	started := time.Now()
 	ok, err := w.repo.CompleteIngestionJob(ctx, lease, receipts, time.Now().UTC())
+	w.stages.observe(6, started, err)
 	if err != nil {
 		return err
 	}
@@ -338,7 +356,8 @@ func (w *IngestionWorker) complete(ctx context.Context, lease IngestionLease, re
 	return nil
 }
 
-func ingestionCollectionSpec(generation IngestionGeneration) VectorCollectionSpec {
+// IngestionCollectionSpec is shared by ingestion and administrative verification.
+func IngestionCollectionSpec(generation IngestionGeneration) VectorCollectionSpec {
 	fields := []VectorPayloadIndex{{Field: "tenant_id", Kind: "keyword"}, {Field: "knowledge_base_id", Kind: "keyword"}, {Field: "resource_id", Kind: "keyword"}, {Field: "generation_id", Kind: "keyword"}, {Field: "visibility", Kind: "keyword"}}
 	return VectorCollectionSpec{Route: generation.Collection, Dimension: generation.Model.Dimension, Distance: generation.Model.Distance, PayloadIndexes: fields}
 }
@@ -411,5 +430,5 @@ func classifyIngestionFailure(err error) (string, bool) {
 }
 
 func (w *IngestionWorker) Metrics() string {
-	return fmt.Sprintf("# TYPE msp_resource_ingestion_completed_total counter\nmsp_resource_ingestion_completed_total %d\n# TYPE msp_resource_ingestion_failed_attempts_total counter\nmsp_resource_ingestion_failed_attempts_total %d\n# TYPE msp_resource_ingestion_lease_lost_total counter\nmsp_resource_ingestion_lease_lost_total %d\n# TYPE msp_resource_ingestion_inflight gauge\nmsp_resource_ingestion_inflight %d\n# TYPE msp_resource_ingestion_duration_seconds_total counter\nmsp_resource_ingestion_duration_seconds_total %.3f\n", w.processed.Load(), w.failed.Load(), w.leaseLost.Load(), w.inflight.Load(), float64(w.durationMS.Load())/1000)
+	return w.stages.text() + fmt.Sprintf("# TYPE msp_resource_ingestion_completed_total counter\nmsp_resource_ingestion_completed_total %d\n# TYPE msp_resource_ingestion_failed_attempts_total counter\nmsp_resource_ingestion_failed_attempts_total %d\n# TYPE msp_resource_ingestion_lease_lost_total counter\nmsp_resource_ingestion_lease_lost_total %d\n# TYPE msp_resource_ingestion_inflight gauge\nmsp_resource_ingestion_inflight %d\n# TYPE msp_resource_ingestion_duration_seconds_total counter\nmsp_resource_ingestion_duration_seconds_total %.3f\n", w.processed.Load(), w.failed.Load(), w.leaseLost.Load(), w.inflight.Load(), float64(w.durationMS.Load())/1000)
 }

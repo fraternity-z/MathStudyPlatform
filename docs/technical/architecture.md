@@ -80,6 +80,8 @@ backend/
 
 `IngestionService` 在当前私有存储快照写文件前先登记 staging；资源、不可变文档版本、任务和 outbox 在 PostgreSQL 事务内登记。`IngestionWorker` 依赖对象读取、解析、分块、embedding 和 vector port，通过 `owner + attempt + lease` 围栏提交状态；外部解析和模型调用不占用数据库事务。每代索引使用独立 collection，写入后逐点验证 payload/hash 并核对数量，满足整代发布屏障后才在 PostgreSQL 原子切换当前代。切换前仍读取旧代，旧代向量保留 7 天；下线或删除先撤销 PostgreSQL 可见性，再异步清理各代向量。对账以实时 manifest 为准，修复缺失/错配并清理多余向量。
 
+P4 为显式 rebuild 和替换既有 active 的新模型代增加 `release_approved`：构建完成停在 `ready`，必须经过完整 schema/对账核验及管理员验收报告摘要后 promote。空知识库会物化空 collection 并进入 ready。回滚仅限保留期内且覆盖全部当前文档、模型仍 active、没有竞争构建的旧代；操作和审计同事务，不恢复已删除或撤权资料。运行时支持文件 secret、私有 CA、生产 3/3/2 拓扑校验，worker 的 TLS/token 管理接口区分 live/ready，提供有界运维摘要。检索 trace、分阶段指标、告警面板、加密备份与恢复入口见[运行手册](vector-operations.md)。本地准生产验收不等于外部生产上线。
+
 详细终态任务及资源入库 outbox 保留 30 天，最后一次任务结果保存在文档紧凑快照中，清理不丢失教师状态、失败重试路由和代发布屏障。超过 24 小时且未被文档、版本或资产引用的 staging 才可领取清理，使用独立删除租约与当前私有命名空间检查；已登记文档的原文件仍按业务保留，不因下线或向量退役而自动删除。该流程不递归扫描或删除存储目录。
 
 | 层 | 负责 | 不负责 |
@@ -169,4 +171,4 @@ backend/
 
 ## 数据与迁移
 
-PostgreSQL 是业务、版本和权限数据源，Redis 用于缓存和运行时辅助状态，Qdrant 仅保存可重建的向量和最小 payload。数据库结构由 `backend/migrations/` 中的 Go forward migration 管理；`0017` 追加资源中心契约，`0018` 追加管理员不可变模型配置，`0019` 增加 `pg_trgm`/检索索引与 nullable 会话引用元数据，`0020` 追加入库幂等、任务关联与对账游标，`0021` 追加终态保留快照与未引用上传 staging。后续从 `0022` 起追加。历史 Alembic 链和开发期增量链已退出当前工作区。迁移规则见 [Go 数据库迁移策略](../../backend/migrations/README.md)。
+PostgreSQL 是业务、版本和权限数据源，Redis 用于缓存和运行时辅助状态，Qdrant 仅保存可重建的向量和最小 payload。数据库结构由 `backend/migrations/` 中的 Go forward migration 管理；`0017` 追加资源中心契约，`0018` 追加管理员不可变模型配置，`0019` 增加 `pg_trgm`/检索索引与 nullable 会话引用元数据，`0020` 追加入库幂等、任务关联与对账游标，`0021` 追加终态保留快照与未引用上传 staging。`0022` 增加发布审批门与运维事务审计，后续从 `0023` 起追加。历史 Alembic 链和开发期增量链已退出当前工作区。迁移规则见 [Go 数据库迁移策略](../../backend/migrations/README.md)。

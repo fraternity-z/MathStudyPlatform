@@ -15,7 +15,7 @@ func resourceSearchObserver(store *metrics.Store, logger *slog.Logger) resourcea
 			VectorCandidates: observation.VectorCandidates, FilteredCandidates: observation.FilteredCandidates,
 			References: observation.References, DegradedReasons: observation.DegradedReasons,
 		})
-		logger.Info("resource retrieval completed", "mode", observation.Mode, "failed", observation.Failed,
+		logger.Info("resource retrieval completed", "trace_id", observation.TraceID, "stages", observation.Stages, "mode", observation.Mode, "failed", observation.Failed,
 			"duration_ms", observation.Duration.Milliseconds(), "fts_candidates", observation.LexicalCandidates,
 			"vector_candidates", observation.VectorCandidates, "filtered_candidates", observation.FilteredCandidates,
 			"references", observation.References, "degraded_reasons", observation.DegradedReasons)

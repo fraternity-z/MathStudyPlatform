@@ -1,0 +1,68 @@
+groups:
+  - name: resource-vector
+    rules:
+      - alert: VectorWorkerUnavailable
+        expr: up{job="vector-worker"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "Vector worker metrics unavailable", runbook: "docs/technical/vector-operations.md#worker"}
+      - alert: VectorQueueBacklog
+        expr: max(msp_resource_ingestion_oldest_wait_seconds) > 300
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Document queue waiting over five minutes", runbook: "docs/technical/vector-operations.md#worker"}
+      - alert: VectorDeadJobs
+        expr: max(msp_resource_ingestion_queue_jobs{state="dead"}) > 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: "Document jobs require intervention", runbook: "docs/technical/vector-operations.md#worker"}
+      - alert: VectorExpiredLease
+        expr: max(msp_resource_ingestion_expired_leases) > 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: "Expired leases are not being reclaimed", runbook: "docs/technical/vector-operations.md#worker"}
+      - alert: VectorDrift
+        expr: sum(increase(msp_resource_ingestion_reconcile_differences_total{kind=~"missing|mismatched|extra"}[10m])) > 0
+        for: 1m
+        labels: {severity: warning}
+        annotations: {summary: "Vector index drift detected", runbook: "docs/technical/vector-operations.md#recovery"}
+      - alert: VectorReconcileFailed
+        expr: sum(increase(msp_resource_ingestion_reconcile_runs_total{result="failed"}[10m])) > 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: "Vector reconciliation failed", runbook: "docs/technical/vector-operations.md#recovery"}
+      - alert: VectorSearchDegraded
+        expr: sum(rate(msp_resource_search_degraded_requests_total[5m])) / clamp_min(sum(rate(msp_resource_search_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Resource retrieval degradation exceeds five percent", runbook: "docs/technical/vector-operations.md#faults"}
+      - alert: VectorSearchLatency
+        expr: histogram_quantile(0.95, sum by(le) (rate(msp_resource_search_duration_seconds_bucket{stage="total"}[5m]))) > 3
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Resource retrieval P95 exceeds three seconds", runbook: "docs/technical/vector-operations.md#capacity"}
+      - alert: VectorEmbeddingFailures
+        expr: sum(rate(msp_resource_ingestion_stage_failures_total{stage="embedding"}[5m])) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Document embedding is failing", runbook: "docs/technical/vector-operations.md#faults"}
+      - alert: VectorOutboxDead
+        expr: max(msp_resource_ingestion_outbox_dead) > 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: "Resource outbox events require intervention", runbook: "docs/technical/vector-operations.md#worker"}
+      - alert: VectorDiskCapacity
+        expr: node_filesystem_avail_bytes{mountpoint="/var/lib/qdrant"} / node_filesystem_size_bytes{mountpoint="/var/lib/qdrant"} < 0.2
+        for: 10m
+        labels: {severity: critical}
+        annotations: {summary: "Qdrant disk free space below twenty percent", runbook: "docs/technical/vector-operations.md#capacity"}
+      - alert: VectorQualityProbeMissing
+        expr: absent(msp_vector_quality_probe_success) or (time() - msp_vector_quality_probe_timestamp_seconds > 86400)
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: "Daily frozen quality probe missing or stale", runbook: "docs/technical/vector-operations.md#quality"}
+      - alert: VectorQualityProbeFailed
+        expr: msp_vector_quality_probe_success == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: "Frozen resource quality probe failed", runbook: "docs/technical/vector-operations.md#quality"}

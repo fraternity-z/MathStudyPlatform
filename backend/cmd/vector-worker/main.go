@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
+	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -38,6 +42,8 @@ type options struct {
 	apply                                                              bool
 	concurrency, maxPages                                              int
 	reconcileInterval, timeout                                         time.Duration
+	actorID, jobID, evidence, managementTokenFile                      string
+	tlsCert, tlsKey                                                    string
 }
 
 type ingestionRunner interface {
@@ -54,13 +60,17 @@ type maintenanceRepository interface {
 }
 
 type runtime struct {
-	worker       ingestionRunner
-	repo         maintenanceRepository
-	models       resourceapp.IngestionModelProvider
-	ping         func(context.Context) error
-	close        func()
-	maintenance  *maintenanceMetrics
-	deleteObject func(context.Context, resourceapp.ObjectSource) error
+	worker           ingestionRunner
+	repo             maintenanceRepository
+	models           resourceapp.IngestionModelProvider
+	ping             func(context.Context) error
+	close            func()
+	maintenance      *maintenanceMetrics
+	deleteObject     func(context.Context, resourceapp.ObjectSource) error
+	managementToken  string
+	stopping         *atomic.Bool
+	verifyGeneration func(context.Context, resourceapp.IngestionGeneration) error
+	ensureGeneration func(context.Context, resourceapp.IngestionGeneration) error
 }
 
 func main() {
@@ -91,8 +101,14 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 	flags.StringVar(&o.generationID, "generation", "", "explicit generation UUID for reconciliation")
 	flags.StringVar(&o.knowledgeBaseID, "knowledge-base", "", "explicit knowledge-base UUID")
 	flags.BoolVar(&o.apply, "apply", false, "apply scoped maintenance changes; otherwise report only")
+	flags.StringVar(&o.actorID, "actor", "", "active administrator UUID for audited operations")
+	flags.StringVar(&o.jobID, "job", "", "explicit failed job UUID")
+	flags.StringVar(&o.evidence, "evidence-sha256", "", "SHA-256 of the approved validation or incident record")
+	flags.StringVar(&o.managementTokenFile, "management-token-file", "", "token file required for a non-loopback management listener")
+	flags.StringVar(&o.tlsCert, "tls-cert", "", "management TLS certificate file")
+	flags.StringVar(&o.tlsKey, "tls-key", "", "management TLS private key file")
 	flags.Usage = func() {
-		fmt.Fprintln(output, "Usage: vector-worker [run|reconcile|rebuild] [flags]")
+		fmt.Fprintln(output, "Usage: vector-worker [run|status|reconcile|rebuild|promote|rollback|retry-job] [flags]")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -101,17 +117,20 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 	if flags.NArg() != 0 {
 		return o, errors.New("unexpected positional arguments")
 	}
-	if o.command != "run" && o.command != "reconcile" && o.command != "rebuild" {
+	if o.command != "run" && o.command != "reconcile" && o.command != "rebuild" && o.command != "status" && o.command != "promote" && o.command != "rollback" && o.command != "retry-job" {
 		return o, errors.New("unknown worker command")
 	}
 	if o.concurrency < 1 || o.concurrency > 8 || o.maxPages < 1 || o.maxPages > 10000 || o.timeout < time.Second || o.timeout > 10*time.Minute || o.reconcileInterval < time.Second {
 		return o, errors.New("worker limits are invalid")
 	}
 	host, _, err := net.SplitHostPort(o.listen)
-	if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
-		return o, errors.New("worker management address must be loopback")
+	if err != nil || net.ParseIP(host) == nil || (!net.ParseIP(host).IsLoopback() && (o.managementTokenFile == "" || o.tlsCert == "" || o.tlsKey == "")) {
+		return o, errors.New("non-loopback worker management requires TLS and a token file")
 	}
-	for _, id := range []string{o.generationID, o.knowledgeBaseID} {
+	if (o.tlsCert == "") != (o.tlsKey == "") {
+		return o, errors.New("management TLS requires both certificate and key")
+	}
+	for _, id := range []string{o.generationID, o.knowledgeBaseID, o.actorID, o.jobID} {
 		if id != "" {
 			parsed, err := uuid.Parse(id)
 			if err != nil || parsed.String() != id {
@@ -128,6 +147,27 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 	if o.command == "reconcile" && o.apply && o.generationID == "" {
 		return o, errors.New("reconcile --apply requires --generation")
 	}
+	if o.command == "promote" || o.command == "rollback" || o.command == "retry-job" {
+		if o.knowledgeBaseID != "" {
+			return o, errors.New("administrative operations use one explicit generation or job scope")
+		}
+		decoded, err := hex.DecodeString(o.evidence)
+		if o.actorID == "" || err != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != o.evidence {
+			return o, errors.New("operation requires --actor and a canonical --evidence-sha256")
+		}
+		if o.command == "retry-job" {
+			if o.jobID == "" || o.generationID != "" {
+				return o, errors.New("retry-job requires --job only")
+			}
+		} else if o.generationID == "" || o.jobID != "" {
+			return o, errors.New("generation operation requires --generation only")
+		}
+	} else if o.actorID != "" || o.jobID != "" || o.evidence != "" {
+		return o, errors.New("audit flags require an administrative operation")
+	}
+	if o.command == "status" && (o.apply || o.generationID != "" || o.knowledgeBaseID != "") {
+		return o, errors.New("status is read-only and unscoped")
+	}
 	return o, nil
 }
 
@@ -143,6 +183,16 @@ func execute(ctx context.Context, args []string, output, diagnostics io.Writer, 
 		return err
 	}
 	defer rt.close()
+	if o.managementTokenFile != "" {
+		data, err := os.ReadFile(o.managementTokenFile)
+		if err != nil {
+			return errors.New("worker management token is unavailable")
+		}
+		rt.managementToken = strings.TrimSpace(string(data))
+		if len(rt.managementToken) < 32 || len(rt.managementToken) > 4096 || strings.ContainsAny(rt.managementToken, "\r\n\x00") {
+			return errors.New("worker management token is invalid")
+		}
+	}
 	if o.command == "run" {
 		return serveWorker(ctx, rt, o)
 	}
@@ -214,6 +264,7 @@ func runtimeFromConfig(ctx context.Context, cfg config.Config, o options) (runti
 		return runtime{}, err
 	}
 	index, err := qdrantadapter.New(qdrantadapter.Config{BaseURL: cfg.QdrantURL, APIKey: cfg.QdrantAPIKey, Collection: cfg.QdrantCollection,
+		CAFile: cfg.QdrantCAFile, ShardNumber: cfg.QdrantShardNumber, ReplicationFactor: cfg.QdrantReplicationFactor, WriteConsistencyFactor: cfg.QdrantWriteConsistency,
 		Timeout: cfg.QdrantTimeout, HealthTimeout: cfg.QdrantHealthTimeout, MaxBatchSize: cfg.QdrantMaxBatchSize, WaitForChanges: true, PayloadIndexes: cfg.QdrantPayloadIndexFields}, qdrantadapter.WithResourceCollections())
 	if err != nil {
 		return runtime{}, errors.New("worker vector configuration is invalid")
@@ -226,6 +277,13 @@ func runtimeFromConfig(ctx context.Context, cfg config.Config, o options) (runti
 	}
 	ok = true
 	return runtime{worker: worker, repo: repo, models: models, close: pool.Close, maintenance: &maintenanceMetrics{},
+		verifyGeneration: func(ctx context.Context, g resourceapp.IngestionGeneration) error {
+			_, err := index.VerifyCollection(ctx, resourceapp.IngestionCollectionSpec(g))
+			return err
+		},
+		ensureGeneration: func(ctx context.Context, g resourceapp.IngestionGeneration) error {
+			return index.EnsureCollection(ctx, resourceapp.IngestionCollectionSpec(g))
+		},
 		deleteObject: func(ctx context.Context, source resourceapp.ObjectSource) error {
 			if err := storage.ActivateStored(ctx); err != nil {
 				return resourceapp.ErrIngestionUnavailable
@@ -256,6 +314,12 @@ func (r refreshingObjectReader) Open(ctx context.Context, source resourceapp.Obj
 
 func runMaintenance(ctx context.Context, rt runtime, o options, output io.Writer) error {
 	encoder := json.NewEncoder(output)
+	if o.command == "status" {
+		return writeOperationsStatus(ctx, rt, output)
+	}
+	if o.command == "promote" || o.command == "rollback" || o.command == "retry-job" {
+		return runAuditedOperation(ctx, rt, o, output)
+	}
 	if o.command == "rebuild" {
 		model, _, err := rt.models.CurrentModel(ctx)
 		if err != nil {
@@ -266,6 +330,12 @@ func runMaintenance(ctx context.Context, rt runtime, o options, output io.Writer
 		}
 		g, err := rt.repo.BeginIngestionRebuild(ctx, o.knowledgeBaseID, model.ID, time.Now().UTC())
 		if err != nil {
+			return err
+		}
+		if rt.ensureGeneration == nil {
+			return resourceapp.ErrIngestionUnavailable
+		}
+		if err := rt.ensureGeneration(ctx, g); err != nil {
 			return err
 		}
 		return encoder.Encode(map[string]any{"command": "rebuild", "dry_run": false, "knowledge_base_id": g.KnowledgeBaseID, "generation_id": g.ID, "generation": g.Number, "state": g.State})
@@ -303,16 +373,35 @@ func runMaintenance(ctx context.Context, rt runtime, o options, output io.Writer
 
 func managementHandler(rt runtime) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /live", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, "{\"status\":\"alive\"}\n")
+	})
+	ready := func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		w.Header().Set("Content-Type", "application/json")
+		if rt.stopping != nil && rt.stopping.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, "{\"status\":\"stopping\"}\n")
+			return
+		}
 		if err := rt.ping(ctx); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = io.WriteString(w, "{\"status\":\"unavailable\"}\n")
 			return
 		}
 		_, _ = io.WriteString(w, "{\"status\":\"ok\"}\n")
+	}
+	mux.HandleFunc("GET /health", ready)
+	mux.HandleFunc("GET /ready", ready)
+	mux.HandleFunc("GET /operations", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		w.Header().Set("Content-Type", "application/json")
+		if err := writeOperationsStatus(ctx, rt, w); err != nil {
+			http.Error(w, "operations unavailable", http.StatusServiceUnavailable)
+		}
 	})
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -330,11 +419,22 @@ func managementHandler(rt runtime) http.Handler {
 			_, _ = fmt.Fprintf(w, "msp_resource_ingestion_queue_jobs{state=%q} %d\n", state, stats[state])
 		}
 		_, _ = fmt.Fprintf(w, "# TYPE msp_resource_ingestion_oldest_wait_seconds gauge\nmsp_resource_ingestion_oldest_wait_seconds %d\n", stats["oldest_wait_seconds"])
+		for _, name := range []string{"expired_leases", "outbox_pending", "outbox_dead"} {
+			_, _ = fmt.Fprintf(w, "# TYPE msp_resource_ingestion_%s gauge\nmsp_resource_ingestion_%s %d\n", name, name, stats[name])
+		}
 	})
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if rt.managementToken != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+rt.managementToken)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func serveWorker(ctx context.Context, rt runtime, o options) error {
+	rt.stopping = &atomic.Bool{}
 	if rt.maintenance == nil {
 		rt.maintenance = &maintenanceMetrics{}
 	}
@@ -346,7 +446,14 @@ func serveWorker(ctx context.Context, rt runtime, o options) error {
 	defer cancel()
 	server := &http.Server{Handler: managementHandler(rt), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
 	serverDone, workerDone, reconcileDone := make(chan error, 1), make(chan error, 1), make(chan struct{})
-	go func() { serverDone <- server.Serve(listener) }()
+	server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	go func() {
+		if o.tlsCert != "" {
+			serverDone <- server.ServeTLS(listener, o.tlsCert, o.tlsKey)
+		} else {
+			serverDone <- server.Serve(listener)
+		}
+	}()
 	go func() { workerDone <- rt.worker.Run(ctx) }()
 	go func() { defer close(reconcileDone); runReconciliationLoop(ctx, rt, o) }()
 	var result error
@@ -361,6 +468,7 @@ func serveWorker(ctx context.Context, rt runtime, o options) error {
 			result = errors.New("worker management server failed")
 		}
 	}
+	rt.stopping.Store(true)
 	cancel()
 	shutdown, stop := context.WithTimeout(context.Background(), 15*time.Second)
 	defer stop()

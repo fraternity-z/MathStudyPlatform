@@ -129,15 +129,17 @@ ORDER BY version;
 
 当前迁移链由 `0001` 至 `0021` 二十一个迁移组成。`0017` 提供资源中心版本、generation 和入库任务基础，`0018` 提供管理员 embedding 不可变配置，`0019` 增加 `session_messages.knowledge` nullable JSONB、`pg_trgm` 与检索索引。`0020` 补齐入库幂等登记、任务与 outbox/generation 关联及对账游标，`0021` 增加终态任务摘要和未引用上传 staging 的清理租约。部署前确认迁移账号可以在 `public` 安装 `pg_trgm`，并为索引创建预留维护窗口、磁盘和锁等待时间。
 
-空库首次记录版本 `1` 至 `21`，version 19 库应用 `0020`、`0021`，version 20 库只应用 `0021`，重复执行为 `applied_count=0`。执行前停止 API 和 worker 写入、完成可恢复备份；先迁移再启动新版本。`0019` 至 `0021` 不失效登录会话，旧消息保持 SQL NULL；应用回滚保留新增结构和引用记录，并先核对旧 API/worker 的兼容性。只有从 `0015` 之前升级时，旧的无 `auth_version` 令牌才需要统一重新登录，不能与旧签发逻辑混跑。
+空库首次记录版本 `1` 至 `22`，version 21 库只应用 `0022`，更早版本顺序补齐，重复执行为 `applied_count=0`。执行前停止 API 和 worker 写入、完成可恢复备份；先迁移再启动新版本。`0022` 增加发布审批和审计，不失效登录会话；旧 worker 不理解审批门，存在待发布代时禁止回退到旧二进制。只有从 `0015` 之前升级时，旧的无 `auth_version` 令牌才需要统一重新登录。
 
-迁移后确认版本 21、`public.pg_trgm`、检索索引、`session_messages.knowledge`、任务关联和 `resource_ingestion_uploads` 均生效。知识列只存引用与降级元数据，不存来源正文。检索仅消费当前已发布且有 indexed manifest 的版本；迁移不会回填旧资源 chunk，也不会启动 worker。历史本地对象仍必须具备可信所有权，引用打开统一走当前授权接口，不得绕过 Go API。旧草稿迁移账本仍按 [迁移策略](../../backend/migrations/README.md) 单独校准，禁止删除记录盲目重放。
+迁移后确认版本 22、`public.pg_trgm`、检索索引、`session_messages.knowledge`、任务关联、`resource_ingestion_uploads`、`release_approved` 和 `resource_operations_audit` 均生效。知识列只存引用与降级元数据，不存来源正文。检索仅消费当前已发布且有 indexed manifest 的版本；迁移不会回填旧资源 chunk，也不会启动 worker。历史本地对象仍必须具备可信所有权，引用打开统一走当前授权接口，不得绕过 Go API。旧草稿迁移账本仍按 [迁移策略](../../backend/migrations/README.md) 单独校准。
 
 重整前执行过旧开发迁移链的数据库（该旧链也曾占用 `0001` 至 `0015`，但迁移名称和内容不同）不属于可原地升级目标。migration runner 会校验迁移版本、名称和未知记录，并在账本与当前代码不一致时拒绝继续。可丢弃的开发库应删除并重建；任何不可丢弃的库必须先停止发布，完成实际 schema、业务数据和 `go_schema_migrations` 核对，再设计专门的数据保留迁移，禁止删除版本记录后重放基线。
 
 若后续从不含提醒入队代码的旧应用升级，必须先应用包含提醒任务表的 forward migration，再排空并停止旧实例流量，完成所有新实例部署后统一开启 `WECHAT_MESSAGE_REMINDERS_ENABLED=true`。不能在旧实例仍接收写请求时直接混合启用：旧实例可以提交私信、通知或答疑，但不会生成提醒任务，且系统不从正文表回填历史任务。
 
 ## 文档入库运维
+
+P4 已增加独立的三节点 TLS 集群、两实例 worker、监控告警和加密恢复交付物，入口为 `deploy/vector/`；本节下面的 `vector` profile 命令仅用于显式 `development/test` 的开发单节点。生产配置和本地准生产演练步骤统一见[向量运行手册](vector-operations.md)。非开发配置要求 HTTPS、显式 shard、至少 3 副本和写一致性 2，不接受以开发单节点冒充生产拓扑。
 
 迁移完成后，先由管理员保存 private 存储后端，并验证、激活 embedding 模型版本，再启动独立 worker。API 与 worker 必须使用同一 PostgreSQL、稳定的 `FERNET_SECRET_KEY`、私有存储配置和本地 `UPLOADS_DIR`。Compose 的 worker 已共享可写 `uploads/` 挂载，供读取原文与回收未引用文件；不能改为只读。云存储需要当前 private bucket 的读取和删除权限，切换后端前应迁移仍需使用的对象。
 
@@ -152,7 +154,7 @@ docker compose --profile vector exec -T vector-worker wget -qO- http://127.0.0.1
 
 `run` 会实际消费队列和执行维护。默认并发 `2`，通过 `VECTOR_WORKER_CONCURRENCY` 调整，范围 `1` 至 `8`；任务租约 60 秒、每 10 秒续租、单任务总预算 10 分钟。任务最多自动领取 3 次，瞬态失败按退避重试，耗尽后进入失败终态；教师可在入库列表查看阶段和固定错误码，并在修复配置后显式重试。过期 worker 无权发布或确认已被接管的任务。停止时先停止接收新任务并取消在途调用；Compose 提供 30 秒退出宽限。
 
-管理 HTTP 只允许绑定回环地址，默认 `127.0.0.1:8091`，不会经前端或公网代理开放。`/health` 在 2 秒预算内检查 PostgreSQL 和 Qdrant；成功不代表模型调用或 PDF 解析已被验证。`/metrics` 包含入库完成/失败尝试、在途数、租约丢失、队列状态与最老等待时间，以及对账差异、终态清理和上传回收计数；采集器需在同一网络命名空间读取，或由受控本机转发采集。标签不包含文档 ID、租户 ID、对象 URL 或原始错误。至少告警 `dead` 队列、最老等待持续增长、租约丢失、对账失败及上传清理失败。
+管理 HTTP 默认绑定 `127.0.0.1:8091`；非回环监听必须提供 `--tls-cert`、`--tls-key`、`--management-token-file`，所有路径都验证 Bearer token。`/live` 表示进程存活，`/ready` 与兼容 `/health` 在 2 秒内检查 PostgreSQL/Qdrant，停止过程中不再就绪。`/metrics` 包含分阶段耗时、任务/outbox、过期租约、对账和清理指标，`/operations` 返回有界失败任务/代际摘要；全部禁止缓存。指标标签不包含文档 ID、租户 ID、对象 URL 或原始错误。现成告警与面板见 `deploy/vector/`。
 
 维护命令默认只读；替换下列 UUID 占位值后先查看输出，再执行限定范围的 `--apply`：
 
@@ -163,11 +165,11 @@ docker compose --profile vector exec -T vector-worker msp-vector-worker rebuild 
 docker compose --profile vector exec -T vector-worker msp-vector-worker rebuild --knowledge-base='<knowledge-base-uuid>' --apply
 ```
 
-参数要求规范 UUID。`reconcile --apply` 必须指定 generation，可再限知识库；`rebuild` 必须指定知识库且不能指定 generation，以管理员当前激活模型创建新代和任务。新代全部就绪后才原子替换，旧代在切换前继续服务。`run` 不接受 `--apply` 或范围参数。维护默认 `--max-pages=200`、`--timeout=2m`，允许范围分别为 `1` 至 `10000` 页和 `1s` 至 `10m`；输出 `complete=false` 表示有限扫描尚未完成，应继续后续批次，不能据此宣称全量一致。
+参数要求规范 UUID。`reconcile --apply` 必须指定 generation，可再限知识库；`rebuild` 以管理员当前模型创建新代及任务，新代完整后停在 `ready`，须按运行手册完成验收后显式 `promote`，旧代在切换前继续服务。`promote/rollback/retry-job` 要求当前有效管理员 ID、单一目标和验收/事故报告 SHA-256，变更与审计同事务。`run` 不接受 `--apply` 或范围参数。维护默认 `--max-pages=200`、`--timeout=2m`，允许范围分别为 `1` 至 `10000` 页和 `1s` 至 `10m`；`complete=false` 不能宣称全量一致。
 
 运行中的 worker 默认每 5 分钟执行有限对账与清理。退役 generation 的向量保留 7 天后回收，PostgreSQL 审计元数据仍保留；终态 job/outbox 保留 30 天后每轮各清理至多 1000 条，并保存最后任务摘要。上传对象先登记 staging，超过 24 小时仍未被资源、版本或资产引用时，才通过排他领取和 15 分钟 token 租约回收，每轮至多 8 个。删除限于当前 private 后端、当前命名空间的 `documents/ingestions/` 单个对象，禁止目录递归和跟随符号链接；不存在视为已回收，失败留待下一轮。资源下架或删除立即撤销检索/引用权限并异步清理向量，已登记的原始对象仍按业务保留策略保存，不属于未引用 staging 清理范围。
 
-本轮 Compose 配置校验通过；本机 Docker Engine pipe 不可用，因此未完成镜像构建与容器启动 smoke。原生隔离测试环境的验证与 Docker 部署验证分别记录。真实模型验收仅使用已审查的原创测试语料和独立账号，质量、容量结果及残余项以 [验收记录](../plans/resource-center-qdrant/TEST-ACCEPTANCE-2026-09-06.md) 为准，不能直接外推为生产容量承诺。
+P4 在本地 Ubuntu WSL 独立 Docker 引擎完成向量专项镜像、三节点、TLS、恢复、故障和告警演练；外部生产上线另行安排。新记录见 [P4 验收](../plans/resource-center-qdrant/TEST-ACCEPTANCE-2026-09-07.md)。此前真实语义质量仍以 [P3 验收](../plans/resource-center-qdrant/TEST-ACCEPTANCE-2026-09-06.md) 为准；本轮使用 Mock embedding 进行运维一致性验证，不重做或扩大真实模型费用预算。
 
 ## 反向代理
 
