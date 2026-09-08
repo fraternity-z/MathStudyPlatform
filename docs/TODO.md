@@ -2,7 +2,7 @@
 
 本文是仓库唯一的当前待办清单。技术文档和历史记录只引用这里，不再维护独立路线图。
 
-**更新时间**：2026-09-07
+**更新时间**：2026-09-08
 
 ## 优先级说明
 
@@ -20,7 +20,7 @@
 
 ### 资源中心向量检索
 
-- [ ] 按 P0-P6 分阶段接入 Qdrant：P0-P3/M3 已通过真实模型、质量与容量验收；2026-09-07 完成 P4 本地准生产范围的三节点 TLS、双 worker、发布审批与回滚、观测审计、加密备份恢复和真实告警闭环。项目负责人明确外部上线另行安排；P5/P6 和正式部署仍待后续推进。证据见[专项进度](plans/resource-center-qdrant/PROGRESS.md)、[P3 验收](plans/resource-center-qdrant/TEST-ACCEPTANCE-2026-09-06.md)及 [P4 验收](plans/resource-center-qdrant/TEST-ACCEPTANCE-2026-09-07.md)。
+- [ ] 按 P0-P6 分阶段接入 Qdrant：P0-P4/M4 已在批准范围通过。2026-09-08 P5 本轮完成中文词法修复（新编 30 条改写 Recall@5 1.0）、六组一万/八组十万条真实 Qdrant 索引对比及文本/入库 Mock 验证；十万条数值 ANN 质量门禁失败，P5 1/11、M5 未通过。按用户“收尾当前阶段并中断目标”的最新指令停止后续推进，P6 不启动，外部上线另行安排。详见[专项进度](plans/resource-center-qdrant/PROGRESS.md)和[本轮索引实验与收尾](plans/resource-center-qdrant/TEST-INDEX-2026-09-08.md)；历史[合成验收](plans/resource-center-qdrant/TEST-SYNTHETIC-2026-09-08.md)保留独立口径。
 
 ### AI 学习闭环
 

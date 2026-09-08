@@ -102,6 +102,8 @@ python3 scripts/vector-backup.py restore --bundle /secure/backup.age --identity-
 
 `scripts/vector-quality-probe.py` 是生产巡检工具，使用私有冻结 JSON（1-20 条 `query` 与 `expected_resource_ids`），调用正式鉴权搜索及引用接口，要求无降级、Recall@5 >= 0.90、逐条引用身份和 hash 匹配。token 从文件读取，输出只有数值指标，不输出 query、结果正文、token 或 ID。用短期专用低权限巡检账号 token，不硬编码登录信息。由现有调度器每日运行，输出到 node-exporter textfile 目录；失败/过期规则会触发告警。它是轻量在线探针，不替代 P5 的代表性质量评估。
 
+P5 新增 `scripts/vector-quality-evaluate.py`，按独立标注、摘要冻结的私有数据集生成 Recall/MRR/nDCG、引用、授权白名单、检索空结果及正常/降级分组报告。使用方式、退出码、样本格式见[质量评估手册](vector-quality-evaluation.md)。当前已完成工具与原创合成材料的真实 PG/HTTP、Mock 向量依赖验证；Tutor 无答案、真实模型质量和容量 SLO 需分别验收，不据此自动 promote generation。
+
 ## Capacity
 
 先确认是否容量不足，再增加并发；并发会同时放大 PG 连接、模型费用和 Qdrant 内存占用。默认两个 worker 总并发 4，每实例 PG pool 不超过 12。达到 20% 磁盘余量、持续 backlog 或 P95 超标时停止新增容量，保留 FTS 降级，执行 P5 负载评估。生产容量/SLO 只能引用相同拓扑、数据量、模型和负载的实测结果。
