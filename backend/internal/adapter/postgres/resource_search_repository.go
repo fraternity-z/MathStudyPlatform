@@ -102,30 +102,48 @@ func (r ResourceRepository) SearchLexical(ctx context.Context, scope resourceapp
 		pattern = "%" + strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(query) + "%"
 	}
 	args = append(args, query, limit, pattern)
-	// Any combined title/body match either matches the body alone or shares a
-	// query term with the title. Materialize the matching chunks too, so the
-	// planner cannot evaluate the expensive title/body predicate on every chunk
-	// before joining candidate IDs. Final ranking and authorization stay intact.
+	// Body recall includes individual terms so mixed title/body matches survive
+	// the bounded title preview. Materialize candidates before ranking; one title
+	// must not expand an entire large document into the expensive final SQL join.
 	rows, err := r.DB().Query(ctx, `
-		WITH lexical_candidates AS MATERIALIZED (
+		WITH lexical_query AS MATERIALIZED (
+			SELECT public.resource_han_terms_v1($12) AS terms
+		), lexical_candidates AS MATERIALIZED (
 			SELECT body.id FROM public.document_chunks body
 			WHERE body.deleted_at IS NULL
-			  AND to_tsvector('simple'::regconfig, body.content) @@ plainto_tsquery('simple'::regconfig, $12)
+			  AND to_tsvector('simple'::regconfig, body.content) @@ ANY (
+				ARRAY(SELECT plainto_tsquery('simple'::regconfig, term)
+					FROM unnest(tsvector_to_array(to_tsvector('simple'::regconfig, $12))) term))
 			UNION
 			SELECT body.id FROM public.document_chunks body
 			WHERE body.deleted_at IS NULL AND $14::text <> '' AND body.content ILIKE $14
 			UNION
+			SELECT body.id FROM public.document_chunks body
+			WHERE body.deleted_at IS NULL AND body.tenant_id = $2
+			  AND public.resource_han_terms_v1(body.content) && (SELECT terms FROM lexical_query)
+			UNION
 			SELECT title_chunk.id FROM public.contents title_resource
 			JOIN public.resource_documents title_document ON title_document.resource_id = title_resource.id
-			JOIN public.document_chunks title_chunk ON title_chunk.document_version_id = title_document.current_version_id
+			CROSS JOIN LATERAL (
+				SELECT preview.id FROM public.document_chunks preview
+				JOIN public.chunk_vector_manifests preview_manifest ON preview_manifest.chunk_id = preview.id
+				WHERE preview.document_version_id = title_document.current_version_id AND preview.deleted_at IS NULL
+				  AND preview.tenant_id = $2 AND preview_manifest.tenant_id = $2
+				  AND preview_manifest.index_generation = $4 AND preview_manifest.model_version_id = $5
+				  AND preview_manifest.collection_name = $6 AND preview_manifest.dimension = $7
+				  AND preview_manifest.state = 'indexed' AND preview_manifest.deleted_at IS NULL
+				ORDER BY preview.ordinal, preview.id LIMIT $13
+			) title_chunk
 			WHERE title_resource.tenant_id = $2 AND title_resource.status = 'PUBLISHED' AND title_resource.deleted_at IS NULL
-			  AND title_document.knowledge_base_id = $3 AND title_chunk.deleted_at IS NULL
+			  AND title_document.knowledge_base_id = $3
 			  AND (to_tsvector('simple'::regconfig, coalesce(title_resource.title, '')) @@ ANY (
 				ARRAY(SELECT plainto_tsquery('simple'::regconfig, term)
 					FROM unnest(tsvector_to_array(to_tsvector('simple'::regconfig, $12))) term))
-				OR ($14::text <> '' AND title_resource.title ILIKE $14))
+				OR ($14::text <> '' AND title_resource.title ILIKE $14)
+				OR public.resource_han_terms_v1(coalesce(title_resource.title, '')) && (SELECT terms FROM lexical_query))
 			), lexical_chunks AS MATERIALIZED (
-				SELECT candidate_chunk.* FROM lexical_candidates candidate
+				SELECT candidate_chunk.*, public.resource_han_terms_v1(candidate_chunk.content) AS han_terms
+				FROM lexical_candidates candidate
 				CROSS JOIN LATERAL (
 					SELECT body.* FROM public.document_chunks body WHERE body.id = candidate.id LIMIT 1
 				) candidate_chunk
@@ -133,7 +151,9 @@ func (r ResourceRepository) SearchLexical(ctx context.Context, scope resourceapp
 		SELECT chunk.id, c.id, version.id, generation.generation,
 			(ts_rank_cd(search_document.value, search_query.value) +
 			 CASE WHEN $14::text <> '' AND c.title ILIKE $14 THEN 0.2 ELSE 0 END +
-			 CASE WHEN $14::text <> '' AND chunk.content ILIKE $14 THEN 0.05 ELSE 0 END)::double precision
+			 CASE WHEN $14::text <> '' AND chunk.content ILIKE $14 THEN 0.05 ELSE 0 END +
+			 (0.2 * han_match.title_count + 0.05 * han_match.body_count) /
+			 greatest(cardinality(lexical_query.terms), 1))::double precision
 			`+resourceSearchResourceFromSQL+`
 			JOIN lexical_chunks chunk ON chunk.document_version_id = version.id AND chunk.tenant_id = tenant.id
 			JOIN public.chunk_vector_manifests manifest
@@ -143,9 +163,16 @@ func (r ResourceRepository) SearchLexical(ctx context.Context, scope resourceapp
 				setweight(to_tsvector('simple'::regconfig, chunk.content), 'B') AS value
 		) search_document
 		CROSS JOIN plainto_tsquery('simple'::regconfig, $12) search_query(value)
+		CROSS JOIN lexical_query
+		CROSS JOIN LATERAL (
+			SELECT (SELECT count(*) FROM unnest(public.resource_han_terms_v1(coalesce(c.title, ''))) term
+					WHERE term = ANY(lexical_query.terms)) AS title_count,
+				(SELECT count(*) FROM unnest(chunk.han_terms) term WHERE term = ANY(lexical_query.terms)) AS body_count
+		) han_match
 		WHERE `+resourceSearchVisibleSQL+`
 		  AND (search_document.value @@ search_query.value OR
-			($14::text <> '' AND (c.title ILIKE $14 OR chunk.content ILIKE $14)))
+			($14::text <> '' AND (c.title ILIKE $14 OR chunk.content ILIKE $14)) OR
+			han_match.title_count > 0 OR han_match.body_count >= least(2, greatest(cardinality(lexical_query.terms), 1)))
 		ORDER BY 5 DESC, chunk.id ASC
 		LIMIT $13`, args...)
 	if err != nil {
