@@ -28,7 +28,6 @@ import {
 } from 'lucide-react';
 import { cn } from '@/libs/utils/cn';
 import {
-  formatAppErrorDescription,
   isRequestCancelled,
   toAppError,
   toAppErrorFeedback,
@@ -56,26 +55,22 @@ import {
   refreshMessageCenterSummaryAfterMutation,
   useMessageCenterSummary,
 } from '@/modules/message-center/components/useMessageCenterSummary';
+import { usePageVisibility } from '@/modules/message-center/components/usePageVisibility';
 import {
-  useObservedVisibility,
-  usePageVisibility,
-} from '@/modules/message-center/components/useObservedVisibility';
-import {
-  fetchLoadedPageRange,
-  fetchCompleteOffsetMessageHistory,
+  fetchMessageCenterPage,
   fetchStableOffsetMessageWindow,
   hasMinimumGlobalSearchCharacters,
-  latestPageChanged,
-  mergeByID,
-  mergeLatestPageByID,
   mergeMessagesByID,
-  matchesAllKeywords,
+  appendDeliveredMessage,
 } from '@/modules/message-center/pageUtils';
 import { MessageCenterSideTab } from '@/modules/message-center/MessageCenterSideTab';
 import { MessageCenterListPagination } from '@/modules/message-center/MessageCenterListPagination';
 import { MessageCenterFilterMenu } from '@/modules/message-center/MessageCenterFilterMenu';
 import { MessageAttachmentPicker } from '@/modules/message-center/MessageAttachmentPicker';
 import { MessageAttachments } from '@/modules/message-center/MessageAttachments';
+import { MessageText } from '@/modules/message-center/MessageText';
+import { useVisibleMessageCutoff } from '@/modules/message-center/components/useVisibleMessageCutoff';
+import { useConversationMessageSearch } from '@/modules/message-center/components/useConversationMessageSearch';
 import { MessageComposer } from '@/modules/message-center/MessageComposer';
 import type { MessageAttachment } from '@/modules/message-center/attachmentTypes';
 import { ForumCenter } from '@/modules/forum';
@@ -96,7 +91,7 @@ const noticeStatuses = ['全部', '待确认', '已确认'];
 const listPageSize = 50;
 
 interface ListLoadOptions {
-  refreshLoadedPages?: boolean;
+  refreshCurrentPage?: boolean;
   signal?: AbortSignal;
 }
 
@@ -181,8 +176,6 @@ export const MessageCenterPage: React.FC = () => {
     if (feedback) toast(feedback);
   }, [toast]);
   const pageVisible = usePageVisibility();
-  const { ref: conversationDetailRef, isVisible: conversationDetailVisible } = useObservedVisibility<HTMLDivElement>();
-  const { ref: threadDetailRef, isVisible: threadDetailVisible } = useObservedVisibility<HTMLDivElement>();
   // ---- state ---------------------------------------------------------
   const [searchTerm, setSearchTerm] = useState('');
   const [serverSearch, setServerSearch] = useState('');
@@ -215,11 +208,8 @@ export const MessageCenterPage: React.FC = () => {
   const conversationScrollIntentRef = useRef<ConversationScrollIntent | null>(
     activeConvId ? { type: 'bottom', conversationID: activeConvId } : null,
   );
-  const conversationSearchLoadingRef = useRef(false);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationMessageSearch, setConversationMessageSearch] = useState('');
-  const [loadingConversationSearch, setLoadingConversationSearch] = useState(false);
-  const [conversationSearchError, setConversationSearchError] = useState('');
   const [conversationPage, setConversationPage] = useState(1);
   const [conversationTotal, setConversationTotal] = useState(0);
   const [conversationSelectionMode, setConversationSelectionMode] = useState(false);
@@ -293,24 +283,32 @@ export const MessageCenterPage: React.FC = () => {
   const [loadingMistakes, setLoadingMistakes] = useState(false);
   const [selectedMistakeId, setSelectedMistakeId] = useState('');
   const [importQuestionText, setImportQuestionText] = useState('');
-  const convItemsRef = useRef(convItems);
-  const noticesRef = useRef(notices);
-  const questionsRef = useRef(questions);
-  const conversationTotalRef = useRef(conversationTotal);
-  const noticeTotalRef = useRef(noticeTotal);
-  const questionTotalRef = useRef(questionTotal);
   const conversationQueryRef = useRef(serverSearch);
   const noticeQueryRef = useRef(`${serverSearch}\u0000${noticeStatus}`);
   const questionQueryRef = useRef(serverSearch);
   conversationQueryRef.current = serverSearch;
   noticeQueryRef.current = `${serverSearch}\u0000${noticeStatus}`;
   questionQueryRef.current = serverSearch;
-  convItemsRef.current = convItems;
-  noticesRef.current = notices;
-  questionsRef.current = questions;
-  conversationTotalRef.current = conversationTotal;
-  noticeTotalRef.current = noticeTotal;
-  questionTotalRef.current = questionTotal;
+
+  const conversationPageRef = useRef(conversationPage);
+  conversationPageRef.current = conversationPage;
+  const noticePageRef = useRef(noticePage);
+  noticePageRef.current = noticePage;
+  const questionPageRef = useRef(questionPage);
+  questionPageRef.current = questionPage;
+
+  const threadViewportRef = useRef<HTMLDivElement>(null);
+  const conversationSearch = useConversationMessageSearch(activeConvId, conversationMessageSearch, conversationSearchOpen && activeTab === 'private');
+  const loadingConversationSearch = conversationSearch.loading;
+  const conversationSearchError = conversationSearch.error?.message ?? '';
+  const visibleConversationCutoff = useVisibleMessageCutoff(
+    conversationViewportRef, activeConvId, activeConv?.messages ?? [],
+    pageVisible && activeTab === 'private' && !conversationSearchOpen && !conversationDetailLoading,
+  );
+  const visibleThreadCutoff = useVisibleMessageCutoff(
+    threadViewportRef, activeQuestionId, activeThread?.messages ?? [],
+    pageVisible && activeTab === 'questions' && !threadDetailLoading,
+  );
 
   const consumePendingDeepLink = useCallback((tab: string): string => {
     const pending = pendingDeepLink.current;
@@ -326,14 +324,11 @@ export const MessageCenterPage: React.FC = () => {
     activeConvIDRef.current = id;
     conversationRequest.current++;
     loadingOlderMessagesRef.current = false;
-    conversationSearchLoadingRef.current = false;
     setActiveConvId(id);
     setActiveConv(null);
     setLoadingOlderMessages(false);
     setConversationSearchOpen(false);
     setConversationMessageSearch('');
-    setLoadingConversationSearch(false);
-    setConversationSearchError('');
     conversationDetailLoadingRef.current = Boolean(id);
     setConversationDetailLoading(Boolean(id));
     setConversationDetailError(null);
@@ -409,48 +404,29 @@ export const MessageCenterPage: React.FC = () => {
   }, []);
 
   // ---- load conversations ---------------------------------------------
-  const loadConversations = useCallback(async (page = 1, append = false, preserveLoadedPages = false, options: ListLoadOptions = {}) => {
+  const loadConversations = useCallback(async (page = 1, options: ListLoadOptions = {}) => {
     const queryKey = serverSearch;
     if (queryKey !== conversationQueryRef.current) return true;
     const request = ++conversationListRequest.current;
     try {
-      let response = options.refreshLoadedPages
-        ? await fetchLoadedPageRange(conversationPage, listPageSize, (loadedPage) => conversationService.list({ search: serverSearch, page: loadedPage, page_size: listPageSize }, options.signal))
-        : await conversationService.list({ search: serverSearch, page, page_size: listPageSize }, options.signal);
+      const requestedPage = options.refreshCurrentPage ? conversationPageRef.current : page;
+      const response = await fetchMessageCenterPage(requestedPage, listPageSize, (currentPage) => conversationService.list({ search: serverSearch, page: currentPage, page_size: listPageSize }, options.signal));
       if (options.signal?.aborted || request !== conversationListRequest.current || queryKey !== conversationQueryRef.current) return true;
-      const refreshShiftedWindow = !options.refreshLoadedPages
-        && preserveLoadedPages
-        && conversationPage > 1
-        && latestPageChanged(convItemsRef.current, response.items, conversationTotalRef.current, response.total);
-      if (refreshShiftedWindow) {
-        response = await fetchLoadedPageRange(conversationPage, listPageSize, (loadedPage) => conversationService.list({ search: serverSearch, page: loadedPage, page_size: listPageSize }, options.signal));
-        if (options.signal?.aborted || request !== conversationListRequest.current || queryKey !== conversationQueryRef.current) return true;
-      }
-      const replaceLoadedPages = options.refreshLoadedPages || refreshShiftedWindow;
       const items = response.items.map(mapConversationItem);
-      setConvItems((current) => append
-        ? mergeByID(current, items)
-        : preserveLoadedPages && !replaceLoadedPages
-          ? mergeLatestPageByID(current, items, response.total)
-          : items);
-      if (replaceLoadedPages) {
-        setConversationPage(Math.max(1, Math.min(conversationPage, Math.ceil(response.total / listPageSize) || 1)));
-      } else if (!preserveLoadedPages) {
-        setConversationPage(page);
-      }
+      setConvItems(items);
+      conversationPageRef.current = response.page;
+      setConversationPage(response.page);
       setConversationTotal(response.total);
-      if (!append) {
-        const deepLinkID = consumePendingDeepLink('private');
-        if (deepLinkID) activateConversation(deepLinkID);
-        else if (conversationListModeRef.current && activeConvIDRef.current) activateConversation('');
-      }
+      const deepLinkID = consumePendingDeepLink('private');
+      if (deepLinkID) activateConversation(deepLinkID);
+      else if (conversationListModeRef.current && activeConvIDRef.current) activateConversation('');
       return true;
     } catch (error) {
       const stale = options.signal?.aborted || request !== conversationListRequest.current || queryKey !== conversationQueryRef.current;
       if (!stale && !isRequestCancelled(error)) setListLoadError(toAppError(error, '私信列表加载失败'));
       return stale;
     }
-  }, [activateConversation, consumePendingDeepLink, conversationPage, serverSearch]);
+  }, [activateConversation, consumePendingDeepLink, serverSearch]);
 
   const loadConversationDetail = useCallback(async (id: string, preserveLoadedMessages = false): Promise<boolean> => {
     const request = ++conversationRequest.current;
@@ -489,48 +465,29 @@ export const MessageCenterPage: React.FC = () => {
   }, []);
 
   // ---- load notices ---------------------------------------------------
-  const loadNotices = useCallback(async (page = 1, append = false, preserveLoadedPages = false, options: ListLoadOptions = {}) => {
+  const loadNotices = useCallback(async (page = 1, options: ListLoadOptions = {}) => {
     const queryKey = `${serverSearch}\u0000${noticeStatus}`;
     if (queryKey !== noticeQueryRef.current) return true;
     const request = ++noticeListRequest.current;
     try {
-      let response = options.refreshLoadedPages
-        ? await fetchLoadedPageRange(noticePage, listPageSize, (loadedPage) => noticeService.list<StudentNoticeListItem>({ search: serverSearch, status: noticeStatus, page: loadedPage, page_size: listPageSize }, options.signal))
-        : await noticeService.list<StudentNoticeListItem>({ search: serverSearch, status: noticeStatus, page, page_size: listPageSize }, options.signal);
+      const requestedPage = options.refreshCurrentPage ? noticePageRef.current : page;
+      const response = await fetchMessageCenterPage(requestedPage, listPageSize, (currentPage) => noticeService.list<StudentNoticeListItem>({ search: serverSearch, status: noticeStatus, page: currentPage, page_size: listPageSize }, options.signal));
       if (options.signal?.aborted || request !== noticeListRequest.current || queryKey !== noticeQueryRef.current) return true;
-      const refreshShiftedWindow = !options.refreshLoadedPages
-        && preserveLoadedPages
-        && noticePage > 1
-        && latestPageChanged(noticesRef.current, response.items, noticeTotalRef.current, response.total);
-      if (refreshShiftedWindow) {
-        response = await fetchLoadedPageRange(noticePage, listPageSize, (loadedPage) => noticeService.list<StudentNoticeListItem>({ search: serverSearch, status: noticeStatus, page: loadedPage, page_size: listPageSize }, options.signal));
-        if (options.signal?.aborted || request !== noticeListRequest.current || queryKey !== noticeQueryRef.current) return true;
-      }
-      const replaceLoadedPages = options.refreshLoadedPages || refreshShiftedWindow;
       const items = response.items;
       const mappedItems = items.map(mapNoticeListItem);
-      setNotices((current) => append
-        ? mergeByID(current, mappedItems)
-        : preserveLoadedPages && !replaceLoadedPages
-          ? mergeLatestPageByID(current, mappedItems, response.total)
-          : mappedItems);
-      if (replaceLoadedPages) {
-        setNoticePage(Math.max(1, Math.min(noticePage, Math.ceil(response.total / listPageSize) || 1)));
-      } else if (!preserveLoadedPages) {
-        setNoticePage(page);
-      }
+      setNotices(mappedItems);
+      noticePageRef.current = response.page;
+      setNoticePage(response.page);
       setNoticeTotal(response.total);
-      if (!append) {
-        const deepLinkID = consumePendingDeepLink('notices');
-        if (deepLinkID) activateNotice(deepLinkID);
-      }
+      const deepLinkID = consumePendingDeepLink('notices');
+      if (deepLinkID) activateNotice(deepLinkID);
       return true;
     } catch (error) {
       const stale = options.signal?.aborted || request !== noticeListRequest.current || queryKey !== noticeQueryRef.current;
       if (!stale && !isRequestCancelled(error)) setListLoadError(toAppError(error, '通知列表加载失败'));
       return stale;
     }
-  }, [activateNotice, consumePendingDeepLink, noticePage, serverSearch, noticeStatus]);
+  }, [activateNotice, consumePendingDeepLink, serverSearch, noticeStatus]);
 
   const loadNoticeDetail = useCallback(async (id: string): Promise<boolean> => {
     const request = ++noticeRequest.current;
@@ -557,47 +514,28 @@ export const MessageCenterPage: React.FC = () => {
   }, []);
 
   // ---- load questions -------------------------------------------------
-  const loadQuestions = useCallback(async (page = 1, append = false, preserveLoadedPages = false, options: ListLoadOptions = {}) => {
+  const loadQuestions = useCallback(async (page = 1, options: ListLoadOptions = {}) => {
     const queryKey = serverSearch;
     if (queryKey !== questionQueryRef.current) return true;
     const request = ++questionListRequest.current;
     try {
-      let response = options.refreshLoadedPages
-        ? await fetchLoadedPageRange(questionPage, listPageSize, (loadedPage) => qaThreadService.list<StudentThreadItem>({ search: serverSearch, page: loadedPage, page_size: listPageSize }, options.signal))
-        : await qaThreadService.list<StudentThreadItem>({ search: serverSearch, page, page_size: listPageSize }, options.signal);
+      const requestedPage = options.refreshCurrentPage ? questionPageRef.current : page;
+      const response = await fetchMessageCenterPage(requestedPage, listPageSize, (currentPage) => qaThreadService.list<StudentThreadItem>({ search: serverSearch, page: currentPage, page_size: listPageSize }, options.signal));
       if (options.signal?.aborted || request !== questionListRequest.current || queryKey !== questionQueryRef.current) return true;
-      const refreshShiftedWindow = !options.refreshLoadedPages
-        && preserveLoadedPages
-        && questionPage > 1
-        && latestPageChanged(questionsRef.current, response.items, questionTotalRef.current, response.total);
-      if (refreshShiftedWindow) {
-        response = await fetchLoadedPageRange(questionPage, listPageSize, (loadedPage) => qaThreadService.list<StudentThreadItem>({ search: serverSearch, page: loadedPage, page_size: listPageSize }, options.signal));
-        if (options.signal?.aborted || request !== questionListRequest.current || queryKey !== questionQueryRef.current) return true;
-      }
-      const replaceLoadedPages = options.refreshLoadedPages || refreshShiftedWindow;
       const items = response.items;
-      setQuestions((current) => append
-        ? mergeByID(current, items)
-        : preserveLoadedPages && !replaceLoadedPages
-          ? mergeLatestPageByID(current, items, response.total)
-          : items);
-      if (replaceLoadedPages) {
-        setQuestionPage(Math.max(1, Math.min(questionPage, Math.ceil(response.total / listPageSize) || 1)));
-      } else if (!preserveLoadedPages) {
-        setQuestionPage(page);
-      }
+      setQuestions(items);
+      questionPageRef.current = response.page;
+      setQuestionPage(response.page);
       setQuestionTotal(response.total);
-      if (!append) {
-        const deepLinkID = consumePendingDeepLink('questions');
-        if (deepLinkID) activateQuestion(deepLinkID);
-      }
+      const deepLinkID = consumePendingDeepLink('questions');
+      if (deepLinkID) activateQuestion(deepLinkID);
       return true;
     } catch (error) {
       const stale = options.signal?.aborted || request !== questionListRequest.current || queryKey !== questionQueryRef.current;
       if (!stale && !isRequestCancelled(error)) setListLoadError(toAppError(error, '答疑列表加载失败'));
       return stale;
     }
-  }, [activateQuestion, consumePendingDeepLink, questionPage, serverSearch]);
+  }, [activateQuestion, consumePendingDeepLink, serverSearch]);
 
   const loadThreadDetail = useCallback(async (id: string, preserveLoadedMessages = false): Promise<boolean> => {
     const request = ++threadRequest.current;
@@ -663,16 +601,16 @@ export const MessageCenterPage: React.FC = () => {
   }, [activeConv, activeConvId]);
 
   useEffect(() => {
-    const throughMessageID = activeConv?.read_through_message_id;
+    const throughMessageID = visibleConversationCutoff;
     const cutoffKey = activeConv && throughMessageID ? `${activeConv.id}:${throughMessageID}` : '';
-    if (!pageVisible || !conversationDetailVisible || activeTab !== 'private' || !activeConv || !throughMessageID || activeConv.id !== activeConvId || acknowledgedConversationCutoff.current === cutoffKey || acknowledgingConversationCutoff.current === cutoffKey) return;
+    if (!pageVisible || !visibleConversationCutoff || activeTab !== 'private' || !activeConv || !throughMessageID || activeConv.id !== activeConvId || acknowledgedConversationCutoff.current === cutoffKey || acknowledgingConversationCutoff.current === cutoffKey) return;
     const conversationID = activeConv.id;
     const controller = new AbortController();
     acknowledgingConversationCutoff.current = cutoffKey;
     conversationListRequest.current++;
     void conversationService.acknowledgeRead(conversationID, throughMessageID, controller.signal).then(async () => {
       acknowledgedConversationCutoff.current = cutoffKey;
-      const loaded = await loadConversations(1, false, false, { refreshLoadedPages: true });
+      const loaded = await loadConversations(1, { refreshCurrentPage: true });
       if (!loaded && !listLoadError) setListLoadError(toAppError(null, '私信列表刷新失败，请稍后重试'));
       refreshMessageCenterSummaryAfterMutation();
     }).catch((error) => {
@@ -682,7 +620,7 @@ export const MessageCenterPage: React.FC = () => {
       if (acknowledgingConversationCutoff.current === cutoffKey) acknowledgingConversationCutoff.current = '';
     });
     return () => controller.abort();
-  }, [activeConv, activeConvId, activeTab, conversationDetailVisible, listLoadError, loadConversations, notifyRequestError, pageVisible]);
+  }, [activeConv, activeConvId, activeTab, visibleConversationCutoff, listLoadError, loadConversations, notifyRequestError, pageVisible]);
 
   useEffect(() => {
     if (activeTab !== 'notices') {
@@ -720,16 +658,16 @@ export const MessageCenterPage: React.FC = () => {
   }, [activeQuestionId, activeTab, loadThreadDetail]);
 
   useEffect(() => {
-    const throughMessageID = activeThread?.read_through_message_id;
+    const throughMessageID = visibleThreadCutoff;
     const cutoffKey = activeThread && throughMessageID ? `${activeThread.id}:${throughMessageID}` : '';
-    if (!pageVisible || !threadDetailVisible || activeTab !== 'questions' || !activeThread || !throughMessageID || activeThread.id !== activeQuestionId || acknowledgedThreadCutoff.current === cutoffKey || acknowledgingThreadCutoff.current === cutoffKey) return;
+    if (!pageVisible || !visibleThreadCutoff || activeTab !== 'questions' || !activeThread || !throughMessageID || activeThread.id !== activeQuestionId || acknowledgedThreadCutoff.current === cutoffKey || acknowledgingThreadCutoff.current === cutoffKey) return;
     const threadID = activeThread.id;
     const controller = new AbortController();
     acknowledgingThreadCutoff.current = cutoffKey;
     questionListRequest.current++;
     void qaThreadService.acknowledgeRead(threadID, throughMessageID, controller.signal).then(async () => {
       acknowledgedThreadCutoff.current = cutoffKey;
-      const loaded = await loadQuestions(1, false, false, { refreshLoadedPages: true });
+      const loaded = await loadQuestions(1, { refreshCurrentPage: true });
       if (!loaded && !listLoadError) setListLoadError(toAppError(null, '答疑列表刷新失败，请稍后重试'));
       refreshMessageCenterSummaryAfterMutation();
     }).catch((error) => {
@@ -739,19 +677,19 @@ export const MessageCenterPage: React.FC = () => {
       if (acknowledgingThreadCutoff.current === cutoffKey) acknowledgingThreadCutoff.current = '';
     });
     return () => controller.abort();
-  }, [activeQuestionId, activeTab, activeThread, listLoadError, loadQuestions, notifyRequestError, pageVisible, threadDetailVisible]);
+  }, [activeQuestionId, activeTab, activeThread, listLoadError, loadQuestions, notifyRequestError, pageVisible, visibleThreadCutoff]);
 
   const reloadInitialData = useCallback(async (preserveCurrent = false) => {
     const request = ++reloadRequest.current;
     setLoading(true);
     setLoadError(null);
     setListLoadError(null);
-    const refreshOptions: ListLoadOptions = preserveCurrent ? { refreshLoadedPages: true } : {};
+    const refreshOptions: ListLoadOptions = preserveCurrent ? { refreshCurrentPage: true } : {};
     const results = await Promise.all([
       loadContacts(),
-      loadConversations(1, false, false, refreshOptions),
-      loadNotices(1, false, false, refreshOptions),
-      loadQuestions(1, false, false, refreshOptions),
+      loadConversations(1, refreshOptions),
+      loadNotices(1, refreshOptions),
+      loadQuestions(1, refreshOptions),
     ]);
     if (request !== reloadRequest.current) return;
     if (results.every(Boolean)) setListLoadError(null);
@@ -785,14 +723,14 @@ export const MessageCenterPage: React.FC = () => {
   }, [activeTab, initialLoad, loadConversations, loadNotices, loadQuestions, noticeStatus, serverSearch]);
 
   const pollMessageCenter = useCallback(async (signal: AbortSignal) => {
-    if (signal.aborted || initialLoad || document.hidden || loadingMoreListRef.current || loadingOlderMessagesRef.current || conversationSearchLoadingRef.current || loadingOlderThreadMessagesRef.current || conversationDetailLoadingRef.current || threadDetailLoadingRef.current) return;
+    if (signal.aborted || initialLoad || document.hidden || loadingMoreListRef.current || loadingOlderMessagesRef.current || loadingOlderThreadMessagesRef.current || conversationDetailLoadingRef.current || threadDetailLoadingRef.current) return;
     await Promise.all([
-      loadConversations(1, false, true, { signal }),
-      loadNotices(1, false, true, { signal }),
-      loadQuestions(1, false, true, { signal }),
+      loadConversations(1, { refreshCurrentPage: true, signal }),
+      loadNotices(1, { refreshCurrentPage: true, signal }),
+      loadQuestions(1, { refreshCurrentPage: true, signal }),
     ]);
     if (signal.aborted) return;
-    if (document.hidden || loadingMoreListRef.current || loadingOlderMessagesRef.current || conversationSearchLoadingRef.current || loadingOlderThreadMessagesRef.current || conversationDetailLoadingRef.current || threadDetailLoadingRef.current) return;
+    if (document.hidden || loadingMoreListRef.current || loadingOlderMessagesRef.current || loadingOlderThreadMessagesRef.current || conversationDetailLoadingRef.current || threadDetailLoadingRef.current) return;
     const currentConversationID = activeConvIDRef.current;
     const currentQuestionID = activeQuestionIDRef.current;
     if (activeTab === 'private' && currentConversationID) {
@@ -892,7 +830,19 @@ export const MessageCenterPage: React.FC = () => {
     conversationListRequest.current++;
     setSendingMsg(true);
     try {
-      await conversationService.sendMessage(conversationID, submittedDraft.trim(), submittedAttachments);
+      const message = await conversationService.sendMessage(conversationID, submittedDraft.trim(), submittedAttachments);
+      if (activeConvIDRef.current === conversationID) {
+        conversationRequest.current++;
+        conversationScrollIntentRef.current = { type: 'bottom', conversationID };
+        conversationDetailLoadingRef.current = false;
+        setConversationDetailLoading(false);
+        setConversationDetailError(null);
+        setConversationSearchOpen(false);
+        setConversationMessageSearch('');
+      }
+      setActiveConv((current) => activeConvIDRef.current === conversationID
+        ? appendDeliveredMessage(current?.id === conversationID ? current : activeConv, message)
+        : current);
       setMessageDrafts((current) => {
         if ((current[conversationID] ?? '') !== submittedDraft) return current;
         const next = { ...current };
@@ -905,23 +855,16 @@ export const MessageCenterPage: React.FC = () => {
         delete next[conversationID];
         return next;
       });
-      if (activeConvIDRef.current === conversationID) {
-        conversationScrollIntentRef.current = { type: 'bottom', conversationID };
-        const refreshed = await loadConversationDetail(conversationID, true);
-        if (!refreshed && conversationScrollIntentRef.current?.conversationID === conversationID) {
-          conversationScrollIntentRef.current = null;
-        }
-      }
-      await loadConversations(1, false, false, { refreshLoadedPages: true });
+      await loadConversations(1, { refreshCurrentPage: true });
       refreshMessageCenterSummaryAfterMutation();
     } catch (error) {
       notifyRequestError(error, '发送私信失败，请稍后重试');
     }
     finally { setSendingMsg(false); }
-  }, [activeConv, activeConvId, messageAttachments, messageDraft, messageUploading, sendingMsg, loadConversationDetail, loadConversations, notifyRequestError]);
+  }, [activeConv, activeConvId, messageAttachments, messageDraft, messageUploading, sendingMsg, loadConversations, notifyRequestError]);
 
   const loadOlderConversationMessages = useCallback(async () => {
-    if (!activeConv || activeConv.id !== activeConvIDRef.current || loadingOlderMessagesRef.current || conversationSearchLoadingRef.current || activeConv.messages.length >= activeConv.messages_total) return;
+    if (!activeConv || activeConv.id !== activeConvIDRef.current || loadingOlderMessagesRef.current || activeConv.messages.length >= activeConv.messages_total) return;
     const conversationID = activeConv.id;
     const request = ++conversationRequest.current;
     loadingOlderMessagesRef.current = true;
@@ -981,49 +924,10 @@ export const MessageCenterPage: React.FC = () => {
     }
   }, [activeConv, notifyRequestError]);
 
-  const toggleConversationSearch = useCallback(async () => {
-    if (!activeConv || activeConv.id !== activeConvIDRef.current || conversationSearchLoadingRef.current) return;
-    if (conversationSearchOpen) {
-      setConversationSearchOpen(false);
-      setConversationMessageSearch('');
-      setConversationSearchError('');
-      return;
-    }
-
-    const conversationID = activeConv.id;
-    setConversationSearchOpen(true);
+  const toggleConversationSearch = useCallback(() => {
+    setConversationSearchOpen((current) => !current);
     setConversationMessageSearch('');
-    setConversationSearchError('');
-    if (activeConv.messages.length >= activeConv.messages_total) return;
-
-    const request = ++conversationRequest.current;
-    const pageSize = 100;
-    conversationSearchLoadingRef.current = true;
-    setLoadingConversationSearch(true);
-    try {
-      const history = await fetchCompleteOffsetMessageHistory(activeConv.messages_total, pageSize, async (messagesPage) => {
-        const detail = await conversationService.get(conversationID, { messages_page: messagesPage, messages_page_size: pageSize });
-        return { messages: detail.messages, messages_total: detail.messages_total };
-      });
-      if (request !== conversationRequest.current || activeConvIDRef.current !== conversationID) return;
-      setActiveConv((current) => current?.id === conversationID ? {
-        ...current,
-        messages: history.messages,
-        messages_total: history.total,
-        messages_page: history.page,
-        messages_page_size: pageSize,
-      } : current);
-    } catch (error) {
-      if (request === conversationRequest.current && activeConvIDRef.current === conversationID) {
-        setConversationSearchError(formatAppErrorDescription(toAppError(error, '完整聊天记录加载失败，当前仅搜索已加载的消息')));
-      }
-    } finally {
-      if (activeConvIDRef.current === conversationID) {
-        conversationSearchLoadingRef.current = false;
-        setLoadingConversationSearch(false);
-      }
-    }
-  }, [activeConv, conversationSearchOpen]);
+  }, []);
 
   const changeConversationPage = useCallback(async (nextPage: number) => {
     const totalPages = Math.max(1, Math.ceil(conversationTotal / listPageSize));
@@ -1143,7 +1047,7 @@ export const MessageCenterPage: React.FC = () => {
     try {
       await noticeService.confirm(id);
       setActiveNotice((current) => current?.id === id ? { ...current, confirmed: true } : current);
-      const loaded = await loadNotices(1, false, false, { refreshLoadedPages: true });
+      const loaded = await loadNotices(1, { refreshCurrentPage: true });
       if (!loaded && !listLoadError) setListLoadError(toAppError(null, '通知列表刷新失败，请稍后重试'));
       refreshMessageCenterSummaryAfterMutation();
     } catch (error) {
@@ -1161,7 +1065,7 @@ export const MessageCenterPage: React.FC = () => {
       await qaThreadService.create({ teacher_id: selectedQTeacherId, content: questionDraft.trim(), attachments: questionAttachments });
       setQuestionDraft('');
       setQuestionAttachments([]);
-      await loadQuestions(1, false, false, { refreshLoadedPages: true });
+      await loadQuestions();
       refreshMessageCenterSummaryAfterMutation();
     } catch (error) {
       notifyRequestError(error, '提交提问失败，请稍后重试');
@@ -1207,7 +1111,7 @@ export const MessageCenterPage: React.FC = () => {
       setSelectedMistakeId('');
       setImportQuestionText('');
       setImportOpen(false);
-      await loadQuestions(1, false, false, { refreshLoadedPages: true });
+      await loadQuestions();
       refreshMessageCenterSummaryAfterMutation();
     } catch (error) {
       notifyRequestError(error, '导入提问失败，请稍后重试');
@@ -1224,7 +1128,16 @@ export const MessageCenterPage: React.FC = () => {
     questionListRequest.current++;
     setSendingFollowUp(true);
     try {
-      await qaThreadService.sendMessage(threadID, submittedDraft.trim(), submittedAttachments);
+      const message = await qaThreadService.sendMessage(threadID, submittedDraft.trim(), submittedAttachments);
+      if (activeQuestionIDRef.current === threadID) {
+        threadRequest.current++;
+        threadDetailLoadingRef.current = false;
+        setThreadDetailLoading(false);
+        setThreadDetailError(null);
+      }
+      setActiveThread((current) => activeQuestionIDRef.current === threadID
+        ? { ...appendDeliveredMessage(current?.id === threadID ? current : activeThread, message), status: '待回复' }
+        : current);
       setFollowUpDrafts((current) => {
         if ((current[threadID] ?? '') !== submittedDraft) return current;
         const next = { ...current };
@@ -1237,14 +1150,13 @@ export const MessageCenterPage: React.FC = () => {
         delete next[threadID];
         return next;
       });
-      if (activeQuestionIDRef.current === threadID) await loadThreadDetail(threadID, true);
-      await loadQuestions(1, false, false, { refreshLoadedPages: true });
+      await loadQuestions(1, { refreshCurrentPage: true });
       refreshMessageCenterSummaryAfterMutation();
     } catch (error) {
       notifyRequestError(error, '发送追问失败，请稍后重试');
     }
     finally { setSendingFollowUp(false); }
-  }, [followUpAttachments, followUpDraft, followUpUploading, activeQuestionId, activeThread, sendingFollowUp, loadThreadDetail, loadQuestions, notifyRequestError]);
+  }, [followUpAttachments, followUpDraft, followUpUploading, activeQuestionId, activeThread, sendingFollowUp, loadQuestions, notifyRequestError]);
 
   const loadOlderThreadMessages = useCallback(async () => {
     if (!activeThread || activeThread.id !== activeQuestionIDRef.current || loadingOlderThreadMessagesRef.current || activeThread.messages.length >= activeThread.messages_total) return;
@@ -1335,17 +1247,15 @@ export const MessageCenterPage: React.FC = () => {
 
   const retryActiveList = useCallback(async () => {
     let loaded = true;
-    if (activeTab === 'private') loaded = await loadConversations(1, false, false, { refreshLoadedPages: true });
-    if (activeTab === 'notices') loaded = await loadNotices(1, false, false, { refreshLoadedPages: true });
-    if (activeTab === 'questions') loaded = await loadQuestions(1, false, false, { refreshLoadedPages: true });
+    if (activeTab === 'private') loaded = await loadConversations(1, { refreshCurrentPage: true });
+    if (activeTab === 'notices') loaded = await loadNotices(1, { refreshCurrentPage: true });
+    if (activeTab === 'questions') loaded = await loadQuestions(1, { refreshCurrentPage: true });
     if (loaded) setListLoadError(null);
   }, [activeTab, loadConversations, loadNotices, loadQuestions]);
 
-  const visibleConversationMessages = useMemo(() => {
-    if (!activeConv) return [];
-    if (!conversationSearchOpen || !conversationMessageSearch.trim()) return activeConv.messages;
-    return activeConv.messages.filter((message) => matchesAllKeywords(message.text, conversationMessageSearch));
-  }, [activeConv, conversationMessageSearch, conversationSearchOpen]);
+  const visibleConversationMessages = conversationSearchOpen && conversationMessageSearch.trim()
+    ? conversationSearch.messages
+    : activeConv?.messages ?? [];
 
   // ---- render ---------------------------------------------------------
   if (initialLoad && loading) {
@@ -1540,7 +1450,7 @@ export const MessageCenterPage: React.FC = () => {
                     </div>
                   ) : activeConv && activeConv.id === activeConvId ? (
                     <>
-                      <div ref={conversationDetailRef} className="shrink-0 border-b border-surface-100 p-3 sm:p-4 dark:border-surface-800">
+                      <div className="shrink-0 border-b border-surface-100 p-3 sm:p-4 dark:border-surface-800">
                         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                           <div>
                             <Button variant="ghost" size="sm" className="mb-2 -ml-2 lg:hidden" onClick={showConversationList}><ArrowLeft className="mr-1 h-4 w-4" />返回列表</Button>
@@ -1556,6 +1466,7 @@ export const MessageCenterPage: React.FC = () => {
                                 <Input
                                   autoFocus
                                   value={conversationMessageSearch}
+                                  maxLength={200}
                                   onChange={(event) => setConversationMessageSearch(event.target.value)}
                                   placeholder={`查找与 ${activeConv.teacher_name} 的聊天内容`}
                                   className={cn('pl-9 pr-16', conversationSearchError && 'border-amber-500 focus-visible:ring-amber-500')}
@@ -1564,11 +1475,11 @@ export const MessageCenterPage: React.FC = () => {
                                   title={conversationSearchError || undefined}
                                   className={cn('pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-surface-500 dark:text-surface-400', conversationSearchError && 'text-amber-600 dark:text-amber-400')}
                                 >
-                                  {conversationSearchError ? '加载失败' : loadingConversationSearch ? '载入中…' : conversationMessageSearch.trim() ? `${visibleConversationMessages.length} 条` : `共 ${activeConv.messages_total} 条`}
+                                  {conversationSearchError ? '加载失败' : loadingConversationSearch ? '载入中…' : conversationMessageSearch.trim() ? `${conversationSearch.total} 条` : `共 ${activeConv.messages_total} 条`}
                                 </span>
                               </div>
                             )}
-                            <Button variant="outline" size="sm" className="shrink-0" onClick={() => void toggleConversationSearch()} disabled={loadingConversationSearch}>
+                            <Button variant="outline" size="sm" className="shrink-0" onClick={toggleConversationSearch}>
                               {loadingConversationSearch ? <Loader2 className="h-4 w-4 animate-spin sm:mr-2" /> : conversationSearchOpen ? <X className="h-4 w-4 sm:mr-2" /> : <Search className="mr-2 h-4 w-4" />}
                               <span className={conversationSearchOpen ? 'hidden sm:inline' : ''}>{loadingConversationSearch ? '载入记录' : conversationSearchOpen ? '关闭查找' : '查找聊天记录'}</span>
                             </Button>
@@ -1577,7 +1488,8 @@ export const MessageCenterPage: React.FC = () => {
                       </div>
                       <div ref={conversationViewportRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-5">
                         {!conversationSearchOpen && activeConv.messages.length < activeConv.messages_total && <Button variant="outline" size="sm" className="w-full" onClick={loadOlderConversationMessages} disabled={loadingOlderMessages}>{loadingOlderMessages ? '加载中…' : '加载更早消息'}</Button>}
-                        {conversationSearchOpen && conversationMessageSearch.trim() && !loadingConversationSearch && visibleConversationMessages.length === 0 && (
+                        {conversationSearch.error && <RequestErrorNotice error={conversationSearch.error} onRetry={conversationSearch.refresh} onRefresh={conversationSearch.refresh} />}
+                        {conversationSearchOpen && conversationMessageSearch.trim() && !loadingConversationSearch && !conversationSearch.error && visibleConversationMessages.length === 0 && (
                           <div className="flex min-h-32 items-center justify-center text-sm text-surface-500 dark:text-surface-400">未找到匹配的聊天记录</div>
                         )}
                         {visibleConversationMessages.map((msg) => (
@@ -1589,16 +1501,25 @@ export const MessageCenterPage: React.FC = () => {
                                   ? 'bg-primary-600 text-white'
                                   : 'bg-surface-100 text-surface-800 dark:bg-surface-800 dark:text-surface-100',
                               )}>
-                                {msg.text}
+                                <MessageText text={msg.text} />
                               </div>}
                               <MessageAttachments attachments={msg.attachments} />
-                              <div className={cn('mt-1 flex gap-2 text-xs text-surface-400', msg.from === 'student' ? 'justify-end' : 'justify-start')}>
+                              <div data-read-message-id={msg.from !== 'student' ? msg.id : undefined} className={cn('mt-1 flex gap-2 text-xs text-surface-400', msg.from === 'student' ? 'justify-end' : 'justify-start')}>
                                 <span>{formatRelativeTime(msg.time)}</span>
                                 {msg.from === 'student' && <span>{msg.read_by_recipient ? '老师已读' : '老师未读'}</span>}
                               </div>
                             </div>
                           </div>
                         ))}
+                        {conversationSearchOpen && conversationMessageSearch.trim() && (
+                          <MessageCenterListPagination
+                            currentPage={conversationSearch.page}
+                            totalItems={conversationSearch.total}
+                            pageSize={conversationSearch.pageSize}
+                            disabled={loadingConversationSearch}
+                            onPageChange={conversationSearch.setPage}
+                          />
+                        )}
                       </div>
                       <div className="shrink-0 border-t border-surface-100 p-4 dark:border-surface-800">
                         <MessageComposer
@@ -1792,7 +1713,7 @@ export const MessageCenterPage: React.FC = () => {
                     </div>
                   ) : activeThread && activeThread.id === activeQuestionId ? (
                     <div className="space-y-5">
-                      <div ref={threadDetailRef} className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div>
                           <div className="text-sm text-surface-500 dark:text-surface-400">
                             提问给：{activeThread.teacher_name} · 来源：{activeThread.source}
@@ -1805,10 +1726,10 @@ export const MessageCenterPage: React.FC = () => {
                       </div>
                       {activeThread.source !== '消息中心' && (
                         <div className="rounded-md bg-surface-50 p-4 text-sm leading-6 text-surface-700 dark:bg-surface-800 dark:text-surface-300">
-                          {activeThread.context}
+                          <MessageText text={activeThread.context} />
                         </div>
                       )}
-                      <div className="space-y-3">
+                      <div ref={threadViewportRef} className="space-y-3">
                         {activeThread.messages.length < activeThread.messages_total && <Button variant="outline" size="sm" className="w-full" onClick={loadOlderThreadMessages} disabled={loadingOlderThreadMessages}>{loadingOlderThreadMessages ? '加载中…' : '加载更早消息'}</Button>}
                         {activeThread.messages.map((msg) => (
                           <div key={msg.id} className={cn('rounded-md border p-3', msg.from === 'student' ? 'border-primary-200 bg-primary-50/30 dark:border-primary-800 dark:bg-primary-950/20' : 'border-surface-200 dark:border-surface-700')}>
@@ -1817,9 +1738,9 @@ export const MessageCenterPage: React.FC = () => {
                                 {msg.from === 'student' ? '我' : activeThread.teacher_name}
                               </span>
                             </div>
-                            <div className="text-sm text-surface-700 dark:text-surface-300">{msg.text}</div>
+                            <div className="text-sm text-surface-700 dark:text-surface-300"><MessageText text={msg.text} /></div>
                             <MessageAttachments attachments={msg.attachments} />
-                            <div className="mt-2 text-xs text-surface-400">{formatRelativeTime(msg.time)}</div>
+                            <div data-read-message-id={msg.from !== 'student' ? msg.id : undefined} className="mt-2 text-xs text-surface-400">{formatRelativeTime(msg.time)}</div>
                           </div>
                         ))}
                       </div>

@@ -96,7 +96,7 @@ func (r MessageCenterRepository) studentSummary(ctx context.Context, studentID s
 				ORDER BY n.post_id, n.created_at DESC, n.id DESC
 			) AS latest
 		) AS previews
-			ORDER BY occurred_at DESC, id DESC, type
+			ORDER BY pending DESC, occurred_at DESC, id DESC, type
 		LIMIT 5`, studentID)
 	if err != nil {
 		return messagecenterapp.Summary{}, err
@@ -173,7 +173,7 @@ func (r MessageCenterRepository) teacherSummary(ctx context.Context, teacherID s
 				ORDER BY n.post_id, n.created_at DESC, n.id DESC
 			) AS latest
 		) AS previews
-			ORDER BY occurred_at DESC, id DESC, type
+			ORDER BY pending DESC, occurred_at DESC, id DESC, type
 		LIMIT 5`, teacherID)
 	if err != nil {
 		return messagecenterapp.Summary{}, err
