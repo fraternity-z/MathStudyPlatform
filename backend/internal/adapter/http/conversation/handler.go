@@ -22,6 +22,7 @@ import (
 type Service interface {
 	ListConversations(ctx context.Context, userID string, role user.Role, search string, status string, className string, page int, pageSize int) (conversationapp.ListResponse, error)
 	GetConversation(ctx context.Context, userID string, conversationID string, page int, pageSize int) (conversationapp.ConversationDetail, error)
+	SearchMessages(context.Context, string, string, string, int, int) (conversationapp.MessageSearchResponse, error)
 	AcknowledgeConversationRead(ctx context.Context, userID string, conversationID string, throughMessageID string) error
 	CreateConversation(ctx context.Context, creatorID string, creatorRole user.Role, targetID string, subject string, initialMessage string, attachments []messageattachment.Attachment) (conversationapp.ConversationDetail, error)
 	SendMessage(ctx context.Context, conversationID string, senderID string, senderRole string, text string, attachments []messageattachment.Attachment) (conversationapp.Message, error)
@@ -86,6 +87,7 @@ func (h *Handler) Register(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc("GET "+prefix, h.listConversations)
 	mux.HandleFunc("PUT "+prefix+"/{id}/read", h.acknowledgeRead)
 	mux.HandleFunc("POST "+prefix+"/{id}/messages", h.sendMessage)
+	mux.HandleFunc("GET "+prefix+"/{id}/messages", h.searchMessages)
 	mux.HandleFunc("PUT "+prefix+"/{id}/archive", h.archiveConversation)
 }
 
@@ -154,6 +156,35 @@ func (h *Handler) getConversation(w http.ResponseWriter, r *http.Request) {
 		}
 		h.logError("get conversation failed", err)
 		writeConvError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "获取会话失败")
+		return
+	}
+	httpjson.Write(w, http.StatusOK, response)
+}
+
+func (h *Handler) searchMessages(w http.ResponseWriter, r *http.Request) {
+	principal, ok := h.requireMessageUser(w, r)
+	if !ok {
+		return
+	}
+	page, ok := parseBoundedInt(w, r.URL.Query().Get("page"), 1, 1, maxPageNumber, "page")
+	if !ok {
+		return
+	}
+	pageSize, ok := parseBoundedInt(w, r.URL.Query().Get("page_size"), 50, 1, 100, "page_size")
+	if !ok || !h.allowSearch(w, r, principal.UserID) {
+		return
+	}
+	response, err := h.service.SearchMessages(r.Context(), principal.UserID, r.PathValue("id"), r.URL.Query().Get("search"), page, pageSize)
+	if err != nil {
+		switch {
+		case errors.Is(err, conversationapp.ErrInvalidInput):
+			writeConvError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "请输入 1 至 200 字的搜索内容")
+		case errors.Is(err, conversationapp.ErrNotFound):
+			writeConvError(w, http.StatusNotFound, "NOT_FOUND", "会话不存在")
+		default:
+			h.logError("search conversation messages failed", err)
+			writeConvError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "搜索聊天记录失败")
+		}
 		return
 	}
 	httpjson.Write(w, http.StatusOK, response)

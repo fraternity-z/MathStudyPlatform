@@ -37,6 +37,7 @@ type Repository interface {
 	ListConversations(ctx context.Context, userID string, role user.Role, search string, status string, className string, page, pageSize int) ([]ConversationItem, int, error)
 	// GetConversation returns full conversation detail with messages.
 	GetConversation(ctx context.Context, conversationID string, userID string, page, pageSize int) (ConversationDetail, bool, error)
+	SearchMessages(ctx context.Context, conversationID, userID, search string, page, pageSize int) ([]Message, int, bool, error)
 	// AcknowledgeConversationRead marks messages through a server-provided message cutoff.
 	AcknowledgeConversationRead(ctx context.Context, conversationID string, userID string, throughMessageID string) (bool, error)
 	// CreateConversation creates a new conversation between a student and teacher.
@@ -104,6 +105,14 @@ type ListResponse struct {
 	PageSize int                `json:"page_size"`
 }
 
+// MessageSearchResponse contains one page of matching messages, in chronological order.
+type MessageSearchResponse struct {
+	Messages []Message `json:"messages"`
+	Total    int       `json:"total"`
+	Page     int       `json:"page"`
+	PageSize int       `json:"page_size"`
+}
+
 // Service implements conversation business logic.
 type Service struct {
 	repo Repository
@@ -151,6 +160,23 @@ func (s *Service) GetConversation(ctx context.Context, userID string, conversati
 		return ConversationDetail{}, ErrNotFound
 	}
 	return detail, nil
+}
+
+func (s *Service) SearchMessages(ctx context.Context, userID, conversationID, search string, page, pageSize int) (MessageSearchResponse, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	search = strings.TrimSpace(search)
+	if !validIdentifier(conversationID) || search == "" || !validText(search) || utf8.RuneCountInString(search) > maxListSearchRunes ||
+		page < 1 || page > maxPageNumber || pageSize < 1 || pageSize > maxPageSize {
+		return MessageSearchResponse{}, ErrInvalidInput
+	}
+	messages, total, found, err := s.repo.SearchMessages(ctx, conversationID, userID, search, page, pageSize)
+	if err != nil {
+		return MessageSearchResponse{}, err
+	}
+	if !found {
+		return MessageSearchResponse{}, ErrNotFound
+	}
+	return MessageSearchResponse{Messages: messages, Total: total, Page: page, PageSize: pageSize}, nil
 }
 
 // AcknowledgeConversationRead marks only messages at or before a cutoff returned by GetConversation.

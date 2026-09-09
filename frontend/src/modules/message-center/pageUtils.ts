@@ -1,35 +1,16 @@
-export function matchesAllKeywords(haystack: string, search: string): boolean {
-  const keywords = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (keywords.length === 0) return true;
-  const normalized = haystack.toLowerCase();
-  return keywords.every((keyword) => normalized.includes(keyword));
+export async function fetchMessageCenterPage<T>(
+  page: number,
+  pageSize: number,
+  fetchPage: (page: number) => Promise<{ items: T[]; total: number }>,
+): Promise<{ items: T[]; total: number; page: number }> {
+  const response = await fetchPage(page);
+  const lastPage = Math.max(1, Math.ceil(response.total / pageSize));
+  if (page > lastPage) return { ...await fetchPage(lastPage), page: lastPage };
+  return { ...response, page };
 }
 
 export function hasMinimumGlobalSearchCharacters(search: string): boolean {
   return (search.match(/[\p{L}\p{N}]/gu) ?? []).length >= 2;
-}
-
-export async function fetchLoadedPageRange<T extends { id: string }>(
-  lastPage: number,
-  pageSize: number,
-  fetchPage: (page: number) => Promise<{ items: T[]; total: number }>,
-): Promise<{ items: T[]; total: number }> {
-  let previousFingerprint = '';
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const pages: Array<{ items: T[]; total: number }> = [];
-    for (let page = 1; page <= Math.max(1, lastPage); page++) {
-      pages.push(await fetchPage(page));
-    }
-    const total = pages[0]?.total ?? 0;
-    const items = mergeByID([], pages.flatMap((page) => page.items)).slice(0, total);
-    const fingerprint = `${total}\u0000${items.map((item) => item.id).join('\u0000')}`;
-    if (items.length === Math.min(total, Math.max(1, lastPage) * pageSize) && fingerprint === previousFingerprint) {
-      return { items, total };
-    }
-    previousFingerprint = fingerprint;
-  }
-
-  throw new Error('list changed while refreshing loaded pages');
 }
 
 export async function fetchStableOffsetMessageWindow<T extends { id: string; time: string }>(
@@ -58,50 +39,15 @@ export async function fetchStableOffsetMessageWindow<T extends { id: string; tim
   throw new Error('message history changed while loading');
 }
 
-export async function fetchCompleteOffsetMessageHistory<T extends { id: string; time: string }>(
-  initialTotal: number,
-  pageSize: number,
-  fetchPage: (page: number) => Promise<{ messages: T[]; messages_total: number }>,
-): Promise<{ messages: T[]; total: number; page: number }> {
-  let lastPage = Math.max(1, Math.ceil(initialTotal / pageSize));
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const history = await fetchStableOffsetMessageWindow(lastPage, pageSize, fetchPage);
-    if (history.messages.length >= history.total) {
-      return { ...history, page: lastPage };
-    }
-    lastPage = Math.max(1, Math.ceil(history.total / pageSize));
-  }
-
-  throw new Error('message history changed while loading all pages');
-}
-
-export function latestPageChanged(
-  current: Array<{ id: string }>,
-  latestPage: Array<{ id: string }>,
-  currentTotal: number,
-  latestTotal: number,
-): boolean {
-  if (currentTotal !== latestTotal) return true;
-  if (current.length < latestPage.length) return true;
-  return latestPage.some((item, index) => current[index]?.id !== item.id);
-}
-
-export function mergeByID<T extends { id: string }>(current: T[], incoming: T[]): T[] {
-  const byID = new Map(current.map((item) => [item.id, item]));
-  incoming.forEach((item) => byID.set(item.id, item));
-  return [...byID.values()];
-}
-
-export function mergeLatestPageByID<T extends { id: string }>(
-  current: T[],
-  latestPage: T[],
-  total: number,
-): T[] {
-  const latestIDs = new Set(latestPage.map((item) => item.id));
-  return [
-    ...latestPage,
-    ...current.filter((item) => !latestIDs.has(item.id)),
-  ].slice(0, total);
+export function appendDeliveredMessage<
+  M extends { id: string; time: string },
+  T extends { messages: M[]; messages_total: number },
+>(detail: T, message: M): T {
+  return {
+    ...detail,
+    messages: mergeMessagesByID(detail.messages, [message]),
+    messages_total: detail.messages_total + (detail.messages.some((current) => current.id === message.id) ? 0 : 1),
+  };
 }
 
 export function mergeMessagesByID<T extends { id: string; time: string }>(

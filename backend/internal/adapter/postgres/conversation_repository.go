@@ -281,20 +281,9 @@ func (r ConversationRepository) GetConversation(ctx context.Context, conversatio
 
 	detail.Messages = make([]conversationapp.Message, 0)
 	for msgRows.Next() {
-		var msg conversationapp.Message
-		var readAt pgtype.Timestamp
-		var attachmentsJSON []byte
-		if err := msgRows.Scan(&msg.ID, &msg.From, &msg.Text, &msg.Time, &readAt, &attachmentsJSON); err != nil {
-			return conversationapp.ConversationDetail{}, false, err
-		}
-		msg.Attachments, err = messageattachment.Decode(attachmentsJSON)
+		msg, err := scanConversationMessage(msgRows)
 		if err != nil {
 			return conversationapp.ConversationDetail{}, false, err
-		}
-		msg.Time = messageCenterWallTime(msg.Time)
-		if readAt.Valid {
-			b := true
-			msg.ReadByRecipient = &b
 		}
 		detail.Messages = append(detail.Messages, msg)
 	}
@@ -309,6 +298,68 @@ func (r ConversationRepository) GetConversation(ctx context.Context, conversatio
 	}
 
 	return detail, true, nil
+}
+
+// SearchMessages searches only an authorized conversation and returns a bounded page.
+func (r ConversationRepository) SearchMessages(ctx context.Context, conversationID, userID, search string, page, pageSize int) ([]conversationapp.Message, int, bool, error) {
+	var authorized bool
+	if err := r.DB().QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM public.conversations WHERE id = $1 AND (student_id = $2 OR teacher_id = $2)
+	)`, conversationID, userID).Scan(&authorized); err != nil || !authorized {
+		return nil, 0, false, err
+	}
+	where := ` WHERE cm.conversation_id = $1`
+	args := []any{conversationID}
+	for _, keyword := range strings.Fields(search) {
+		args = append(args, keyword)
+		where += ` AND POSITION(LOWER($` + idxStr(len(args)) + `::text) IN LOWER(cm.text)) > 0`
+	}
+	var total int
+	if err := r.DB().QueryRow(ctx, `SELECT COUNT(*) FROM public.conversation_messages cm`+where, args...).Scan(&total); err != nil {
+		return nil, 0, true, err
+	}
+	args = append(args, pageSize, (page-1)*pageSize)
+	rows, err := r.DB().Query(ctx, `
+		SELECT cm.id, cm.sender_role, cm.text, cm.created_at, cm.read_at, cm.attachments
+		FROM public.conversation_messages cm`+where+`
+		ORDER BY cm.created_at DESC, cm.id DESC
+		LIMIT $`+idxStr(len(args)-1)+` OFFSET $`+idxStr(len(args)), args...)
+	if err != nil {
+		return nil, 0, true, err
+	}
+	defer rows.Close()
+	messages := make([]conversationapp.Message, 0)
+	for rows.Next() {
+		message, err := scanConversationMessage(rows)
+		if err != nil {
+			return nil, 0, true, err
+		}
+		messages = append(messages, message)
+	}
+	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
+		messages[left], messages[right] = messages[right], messages[left]
+	}
+	return messages, total, true, rows.Err()
+}
+
+func scanConversationMessage(row rowScanner) (conversationapp.Message, error) {
+	var message conversationapp.Message
+	var readAt pgtype.Timestamp
+	var attachmentsJSON []byte
+	if err := row.Scan(&message.ID, &message.From, &message.Text, &message.Time, &readAt, &attachmentsJSON); err != nil {
+		return message, err
+	}
+	var err error
+	message.Attachments, err = messageattachment.Decode(attachmentsJSON)
+	if err != nil {
+		return message, err
+	}
+	message.Time = messageCenterWallTime(message.Time)
+	if readAt.Valid {
+		read := true
+		message.ReadByRecipient = &read
+	}
+	return message, nil
 }
 
 // AcknowledgeConversationRead marks incoming messages no newer than a delivered cutoff.

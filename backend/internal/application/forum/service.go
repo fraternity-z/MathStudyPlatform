@@ -827,7 +827,7 @@ func validListFilter(filter ListPostsFilter, role user.Role) bool {
 		return false
 	}
 	switch filter.Scope {
-	case "", "all", "mine", "replied", "favorites":
+	case "", "all", "mine", "replied", "favorites", "unread":
 		return true
 	default:
 		return false

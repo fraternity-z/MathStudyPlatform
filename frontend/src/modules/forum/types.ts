@@ -5,7 +5,7 @@ export type ForumPostType = 'question' | 'discussion' | 'resource';
 export type ForumPostStatus = 'open' | 'resolved' | 'hidden' | 'deleted';
 export type ForumPostStatusFilter = ForumPostStatus | 'visible' | 'all';
 export type ForumSort = 'latest' | 'hot' | 'featured';
-export type ForumScope = 'all' | 'mine' | 'replied' | 'favorites';
+export type ForumScope = 'all' | 'mine' | 'replied' | 'favorites' | 'unread';
 export type ForumReportTargetType = 'post' | 'reply';
 export type ForumReportReason = 'spam' | 'abuse' | 'answer_leak' | 'misinformation' | 'copyright' | 'other';
 
