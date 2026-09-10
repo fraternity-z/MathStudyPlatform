@@ -32,7 +32,7 @@ import {
 import { toAppError, type AppError } from '@/libs/http/apiClient';
 import { useSerialPolling } from '@/hooks/useSerialPolling';
 import { useShanghaiDate } from '@/modules/daily-question/hooks/useShanghaiDate';
-import { buildExerciseTutorLaunch } from './exerciseTutorLaunch';
+import { buildExerciseTutorLaunch } from '@/modules/exercise/tutorContext';
 
 const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/;
 

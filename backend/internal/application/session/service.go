@@ -72,7 +72,8 @@ type Repository interface {
 	UpdateSessionMode(context.Context, string, string, string) (*string, bool, error)
 	GetStudyProgress(context.Context, string, string) (*StudyProgress, error)
 	UpdateStudyProgress(context.Context, string, string, StudyUpdate) (*StudyProgress, error)
-	InsertStudyMessage(context.Context, string, Message, int64) error
+	InsertStudyMessage(context.Context, string, Message, int64, string) error
+	CreateStudySession(context.Context, LearningSession, Message, StudyUpdate) (*StudyProgress, error)
 	DeleteSession(context.Context, string, string) (bool, error)
 	BatchDeleteSessions(context.Context, []string, string) (int, error)
 }
@@ -90,14 +91,16 @@ type LearningSession struct {
 
 // Message stores one session message.
 type Message struct {
-	ID          string
-	SessionID   string
-	Role        string
-	Content     string
-	Agent       *string
-	Attachments []string
-	Knowledge   *KnowledgeState
-	CreatedAt   time.Time
+	ID               string
+	SessionID        string
+	Role             string
+	Content          string
+	Agent            *string
+	Attachments      []string
+	Knowledge        *KnowledgeState
+	CreatedAt        time.Time
+	ReplyTo          *string
+	CompletionStatus *string
 }
 
 // FirstChatRequest stores the immutable identity and processing lease for a
@@ -428,6 +431,9 @@ func NewService(repo Repository, options ...Option) (*Service, error) {
 
 // CreateSession creates a learning session and welcome message.
 func (s *Service) CreateSession(ctx context.Context, userID string, topic *string, mode string) (CreateSessionResponse, error) {
+	if err := validateSessionTitle(topic); err != nil {
+		return CreateSessionResponse{}, err
+	}
 	if mode == "" {
 		mode = "chat"
 	}
@@ -484,6 +490,17 @@ func (s *Service) CreateSession(ctx context.Context, userID string, topic *strin
 
 // ProcessChat stores the user message and generates an assistant response.
 func (s *Service) ProcessChat(ctx context.Context, sessionID string, userID string, message string, attachments []string, stream ChatStreamCallbacks) (ChatResult, error) {
+	return s.processChat(ctx, sessionID, userID, message, attachments, nil, stream)
+}
+
+func (s *Service) ProcessStudyChat(ctx context.Context, sessionID, userID, message string, attachments []string, turn StudyTurnInput, stream ChatStreamCallbacks) (ChatResult, error) {
+	if turn.Revision < 1 || (turn.Action != "start" && turn.Action != "rephrase" && turn.Action != "reply") {
+		return ChatResult{}, ErrInvalidStudy
+	}
+	return s.processChat(ctx, sessionID, userID, message, attachments, &turn, stream)
+}
+
+func (s *Service) processChat(ctx context.Context, sessionID string, userID string, message string, attachments []string, turn *StudyTurnInput, stream ChatStreamCallbacks) (ChatResult, error) {
 	if strings.TrimSpace(message) == "" {
 		return ChatResult{}, ErrEmptyMessage
 	}
@@ -513,6 +530,21 @@ func (s *Service) ProcessChat(ctx context.Context, sessionID string, userID stri
 	systemInstruction, studyRevision, err := s.studyInstruction(ctx, sessionID, userID, current.Mode)
 	if err != nil {
 		return ChatResult{}, err
+	}
+	studyAction := "discuss"
+	if turn != nil {
+		if current.Mode != "study" {
+			return ChatResult{}, ErrInvalidStudy
+		}
+		if turn.Revision != studyRevision {
+			return ChatResult{}, ErrStudyConflict
+		}
+		studyAction = turn.Action
+		if turn.Action == "start" {
+			systemInstruction += "\n本次操作是开始当前环节；理解检查环节必须重新出一个检查问题并等待回答。"
+		} else if turn.Action == "rephrase" {
+			systemInstruction += "\n本次操作是换种讲法，不是学生提交检查答案；不要声称已经获得作答。"
+		}
 	}
 	historyByteBudget, ok := chatHistoryByteBudget(message, systemInstruction, attachments)
 	if !ok {
@@ -546,7 +578,7 @@ func (s *Service) ProcessChat(ctx context.Context, sessionID string, userID stri
 		CreatedAt:   userCreatedAt,
 	}
 	if current.Mode == "study" {
-		err = s.repo.InsertStudyMessage(ctx, userID, userMessage, studyRevision)
+		err = s.repo.InsertStudyMessage(ctx, userID, userMessage, studyRevision, studyAction)
 	} else {
 		err = s.repo.InsertMessage(ctx, userMessage)
 	}
@@ -597,13 +629,13 @@ func (s *Service) recentHistory(ctx context.Context, sessionID string) ([]Messag
 	return messages, nil
 }
 
-func (s *Service) generateAssistant(ctx context.Context, input ChatAgentInput, onChunk ChatAgentChunkHandler) (ChatAgentOutput, bool, error) {
+func (s *Service) generateAssistant(ctx context.Context, input ChatAgentInput, onChunk ChatAgentChunkHandler) (ChatAgentOutput, string, error) {
 	if s.agent == nil {
 		output := ChatAgentOutput{
 			Agent:   "tutor",
 			Content: "智能导师尚未配置；你的消息已保存。请管理员在 AI 模型设置中配置导师智能体，或在后端配置 EINO_ENABLED、EINO_API_KEY 和 EINO_MODEL 后恢复回复。",
 		}
-		return deliverAssistantOutput(output, false, onChunk)
+		return deliverAssistantOutput(output, "unavailable", onChunk)
 	}
 
 	emitted := false
@@ -643,44 +675,44 @@ func (s *Service) generateAssistant(ctx context.Context, input ChatAgentInput, o
 			output.Agent = "tutor"
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return output, false, ctxErr
+			return output, "interrupted", ctxErr
 		}
-		return output, false, err
+		return output, "interrupted", err
 	}
 	if output.Agent == "" {
 		output.Agent = "tutor"
 	}
 	if strings.TrimSpace(output.Content) == "" {
 		output.Content = "智能导师暂未生成有效回复，请稍后重试。"
-		return deliverAssistantOutput(output, false, deliver)
+		return deliverAssistantOutput(output, "unavailable", deliver)
 	}
 	if !emitted {
 		if err := deliver(ChatAgentChunk(output)); err != nil {
-			return output, false, err
+			return output, "interrupted", err
 		}
 	} else if streamed := deliveredContent.String(); streamed != output.Content {
 		if strings.HasPrefix(output.Content, streamed) {
 			if err := deliver(ChatAgentChunk{Agent: output.Agent, Content: output.Content[len(streamed):]}); err != nil {
-				return output, false, err
+				return output, "interrupted", err
 			}
 		} else {
 			output.Content = streamed + interruptedAssistantSuffix
 			if err := deliver(ChatAgentChunk{Agent: output.Agent, Content: interruptedAssistantSuffix}); err != nil {
-				return output, false, err
+				return output, "interrupted", err
 			}
-			return output, false, nil
+			return output, "interrupted", nil
 		}
 	}
-	return output, true, nil
+	return output, "completed", nil
 }
 
-func deliverAssistantOutput(output ChatAgentOutput, metered bool, onChunk ChatAgentChunkHandler) (ChatAgentOutput, bool, error) {
+func deliverAssistantOutput(output ChatAgentOutput, status string, onChunk ChatAgentChunkHandler) (ChatAgentOutput, string, error) {
 	if onChunk != nil && output.Content != "" {
 		if err := onChunk(ChatAgentChunk(output)); err != nil {
-			return output, false, wrapChatStreamDeliveryError(err)
+			return output, "interrupted", wrapChatStreamDeliveryError(err)
 		}
 	}
-	return output, metered, nil
+	return output, status, nil
 }
 
 func wrapChatStreamDeliveryError(err error) error {

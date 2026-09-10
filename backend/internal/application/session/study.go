@@ -14,10 +14,76 @@ var ErrModeLocked = errors.New("start a new session to change an active learning
 
 // StudyProgress records the learner's explicit progress, never model-assessed mastery.
 type StudyProgress struct {
+	Topic         string `json:"topic"`
+	Foundation    string `json:"foundation"`
+	Step          int    `json:"step"`
+	Revision      int64  `json:"revision"`
+	CanAdvance    bool   `json:"can_advance"`
+	BlockedReason string `json:"blocked_reason"`
+}
+
+// StudyEvidence is supplied by persistence without interpreting message wording.
+type StudyEvidence struct {
+	Action      string
+	Completed   bool
+	HasQuestion bool
+}
+
+func (p *StudyProgress) SetAvailability(evidence StudyEvidence) {
+	p.CanAdvance = false
+	p.BlockedReason = "reply_required"
+	if p.Step >= 5 {
+		p.BlockedReason = "completed"
+		return
+	}
+	if !evidence.Completed {
+		return
+	}
+	if p.Step == 3 && (evidence.Action != "reply" || !evidence.HasQuestion) {
+		p.BlockedReason = "answer_required"
+		return
+	}
+	p.CanAdvance = true
+	p.BlockedReason = ""
+}
+
+type StudyTurnInput struct {
+	Revision int64  `json:"revision"`
+	Action   string `json:"action"`
+}
+
+type CreateStudyRequest struct {
+	SessionID  string `json:"session_id"`
 	Topic      string `json:"topic"`
 	Foundation string `json:"foundation"`
-	Step       int    `json:"step"`
-	Revision   int64  `json:"revision"`
+}
+
+type CreateStudyResponse struct {
+	SessionID string         `json:"session_id"`
+	Progress  *StudyProgress `json:"progress"`
+}
+
+func (s *Service) CreateStudy(ctx context.Context, userID string, request CreateStudyRequest) (CreateStudyResponse, error) {
+	if !isUUIDv4(request.SessionID) {
+		return CreateStudyResponse{}, ErrInvalidSessionID
+	}
+	update := StudyUpdate{Action: "start", Topic: strings.TrimSpace(request.Topic), Foundation: request.Foundation}
+	if err := validateStudyUpdate(update); err != nil {
+		return CreateStudyResponse{}, err
+	}
+	title := sessionTitle(update.Topic)
+	session := LearningSession{ID: strings.ToLower(request.SessionID), StudentID: userID, IsActive: true, CurrentTopic: &title, Mode: "study", StartedAt: s.now()}
+	id, err := s.newID()
+	if err != nil {
+		return CreateStudyResponse{}, err
+	}
+	agent := "tutor"
+	welcome := Message{ID: id, SessionID: session.ID, Role: "assistant", Content: welcomeMessage("study"), Agent: &agent, CreatedAt: session.StartedAt}
+	progress, err := s.repo.CreateStudySession(ctx, session, welcome, update)
+	if err != nil {
+		return CreateStudyResponse{}, err
+	}
+	return CreateStudyResponse{SessionID: session.ID, Progress: progress}, nil
 }
 
 type StudyUpdate struct {
@@ -43,19 +109,26 @@ func (s *Service) GetStudyProgress(ctx context.Context, sessionID, userID string
 
 func (s *Service) UpdateStudyProgress(ctx context.Context, sessionID, userID string, request StudyUpdate) (*StudyProgress, error) {
 	request.Topic = strings.TrimSpace(request.Topic)
+	if err := validateStudyUpdate(request); err != nil {
+		return nil, err
+	}
+	return s.repo.UpdateStudyProgress(ctx, sessionID, userID, request)
+}
+
+func validateStudyUpdate(request StudyUpdate) error {
 	if request.Action == "start" {
 		if request.Revision != 0 || request.Topic == "" || utf8.RuneCountInString(request.Topic) > 200 {
-			return nil, ErrInvalidStudy
+			return ErrInvalidStudy
 		}
 		switch request.Foundation {
 		case "beginner", "familiar", "review":
 		default:
-			return nil, ErrInvalidStudy
+			return ErrInvalidStudy
 		}
 	} else if request.Action != "next" || request.Revision < 1 {
-		return nil, ErrInvalidStudy
+		return ErrInvalidStudy
 	}
-	return s.repo.UpdateStudyProgress(ctx, sessionID, userID, request)
+	return nil
 }
 
 func (s *Service) studyInstruction(ctx context.Context, sessionID, userID, mode string) (string, int64, error) {

@@ -386,9 +386,9 @@ func (r SessionRepository) InsertMessage(ctx context.Context, message sessionapp
 			related_concept_ids,
 			related_content_id,
 			created_at,
-			knowledge
+			knowledge, reply_to, completion_status
 		)
-		VALUES ($1, $2, $3::public.messagerole, $4, $5::public.agenttype, $6::json, '[]'::json, NULL, $7, $8::jsonb)`,
+		VALUES ($1, $2, $3::public.messagerole, $4, $5::public.agenttype, $6::json, '[]'::json, NULL, $7, $8::jsonb, $9, $10)`,
 		message.ID,
 		message.SessionID,
 		roleToDB(message.Role),
@@ -397,6 +397,8 @@ func (r SessionRepository) InsertMessage(ctx context.Context, message sessionapp
 		string(attachmentsRaw),
 		message.CreatedAt,
 		knowledgeRaw,
+		message.ReplyTo,
+		message.CompletionStatus,
 	)
 	return err
 }
@@ -423,9 +425,9 @@ func (r SessionRepository) InsertMeteredAssistantMessage(ctx context.Context, st
 				related_concept_ids,
 				related_content_id,
 				created_at,
-				knowledge
+				knowledge, reply_to, completion_status
 			)
-			VALUES ($1, $2, $3::public.messagerole, $4, $5::public.agenttype, $6::json, '[]'::json, NULL, $7, $10::jsonb)
+			VALUES ($1, $2, $3::public.messagerole, $4, $5::public.agenttype, $6::json, '[]'::json, NULL, $7, $10::jsonb, $11, $12)
 			RETURNING id
 		)
 		INSERT INTO public.student_ai_reply_usage (
@@ -443,6 +445,8 @@ func (r SessionRepository) InsertMeteredAssistantMessage(ctx context.Context, st
 		studentID,
 		usageDate,
 		knowledgeRaw,
+		message.ReplyTo,
+		message.CompletionStatus,
 	)
 	return err
 }

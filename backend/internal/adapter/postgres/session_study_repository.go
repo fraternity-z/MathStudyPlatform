@@ -10,22 +10,34 @@ import (
 
 func (r SessionRepository) GetStudyProgress(ctx context.Context, sessionID, userID string) (*sessionapp.StudyProgress, error) {
 	var progress sessionapp.StudyProgress
-	err := r.DB().QueryRow(ctx, `SELECT p.topic, p.foundation, p.step, p.revision
+	var evidence sessionapp.StudyEvidence
+	err := r.DB().QueryRow(ctx, `SELECT p.topic, p.foundation, p.step, p.revision,
+		COALESCE(latest.action, ''), COALESCE(reply.completion_status = 'completed' AND reply.agent_type = 'TUTOR' AND btrim(reply.content) <> '', false),
+		COALESCE(question.sequence < latest.sequence AND question_reply.completion_status = 'completed'
+		    AND question_reply.agent_type = 'TUTOR' AND btrim(question_reply.content) <> '', false)
 		FROM public.session_study_progress p JOIN public.learning_sessions s ON s.id = p.session_id
+		LEFT JOIN LATERAL (SELECT t.* FROM public.session_study_turns t
+		    WHERE t.session_id=p.session_id AND t.revision=p.revision ORDER BY t.sequence DESC LIMIT 1) latest ON true
+		LEFT JOIN public.session_messages reply ON reply.reply_to=latest.user_message_id
+		LEFT JOIN LATERAL (SELECT t.* FROM public.session_study_turns t
+		    WHERE t.session_id=p.session_id AND t.revision=p.revision AND t.action='start'
+		    ORDER BY t.sequence DESC LIMIT 1) question ON true
+		LEFT JOIN public.session_messages question_reply ON question_reply.reply_to=question.user_message_id
 		WHERE s.id = $1 AND s.student_id = $2`, sessionID, userID).
-		Scan(&progress.Topic, &progress.Foundation, &progress.Step, &progress.Revision)
+		Scan(&progress.Topic, &progress.Foundation, &progress.Step, &progress.Revision, &evidence.Action, &evidence.Completed, &evidence.HasQuestion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	progress.SetAvailability(evidence)
 	return &progress, nil
 }
 
 // Serialize progress changes and the user turn that captures a stage snapshot.
 // Locks are released before any model call.
-func (r SessionRepository) InsertStudyMessage(ctx context.Context, userID string, message sessionapp.Message, revision int64) error {
+func (r SessionRepository) InsertStudyMessage(ctx context.Context, userID string, message sessionapp.Message, revision int64, action string) error {
 	return withRepositoryTx(ctx, "study message", r.Repository, func(base Repository) SessionRepository {
 		return SessionRepository{Repository: base}
 	}, func(current SessionRepository) error {
@@ -49,7 +61,15 @@ func (r SessionRepository) InsertStudyMessage(ctx context.Context, userID string
 		if actual != revision {
 			return sessionapp.ErrStudyConflict
 		}
-		return current.InsertMessage(ctx, message)
+		if err := current.InsertMessage(ctx, message); err != nil {
+			return err
+		}
+		if revision == 0 {
+			return nil
+		}
+		_, err = current.DB().Exec(ctx, `INSERT INTO public.session_study_turns (session_id, user_message_id, revision, action)
+		    VALUES ($1,$2,$3,$4)`, message.SessionID, message.ID, revision, action)
+		return err
 	})
 }
 
@@ -81,18 +101,16 @@ func (r SessionRepository) UpdateStudyProgress(ctx context.Context, sessionID, u
 				return sessionapp.ErrStudyConflict
 			}
 		} else {
-			// Require a completed tutor turn in this step; stopped/failed output cannot advance it.
-			// The check step also needs a second user turn (the learner's response).
+			progress, err := current.GetStudyProgress(ctx, sessionID, userID)
+			if err != nil {
+				return err
+			}
+			if progress == nil || progress.Revision != request.Revision || !progress.CanAdvance {
+				return sessionapp.ErrStudyConflict
+			}
 			tag, err := current.DB().Exec(ctx, `UPDATE public.session_study_progress p
-				SET step = step + 1, revision = revision + 1, updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
-				message_count = (SELECT count(*) FROM public.session_messages WHERE session_id = $1)
-				WHERE session_id = $1 AND revision = $2 AND step < 5
-				AND (SELECT count(*) FROM public.session_messages m WHERE m.session_id = p.session_id)
-				    >= p.message_count + CASE WHEN p.step = 3 THEN 4 ELSE 2 END
-				AND (SELECT m.role = 'ASSISTANT' AND m.agent_type = 'TUTOR'
-				     AND btrim(m.content) <> '' AND m.content NOT LIKE '%> 已停止生成%' AND m.content NOT LIKE '%> 生成已中断%'
-				     FROM public.session_messages m WHERE m.session_id = p.session_id
-				     ORDER BY m.created_at DESC, m.id DESC LIMIT 1)`, sessionID, request.Revision)
+				SET step = step + 1, revision = revision + 1, updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+				WHERE session_id = $1 AND revision = $2 AND step < 5`, sessionID, request.Revision)
 			if err != nil {
 				return err
 			}
@@ -101,6 +119,42 @@ func (r SessionRepository) UpdateStudyProgress(ctx context.Context, sessionID, u
 			}
 		}
 		result, err = current.GetStudyProgress(ctx, sessionID, userID)
+		return err
+	})
+	return result, err
+}
+
+func (r SessionRepository) CreateStudySession(ctx context.Context, session sessionapp.LearningSession, welcome sessionapp.Message, request sessionapp.StudyUpdate) (*sessionapp.StudyProgress, error) {
+	var result *sessionapp.StudyProgress
+	err := withRepositoryTx(ctx, "study create", r.Repository, func(base Repository) SessionRepository {
+		return SessionRepository{Repository: base}
+	}, func(current SessionRepository) error {
+		created, err := current.insertSession(ctx, session)
+		if err != nil {
+			return err
+		}
+		if created {
+			if err := current.InsertMessage(ctx, welcome); err != nil {
+				return err
+			}
+			_, err = current.DB().Exec(ctx, `INSERT INTO public.session_study_progress
+			    (session_id, topic, foundation, message_count, creation_key) VALUES ($1,$2,$3,1,$1)`, session.ID, request.Topic, request.Foundation)
+			if err != nil {
+				return err
+			}
+		} else {
+			matches, err := current.Exists(ctx, `SELECT EXISTS (SELECT 1 FROM public.learning_sessions s
+			    JOIN public.session_study_progress p ON p.session_id=s.id
+			    WHERE s.id=$1 AND s.student_id=$2 AND s.mode='study' AND p.creation_key=$1 AND p.topic=$3 AND p.foundation=$4)`,
+				session.ID, session.StudentID, request.Topic, request.Foundation)
+			if err != nil {
+				return err
+			}
+			if !matches {
+				return sessionapp.ErrSessionIDConflict
+			}
+		}
+		result, err = current.GetStudyProgress(ctx, session.ID, session.StudentID)
 		return err
 	})
 	return result, err

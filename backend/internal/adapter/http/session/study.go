@@ -8,6 +8,23 @@ import (
 	"mathstudy/backend/internal/platform/httpjson"
 )
 
+func (h *Handler) createStudy(w http.ResponseWriter, r *http.Request) {
+	principal, ok := h.requirePrincipal(w, r)
+	if !ok {
+		return
+	}
+	var request sessionapp.CreateStudyRequest
+	if !decodeRequest(w, r, &request) {
+		return
+	}
+	response, err := h.service.CreateStudy(r.Context(), principal.UserID, request)
+	if err != nil {
+		h.writeStudyError(w, err)
+		return
+	}
+	httpjson.Write(w, http.StatusOK, response)
+}
+
 func (h *Handler) study(w http.ResponseWriter, r *http.Request) {
 	principal, ok := h.requirePrincipal(w, r)
 	if !ok {
@@ -40,6 +57,10 @@ func (h *Handler) updateStudy(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) writeStudyError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, sessionapp.ErrInvalidSessionID):
+		writeSessionError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "会话标识格式错误")
+	case errors.Is(err, sessionapp.ErrSessionIDConflict):
+		writeSessionError(w, http.StatusConflict, "SESSION_ID_CONFLICT", "创建请求标识已被其他请求使用，请重新建立学习安排")
 	case errors.Is(err, sessionapp.ErrNotFound):
 		writeSessionError(w, http.StatusNotFound, "NOT_FOUND", "会话不存在或已结束")
 	case errors.Is(err, sessionapp.ErrInvalidStudy):

@@ -1,4 +1,4 @@
-import type { Question } from '@/modules/exercise/services/exerciseService';
+import type { Question } from './services/exerciseService';
 import type { SessionMode } from '@/modules/session/types';
 
 export interface ExerciseTutorLaunchState {

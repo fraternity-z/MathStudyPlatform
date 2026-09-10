@@ -57,9 +57,9 @@ import { useImageUpload } from './hooks/useImageUpload';
 import { useFileUpload } from './hooks/useFileUpload';
 import { CHAT_MODES, QUICK_ACTIONS, ANSWER_ACTIONS } from './constants.tsx';
 import { StudyPanel } from '@/modules/session/components/StudyPanel';
-import { exerciseService } from '@/modules/exercise/services/exerciseService';
-import { buildExerciseTutorLaunch } from '../exerciseTutorLaunch';
-import type { ExerciseTutorLaunchState } from '../exerciseTutorLaunch';
+import { useExerciseTutorContext } from '@/modules/exercise/hooks/useExerciseTutorContext';
+import type { ExerciseTutorLaunchState } from '@/modules/exercise/tutorContext';
+import type { StudyAction, StudyProgress } from '@/modules/session/study';
 import { useToast, type ToastOptions } from '@/components/ui/Toast';
 import {
   isDefinitiveDraftIdentityError,
@@ -139,7 +139,8 @@ export const SessionChatPage: React.FC = () => {
   const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
   const [isBatchDeleting, setIsBatchDeleting] = useState(false);
   const [studyBusy, setStudyBusy] = useState(false);
-  const [exerciseLoading, setExerciseLoading] = useState(false);
+  const [studyRefresh, setStudyRefresh] = useState(0);
+  const [studySnapshot, setStudySnapshot] = useState<{ sessionId: string; progress: StudyProgress | null } | null>(null);
   const inputValueRef = useRef('');
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const sseControllerRef = useRef<SSEController | null>(null);
@@ -149,6 +150,9 @@ export const SessionChatPage: React.FC = () => {
   const composerHasContentRef = useRef(false);
 
   const isDraftSession = !sessionId || sessionId === 'new';
+  const query = new URLSearchParams(location.search);
+  const exerciseId = isDraftSession ? query.get('exercise_id') : null;
+  const { context: exerciseContext, loading: exerciseLoading, error: exerciseError, retry: retryExercise } = useExerciseTutorContext(exerciseId);
   const hasPreparedDraft = isDraftSession && draftSessionId !== null;
   const hasCompletedDraft = hasPreparedDraft && draftFirstTurnCompleted;
   const draftRecoveryPending = hasPreparedDraft && !draftFirstTurnCompleted;
@@ -174,27 +178,26 @@ export const SessionChatPage: React.FC = () => {
       ? sessionId ?? null
       : null;
   const draftWelcome = `你好，当前为${currentModeConfig.name}。${currentModeConfig.description}。输入问题后将开始并保存本次对话。`;
-  const query = new URLSearchParams(location.search);
-  const exerciseId = isDraftSession ? query.get('exercise_id') : null;
   const suggestedTopic = locationState?.topic ?? query.get('topic') ?? currentSession?.title ?? '';
 
   useEffect(() => {
-    if (!exerciseId) return;
-    const controller = new AbortController();
-    setExerciseLoading(true);
-    dispatch(setMode('practice'));
-    void exerciseService.getQuestion(exerciseId, controller.signal).then((question) => {
-      if (controller.signal.aborted) return;
-      const prompt = buildExerciseTutorLaunch(question).initialMessage;
-      setInputValue(prompt);
-      inputValueRef.current = prompt;
-    }).catch((cause) => {
-      if (!controller.signal.aborted) showSessionRequestError(toast, cause, '题目加载失败，请返回练习页重试');
-    }).finally(() => {
-      if (!controller.signal.aborted) setExerciseLoading(false);
-    });
-    return () => controller.abort();
-  }, [exerciseId, dispatch, toast]);
+    if (exerciseId) dispatch(setMode('practice'));
+  }, [exerciseId, dispatch]);
+
+  useEffect(() => {
+    if (!exerciseContext) return;
+    setInputValue(exerciseContext.initialMessage);
+    inputValueRef.current = exerciseContext.initialMessage;
+  }, [exerciseContext]);
+
+  useEffect(() => {
+    if (!exerciseError) return;
+    toast({ type: 'error', title: '题目加载失败', description: exerciseError.message, action: { label: '重试', onClick: retryExercise } });
+  }, [exerciseError, retryExercise, toast]);
+
+  const handleStudyProgress = useCallback((loadedSessionId: string, progress: StudyProgress | null) => {
+    setStudySnapshot({ sessionId: loadedSessionId, progress });
+  }, []);
 
   const handleAttachmentError = useCallback((message: string) => {
     toast({
@@ -293,6 +296,7 @@ export const SessionChatPage: React.FC = () => {
   }, [dispatch, refreshSessionList]);
 
   const handleChatSettled = useCallback((settlement: ChatSettlement) => {
+    setStudyRefresh((value) => value + 1);
     const {
       sessionId: settledSessionId,
       outcome,
@@ -517,12 +521,13 @@ export const SessionChatPage: React.FC = () => {
 
   // 发送消息
   const handleSendMessage = useCallback(
-    async (customMessage?: string) => {
+    async (customMessage?: string, studyAction: StudyAction = 'reply') => {
       if (isModeUpdating || isReconciling || studyBusy || exerciseLoading) return false;
       const messageContent = customMessage ?? inputValue;
-      return sendMessage(messageContent);
+      const progress = displayMode === 'study' && studySnapshot?.sessionId === activeSessionId ? studySnapshot.progress : null;
+      return sendMessage(messageContent, progress ? { action: studyAction, revision: progress.revision } : undefined);
     },
-    [inputValue, isModeUpdating, isReconciling, studyBusy, exerciseLoading, sendMessage]
+    [inputValue, isModeUpdating, isReconciling, studyBusy, exerciseLoading, sendMessage, displayMode, studySnapshot, activeSessionId]
   );
 
   // 从刷题页面跳转时，自动发送初始消息
@@ -777,7 +782,8 @@ export const SessionChatPage: React.FC = () => {
           {displayMode === 'study' && (showDraftWelcome || persistedSessionReady || hasCompletedDraft) && (
             <StudyPanel key={activeSessionId ?? 'draft'} sessionId={activeSessionId} suggestedTopic={suggestedTopic}
               disabled={interactionBusy || isLoading} onBusyChange={setStudyBusy}
-              onPrompt={handleSendMessage} onPractice={openPractice} />
+              onPrompt={handleSendMessage} onPractice={openPractice}
+              onProgress={handleStudyProgress} refreshKey={studyRefresh} />
           )}
           {displayMode === 'practice' && !interactionBusy && (
             <div className="shrink-0 border-b border-surface-200 px-4 py-2 text-sm dark:border-surface-700">
