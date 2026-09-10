@@ -55,7 +55,10 @@ import {
 } from './hooks/useChatStream';
 import { useImageUpload } from './hooks/useImageUpload';
 import { useFileUpload } from './hooks/useFileUpload';
-import { CHAT_MODES, QUICK_ACTIONS } from './constants.tsx';
+import { CHAT_MODES, QUICK_ACTIONS, ANSWER_ACTIONS } from './constants.tsx';
+import { StudyPanel } from '@/modules/session/components/StudyPanel';
+import { exerciseService } from '@/modules/exercise/services/exerciseService';
+import { buildExerciseTutorLaunch } from '../exerciseTutorLaunch';
 import type { ExerciseTutorLaunchState } from '../exerciseTutorLaunch';
 import { useToast, type ToastOptions } from '@/components/ui/Toast';
 import {
@@ -135,6 +138,8 @@ export const SessionChatPage: React.FC = () => {
   const [isSelectMode, setIsSelectMode] = useState(false);
   const [selectedSessionIds, setSelectedSessionIds] = useState<string[]>([]);
   const [isBatchDeleting, setIsBatchDeleting] = useState(false);
+  const [studyBusy, setStudyBusy] = useState(false);
+  const [exerciseLoading, setExerciseLoading] = useState(false);
   const inputValueRef = useRef('');
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const sseControllerRef = useRef<SSEController | null>(null);
@@ -149,7 +154,8 @@ export const SessionChatPage: React.FC = () => {
   const draftRecoveryPending = hasPreparedDraft && !draftFirstTurnCompleted;
   const showDraftWelcome = isDraftSession
     && messages.length === 0;
-  const currentModeConfig = CHAT_MODES.find((m) => m.id === currentMode)!;
+  const displayMode = currentMode === 'explain' ? 'chat' : currentMode;
+  const currentModeConfig = CHAT_MODES.find((m) => m.id === displayMode) ?? CHAT_MODES[1];
   const isStreaming = streamStatus === 'streaming';
   const isLoading = loadingState === 'loading';
   const isSending = sendingState === 'loading';
@@ -157,8 +163,8 @@ export const SessionChatPage: React.FC = () => {
   const isModeUpdating = modeUpdateState === 'loading';
   const isReconciling = reconcileState === 'loading';
   const isDeleting = deletingSessionId !== null || isBatchDeleting;
-  const interactionBusy = isBusy || isModeUpdating || isReconciling || isDeleting;
-  const composerDisabled = isLoading || isModeUpdating || isReconciling || isDeleting;
+  const interactionBusy = isBusy || isModeUpdating || isReconciling || isDeleting || studyBusy || exerciseLoading;
+  const composerDisabled = isLoading || isModeUpdating || isReconciling || isDeleting || studyBusy || exerciseLoading;
   const persistedSessionReady = !isDraftSession
     && historySessionId === sessionId
     && historySessionStatus === 'active';
@@ -168,6 +174,27 @@ export const SessionChatPage: React.FC = () => {
       ? sessionId ?? null
       : null;
   const draftWelcome = `你好，当前为${currentModeConfig.name}。${currentModeConfig.description}。输入问题后将开始并保存本次对话。`;
+  const query = new URLSearchParams(location.search);
+  const exerciseId = isDraftSession ? query.get('exercise_id') : null;
+  const suggestedTopic = locationState?.topic ?? query.get('topic') ?? currentSession?.title ?? '';
+
+  useEffect(() => {
+    if (!exerciseId) return;
+    const controller = new AbortController();
+    setExerciseLoading(true);
+    dispatch(setMode('practice'));
+    void exerciseService.getQuestion(exerciseId, controller.signal).then((question) => {
+      if (controller.signal.aborted) return;
+      const prompt = buildExerciseTutorLaunch(question).initialMessage;
+      setInputValue(prompt);
+      inputValueRef.current = prompt;
+    }).catch((cause) => {
+      if (!controller.signal.aborted) showSessionRequestError(toast, cause, '题目加载失败，请返回练习页重试');
+    }).finally(() => {
+      if (!controller.signal.aborted) setExerciseLoading(false);
+    });
+    return () => controller.abort();
+  }, [exerciseId, dispatch, toast]);
 
   const handleAttachmentError = useCallback((message: string) => {
     toast({
@@ -472,7 +499,7 @@ export const SessionChatPage: React.FC = () => {
     settlementAttemptRef.current += 1;
     initialMessageHandled.current = false;
     dispatch(clearCurrentSession());
-    dispatch(setMode(locationState?.mode ?? currentMode));
+    dispatch(setMode(exerciseId ? 'practice' : query.get('mode') === 'study' ? 'study' : locationState?.mode ?? currentMode));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
@@ -491,11 +518,11 @@ export const SessionChatPage: React.FC = () => {
   // 发送消息
   const handleSendMessage = useCallback(
     async (customMessage?: string) => {
-      if (isModeUpdating || isReconciling) return false;
+      if (isModeUpdating || isReconciling || studyBusy || exerciseLoading) return false;
       const messageContent = customMessage ?? inputValue;
       return sendMessage(messageContent);
     },
-    [inputValue, isModeUpdating, isReconciling, sendMessage]
+    [inputValue, isModeUpdating, isReconciling, studyBusy, exerciseLoading, sendMessage]
   );
 
   // 从刷题页面跳转时，自动发送初始消息
@@ -528,6 +555,13 @@ export const SessionChatPage: React.FC = () => {
   }, [cancelCurrentSend]);
 
   // 切换模式
+  const openPractice = useCallback((topic: string) => {
+    const params = new URLSearchParams({ mode: 'ai' });
+    if (topic.trim()) params.set('topic', topic.slice(0, 200));
+    if (activeSessionId) params.set('from_session', activeSessionId);
+    navigate(`/exercise?${params}`);
+  }, [activeSessionId, navigate]);
+
   const handleModeChange = useCallback(
     (mode: ChatMode) => {
       if (
@@ -536,6 +570,19 @@ export const SessionChatPage: React.FC = () => {
         sessionsLoadingState === 'loading' ||
         (!isDraftSession && !persistedSessionReady)
       ) {
+        return;
+      }
+      if (mode === 'practice') {
+        openPractice(suggestedTopic);
+        return;
+      }
+      if (displayMode === mode) return;
+      if (activeSessionId && (mode === 'study' || displayMode === 'study' || displayMode === 'practice')) {
+        settlementAttemptRef.current += 1;
+        initialMessageHandled.current = false;
+        dispatch(clearCurrentSession());
+        dispatch(setMode(mode));
+        navigate('/session/new', { state: { mode, topic: suggestedTopic } });
         return;
       }
       if (activeSessionId) {
@@ -562,8 +609,9 @@ export const SessionChatPage: React.FC = () => {
         return;
       }
       dispatch(setMode(mode));
+      navigate('/session/new', { replace: true, state: { mode, topic: suggestedTopic } });
     },
-    [activeSessionId, dispatch, draftRecoveryPending, interactionBusy, isDraftSession, persistedSessionReady, refreshSessionList, sessionsLoadingState, toast]
+    [activeSessionId, dispatch, draftRecoveryPending, interactionBusy, isDraftSession, persistedSessionReady, refreshSessionList, sessionsLoadingState, toast, displayMode, navigate, openPractice, suggestedTopic]
   );
 
   const resetToDraft = useCallback(() => {
@@ -705,7 +753,7 @@ export const SessionChatPage: React.FC = () => {
             rightSlot={
               <ModeSelector
                 modes={CHAT_MODES}
-                currentMode={currentMode}
+                currentMode={displayMode}
                 onModeChange={handleModeChange}
                 disabled={
                   interactionBusy ||
@@ -716,6 +764,27 @@ export const SessionChatPage: React.FC = () => {
               />
             }
           />
+
+          {showDraftWelcome && displayMode === 'chat' && !interactionBusy && !exerciseId && (
+            <div className="grid shrink-0 grid-cols-3 gap-2 px-4 py-3" aria-label="选择学习入口">
+              {CHAT_MODES.map((mode) => (
+                <button key={mode.id} type="button" aria-pressed={displayMode === mode.id} onClick={() => handleModeChange(mode.id)} className={`rounded-xl border p-3 text-left text-sm ${displayMode === mode.id ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20' : 'border-surface-200 dark:border-surface-700'}`}>
+                  <span className="font-semibold">{mode.name}</span><span className="mt-1 block text-xs text-surface-500">{mode.description}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {displayMode === 'study' && (showDraftWelcome || persistedSessionReady || hasCompletedDraft) && (
+            <StudyPanel key={activeSessionId ?? 'draft'} sessionId={activeSessionId} suggestedTopic={suggestedTopic}
+              disabled={interactionBusy || isLoading} onBusyChange={setStudyBusy}
+              onPrompt={handleSendMessage} onPractice={openPractice} />
+          )}
+          {displayMode === 'practice' && !interactionBusy && (
+            <div className="shrink-0 border-b border-surface-200 px-4 py-2 text-sm dark:border-surface-700">
+              这里提供分步提示，作答与解析请在练习页完成。
+              <button type="button" className="ml-2 text-primary-600 underline" onClick={() => openPractice(suggestedTopic)}>进入习题练习</button>
+            </div>
+          )}
 
           {/* 消息列表 */}
           <ChatMessages
@@ -734,12 +803,16 @@ export const SessionChatPage: React.FC = () => {
           />
 
           {/* 快捷操作 */}
-          {(showDraftWelcome || messages.length === 0) &&
+          {displayMode === 'chat' && (showDraftWelcome || messages.length === 0) &&
             !isLoading &&
             !interactionBusy &&
             !isFileParsing &&
             (isDraftSession || persistedSessionReady) && (
             <QuickActions actions={QUICK_ACTIONS} onActionClick={handleSendMessage} />
+          )}
+
+          {displayMode === 'chat' && messages.some((message) => message.role === 'user') && !interactionBusy && !isLoading && (persistedSessionReady || hasCompletedDraft) && (
+            <QuickActions actions={ANSWER_ACTIONS} onActionClick={handleSendMessage} />
           )}
 
           {/* 输入区域 */}

@@ -34,7 +34,7 @@ export const buildExerciseTutorLaunch = (question: Question): ExerciseTutorLaunc
 
   return {
     source: question.source,
-    mode: 'explain',
+    mode: 'practice',
     topic: topic.slice(0, 36),
     initialMessage: [
       `【辅导场景：${sourceLabel(question.source)}】`,

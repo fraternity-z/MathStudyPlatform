@@ -492,7 +492,7 @@ func (r SessionRepository) ListSessions(ctx context.Context, userID string, limi
 		SELECT count(ls.id)::int
 		FROM public.learning_sessions ls
 		WHERE ls.student_id = $1
-		  AND (NOT $2::boolean OR EXISTS (
+		  AND (NOT $2::boolean OR EXISTS (SELECT 1 FROM public.session_study_progress p WHERE p.session_id = ls.id) OR EXISTS (
 			SELECT 1
 			FROM public.session_messages user_message
 			WHERE user_message.session_id = ls.id
@@ -516,7 +516,7 @@ func (r SessionRepository) ListSessions(ctx context.Context, userID string, limi
 		FROM public.learning_sessions ls
 		LEFT JOIN public.session_messages sm ON sm.session_id = ls.id
 		WHERE ls.student_id = $1
-		  AND (NOT $4::boolean OR EXISTS (
+		  AND (NOT $4::boolean OR EXISTS (SELECT 1 FROM public.session_study_progress p WHERE p.session_id = ls.id) OR EXISTS (
 			SELECT 1
 			FROM public.session_messages user_message
 			WHERE user_message.session_id = ls.id
@@ -579,7 +579,8 @@ func (r SessionRepository) UpdateSessionMode(ctx context.Context, sessionID stri
 	err := r.DB().QueryRow(ctx, `
 		UPDATE public.learning_sessions
 		SET mode = $3
-		WHERE id = $1 AND student_id = $2
+		WHERE id = $1 AND student_id = $2 AND is_active = true
+		AND (mode = $3 OR (mode NOT IN ('study', 'practice') AND $3 NOT IN ('study', 'practice')))
 		RETURNING current_topic`,
 		sessionID,
 		userID,
@@ -587,6 +588,13 @@ func (r SessionRepository) UpdateSessionMode(ctx context.Context, sessionID stri
 	).Scan(&topic)
 	if err != nil {
 		if err == pgx.ErrNoRows {
+			current, exists, loadErr := r.GetSession(ctx, sessionID, userID)
+			if loadErr != nil {
+				return nil, false, loadErr
+			}
+			if exists && current.IsActive {
+				return nil, false, sessionapp.ErrModeLocked
+			}
 			return nil, false, nil
 		}
 		return nil, false, err

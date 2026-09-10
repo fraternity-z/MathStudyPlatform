@@ -28,6 +28,8 @@ type Service interface {
 	GetSessions(context.Context, string, int, int, bool) (sessionapp.SessionListResponse, error)
 	EndSession(context.Context, string, string) (sessionapp.EndResponse, error)
 	UpdateSessionMode(context.Context, string, string, string) (sessionapp.UpdateModeResponse, error)
+	GetStudyProgress(context.Context, string, string) (*sessionapp.StudyProgress, error)
+	UpdateStudyProgress(context.Context, string, string, sessionapp.StudyUpdate) (*sessionapp.StudyProgress, error)
 	DeleteSession(context.Context, string, string) (sessionapp.DeleteResponse, error)
 	BatchDeleteSessions(context.Context, []string, string) (sessionapp.BatchDeleteResponse, error)
 	CancelTask(context.Context, string, string) (sessionapp.CancelTaskResponse, error)
@@ -70,6 +72,8 @@ func (h *Handler) Register(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc("GET "+prefix+"/{session_id}/history", h.history)
 	mux.HandleFunc("POST "+prefix+"/{session_id}/end", h.end)
 	mux.HandleFunc("PATCH "+prefix+"/{session_id}/mode", h.updateMode)
+	mux.HandleFunc("GET "+prefix+"/{session_id}/study", h.study)
+	mux.HandleFunc("PATCH "+prefix+"/{session_id}/study", h.updateStudy)
 	mux.HandleFunc("DELETE "+prefix+"/{session_id}", h.delete)
 }
 
@@ -242,6 +246,10 @@ func (h *Handler) writeChatStreamFailure(stream *chatSSEWriter, err error, logMe
 }
 
 func (h *Handler) writeChatFailure(w http.ResponseWriter, err error, logMessage string) {
+	if errors.Is(err, sessionapp.ErrStudyConflict) {
+		h.writeStudyError(w, err)
+		return
+	}
 	persistenceFailure := sessionapp.IsChatPersistenceError(err)
 	if persistenceFailure {
 		h.logSessionError(logMessage, err)
@@ -391,6 +399,10 @@ func (h *Handler) updateMode(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := h.service.UpdateSessionMode(r.Context(), r.PathValue("session_id"), principal.UserID, request.Mode)
 	if err != nil {
+		if errors.Is(err, sessionapp.ErrModeLocked) {
+			writeSessionError(w, http.StatusConflict, "SESSION_MODE_LOCKED", "请新建会话以保留当前学习或练习进度")
+			return
+		}
 		if errors.Is(err, sessionapp.ErrInvalidMode) {
 			writeSessionError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "不支持的会话模式")
 			return

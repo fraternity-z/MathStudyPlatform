@@ -170,6 +170,10 @@ export const mapExerciseQuestion = (
 // ========== API 调用 ==========
 
 export const exerciseService = {
+  async getQuestion(exerciseId: string, signal?: AbortSignal): Promise<Question> {
+    const response = await apiClient.get<ExerciseQuestionResponse>(`/exercise/${encodeURIComponent(exerciseId)}`, { signal });
+    return mapExerciseQuestion(response.data);
+  },
   /**
    * 获取下一道自适应练习题
    */
