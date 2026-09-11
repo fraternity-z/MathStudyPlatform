@@ -24,10 +24,14 @@ type Service interface {
 	CreateSession(context.Context, string, *string, string) (sessionapp.CreateSessionResponse, error)
 	StartChat(context.Context, string, string, *string, string, string, []string, sessionapp.StartChatNotifier, sessionapp.ChatStreamCallbacks) (sessionapp.ChatResult, error)
 	ProcessChat(context.Context, string, string, string, []string, sessionapp.ChatStreamCallbacks) (sessionapp.ChatResult, error)
+	ProcessStudyChat(context.Context, string, string, string, []string, sessionapp.StudyTurnInput, sessionapp.ChatStreamCallbacks) (sessionapp.ChatResult, error)
+	CreateStudy(context.Context, string, sessionapp.CreateStudyRequest) (sessionapp.CreateStudyResponse, error)
 	GetHistory(context.Context, string, string, int, int) (sessionapp.HistoryResponse, error)
 	GetSessions(context.Context, string, int, int, bool) (sessionapp.SessionListResponse, error)
 	EndSession(context.Context, string, string) (sessionapp.EndResponse, error)
 	UpdateSessionMode(context.Context, string, string, string) (sessionapp.UpdateModeResponse, error)
+	GetStudyProgress(context.Context, string, string) (*sessionapp.StudyProgress, error)
+	UpdateStudyProgress(context.Context, string, string, sessionapp.StudyUpdate) (*sessionapp.StudyProgress, error)
 	DeleteSession(context.Context, string, string) (sessionapp.DeleteResponse, error)
 	BatchDeleteSessions(context.Context, []string, string) (sessionapp.BatchDeleteResponse, error)
 	CancelTask(context.Context, string, string) (sessionapp.CancelTaskResponse, error)
@@ -62,6 +66,7 @@ func NewHandler(logger *slog.Logger, service Service, auth Authenticator) (*Hand
 // Register attaches session routes under prefix, for example /api/v1/session.
 func (h *Handler) Register(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc("POST "+prefix+"/start", h.start)
+	mux.HandleFunc("POST "+prefix+"/study", h.createStudy)
 	mux.HandleFunc("POST "+prefix+"/start-chat", h.startChat)
 	mux.HandleFunc("GET "+prefix+"/list", h.list)
 	mux.HandleFunc("POST "+prefix+"/batch-delete", h.batchDelete)
@@ -70,6 +75,8 @@ func (h *Handler) Register(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc("GET "+prefix+"/{session_id}/history", h.history)
 	mux.HandleFunc("POST "+prefix+"/{session_id}/end", h.end)
 	mux.HandleFunc("PATCH "+prefix+"/{session_id}/mode", h.updateMode)
+	mux.HandleFunc("GET "+prefix+"/{session_id}/study", h.study)
+	mux.HandleFunc("PATCH "+prefix+"/{session_id}/study", h.updateStudy)
 	mux.HandleFunc("DELETE "+prefix+"/{session_id}", h.delete)
 }
 
@@ -79,8 +86,9 @@ type startRequest struct {
 }
 
 type chatRequest struct {
-	Message     string   `json:"message"`
-	Attachments []string `json:"attachments"`
+	Message     string                     `json:"message"`
+	Attachments []string                   `json:"attachments"`
+	Study       *sessionapp.StudyTurnInput `json:"study"`
 }
 
 type startChatRequest struct {
@@ -123,6 +131,10 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := h.service.CreateSession(r.Context(), principal.UserID, request.Topic, request.Mode)
 	if err != nil {
+		if errors.Is(err, sessionapp.ErrInvalidSessionTitle) {
+			writeSessionError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "会话标题不能超过 36 个字符")
+			return
+		}
 		if errors.Is(err, sessionapp.ErrInvalidMode) {
 			writeSessionError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "不支持的会话模式")
 			return
@@ -148,14 +160,13 @@ func (h *Handler) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream := &chatSSEWriter{response: w}
-	result, err := h.service.ProcessChat(
-		r.Context(),
-		r.PathValue("session_id"),
-		principal.UserID,
-		request.Message,
-		request.Attachments,
-		stream.callbacks(),
-	)
+	var result sessionapp.ChatResult
+	var err error
+	if request.Study != nil {
+		result, err = h.service.ProcessStudyChat(r.Context(), r.PathValue("session_id"), principal.UserID, request.Message, request.Attachments, *request.Study, stream.callbacks())
+	} else {
+		result, err = h.service.ProcessChat(r.Context(), r.PathValue("session_id"), principal.UserID, request.Message, request.Attachments, stream.callbacks())
+	}
 	if err != nil {
 		h.writeChatStreamFailure(stream, err, "process chat failed")
 		return
@@ -242,6 +253,10 @@ func (h *Handler) writeChatStreamFailure(stream *chatSSEWriter, err error, logMe
 }
 
 func (h *Handler) writeChatFailure(w http.ResponseWriter, err error, logMessage string) {
+	if errors.Is(err, sessionapp.ErrStudyConflict) || errors.Is(err, sessionapp.ErrInvalidStudy) {
+		h.writeStudyError(w, err)
+		return
+	}
 	persistenceFailure := sessionapp.IsChatPersistenceError(err)
 	if persistenceFailure {
 		h.logSessionError(logMessage, err)
@@ -262,6 +277,8 @@ func (h *Handler) writeChatFailure(w http.ResponseWriter, err error, logMessage 
 	switch {
 	case errors.Is(err, sessionapp.ErrEmptyMessage):
 		writeSessionError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "消息内容不能为空")
+	case errors.Is(err, sessionapp.ErrInvalidSessionTitle):
+		writeSessionError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "会话标题不能超过 36 个字符")
 	case errors.Is(err, sessionapp.ErrInvalidMode):
 		writeSessionError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "不支持的会话模式")
 	case errors.Is(err, sessionapp.ErrInvalidSessionID):
@@ -391,6 +408,10 @@ func (h *Handler) updateMode(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := h.service.UpdateSessionMode(r.Context(), r.PathValue("session_id"), principal.UserID, request.Mode)
 	if err != nil {
+		if errors.Is(err, sessionapp.ErrModeLocked) {
+			writeSessionError(w, http.StatusConflict, "SESSION_MODE_LOCKED", "请新建会话以保留当前学习或练习进度")
+			return
+		}
 		if errors.Is(err, sessionapp.ErrInvalidMode) {
 			writeSessionError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "不支持的会话模式")
 			return

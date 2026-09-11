@@ -19,36 +19,34 @@ export interface QuickAction {
 export const CHAT_MODES: ModeConfig[] = [
   {
     id: 'study',
-    name: '学习模式',
-    description: '系统化学习，逐步引导',
+    name: '知识学习',
+    description: '分段讲解，检查理解，保存进度',
     icon: <GraduationCap className="w-5 h-5" />,
     color: 'text-blue-600 dark:text-blue-400',
     bgColor: 'bg-blue-50 dark:bg-blue-900/30',
   },
   {
     id: 'chat',
-    name: '聊天模式',
-    description: '自由对话，快速答疑',
+    name: '问题答疑',
+    description: '围绕具体疑问，解答与深入讲解',
     icon: <MessageCircle className="w-5 h-5" />,
     color: 'text-emerald-600 dark:text-emerald-400',
     bgColor: 'bg-emerald-50 dark:bg-emerald-900/30',
   },
   {
     id: 'practice',
-    name: '练习模式',
-    description: '刷题训练，巩固知识',
+    name: '习题练习',
+    description: '选题作答，提交判定，查看解析',
     icon: <Target className="w-5 h-5" />,
     color: 'text-orange-600 dark:text-orange-400',
     bgColor: 'bg-orange-50 dark:bg-orange-900/30',
   },
-  {
-    id: 'explain',
-    name: '讲解模式',
-    description: '深入讲解，透彻理解',
-    icon: <Lightbulb className="w-5 h-5" />,
-    color: 'text-purple-600 dark:text-purple-400',
-    bgColor: 'bg-purple-50 dark:bg-purple-900/30',
-  },
+];
+
+export const ANSWER_ACTIONS: QuickAction[] = [
+  { icon: <Lightbulb className="w-4 h-4" />, label: '详细讲解', prompt: '请围绕刚才的问题再详细讲解，指出适用条件和常见误区。' },
+  { icon: <Calculator className="w-4 h-4" />, label: '展开推导', prompt: '请展开刚才回答中的关键推导，解释每一步的依据。' },
+  { icon: <Brain className="w-4 h-4" />, label: '举个例子', prompt: '请用一个具体例子帮助我理解刚才的知识，并说明容易混淆的地方。' },
 ];
 
 export const QUICK_ACTIONS: QuickAction[] = [

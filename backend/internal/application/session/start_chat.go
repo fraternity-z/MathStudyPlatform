@@ -48,6 +48,9 @@ func (s *Service) StartChat(
 	onStarted StartChatNotifier,
 	stream ChatStreamCallbacks,
 ) (ChatResult, error) {
+	if err := validateSessionTitle(topic); err != nil {
+		return ChatResult{}, err
+	}
 	if !isUUIDv4(sessionID) {
 		return ChatResult{}, ErrInvalidSessionID
 	}
@@ -387,16 +390,19 @@ func (s *Service) completeExpiredFirstChat(
 		createdAt = messages[1].CreatedAt.Add(time.Microsecond)
 	}
 	writeCtx, cancel := interruptedWriteContext(ctx)
+	status := "interrupted"
 	completed, completeErr := s.repo.CompleteFirstChat(writeCtx, FirstChatCompletion{
 		StudentID:  studentID,
 		ClaimToken: claimToken,
 		Message: Message{
-			ID:        request.AssistantMessageID,
-			SessionID: session.ID,
-			Role:      "assistant",
-			Content:   strings.TrimPrefix(interruptedAssistantSuffix, "\n\n"),
-			Agent:     &agent,
-			CreatedAt: createdAt,
+			ID:               request.AssistantMessageID,
+			SessionID:        session.ID,
+			Role:             "assistant",
+			Content:          strings.TrimPrefix(interruptedAssistantSuffix, "\n\n"),
+			Agent:            &agent,
+			CreatedAt:        createdAt,
+			ReplyTo:          &messages[1].ID,
+			CompletionStatus: &status,
 		},
 		Metered: false,
 	})
@@ -547,6 +553,11 @@ func (s *Service) completeChat(
 		}
 	}
 	if generationErr != nil {
+		status := "interrupted"
+		if stopped {
+			status = "stopped"
+		}
+		assistantMessage.CompletionStatus = &status
 		assistantMessage.Content = interruptedAssistantContent(
 			assistantMessage.Content,
 			stopped,
@@ -620,6 +631,11 @@ func (s *Service) completeFirstChat(
 		}
 	}
 	if generationErr != nil {
+		status := "interrupted"
+		if stopped {
+			status = "stopped"
+		}
+		assistantMessage.CompletionStatus = &status
 		assistantMessage.Content = interruptedAssistantContent(
 			assistantMessage.Content,
 			stopped,
@@ -695,7 +711,7 @@ func (s *Service) buildAssistantMessage(
 		}
 	}
 	var output ChatAgentOutput
-	var metered bool
+	completionStatus := "interrupted"
 	knowledge := emptyKnowledgeState()
 	knowledgeContext := ""
 	if generationErr == nil {
@@ -708,7 +724,7 @@ func (s *Service) buildAssistantMessage(
 		}
 	}
 	if generationErr == nil {
-		output, metered, generationErr = s.generateAssistant(ctx, ChatAgentInput{
+		output, completionStatus, generationErr = s.generateAssistant(ctx, ChatAgentInput{
 			SessionID:         session.ID,
 			StudentID:         userID,
 			Message:           message,
@@ -740,15 +756,17 @@ func (s *Service) buildAssistantMessage(
 		assistantCreatedAt = userCreatedAt.Add(time.Microsecond)
 	}
 	assistantMessage := Message{
-		ID:        ids.AssistantMessageID,
-		SessionID: session.ID,
-		Role:      "assistant",
-		Content:   output.Content,
-		Agent:     &agent,
-		CreatedAt: assistantCreatedAt,
-		Knowledge: knowledge,
+		ID:               ids.AssistantMessageID,
+		SessionID:        session.ID,
+		Role:             "assistant",
+		Content:          output.Content,
+		Agent:            &agent,
+		CreatedAt:        assistantCreatedAt,
+		Knowledge:        knowledge,
+		ReplyTo:          &ids.UserMessageID,
+		CompletionStatus: &completionStatus,
 	}
-	return assistantMessage, agent, metered, generationErr
+	return assistantMessage, agent, completionStatus == "completed", generationErr
 }
 
 func (s *Service) registerActiveChatTask(ctx context.Context, taskID string, studentID string) (context.Context, *activeChatTask, error) {
