@@ -770,15 +770,6 @@ export const SessionChatPage: React.FC = () => {
             }
           />
 
-          {showDraftWelcome && displayMode === 'chat' && !interactionBusy && !exerciseId && (
-            <div className="grid shrink-0 grid-cols-3 gap-2 px-4 py-3" aria-label="选择学习入口">
-              {CHAT_MODES.map((mode) => (
-                <button key={mode.id} type="button" aria-pressed={displayMode === mode.id} onClick={() => handleModeChange(mode.id)} className={`rounded-xl border p-3 text-left text-sm ${displayMode === mode.id ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20' : 'border-surface-200 dark:border-surface-700'}`}>
-                  <span className="font-semibold">{mode.name}</span><span className="mt-1 block text-xs text-surface-500">{mode.description}</span>
-                </button>
-              ))}
-            </div>
-          )}
           {displayMode === 'study' && (showDraftWelcome || persistedSessionReady || hasCompletedDraft) && (
             <StudyPanel key={activeSessionId ?? 'draft'} sessionId={activeSessionId} suggestedTopic={suggestedTopic}
               disabled={interactionBusy || isLoading} onBusyChange={setStudyBusy}
