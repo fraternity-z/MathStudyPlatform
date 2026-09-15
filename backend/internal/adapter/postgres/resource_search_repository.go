@@ -14,21 +14,19 @@ import (
 	resourceapp "mathstudy/backend/internal/application/resource"
 )
 
-const resourceSearchDefaultTenantID = "00000000-0000-4000-8000-000000000001"
-
 // ResolveSearchScope resolves index routing exclusively from current PostgreSQL state.
 func (r ResourceRepository) ResolveSearchScope(ctx context.Context, userID string, knowledgeBaseID string, filters resourceapp.SearchFilters) (resourceapp.SearchScope, bool, error) {
 	if !validResourceSearchID(userID) || !validResourceSearchID(knowledgeBaseID) || !validResourceSearchFilters(filters) {
 		return resourceapp.SearchScope{}, false, errors.New("invalid resource search scope")
 	}
-	scope := resourceapp.SearchScope{UserID: userID, TenantID: resourceSearchDefaultTenantID, KnowledgeBaseID: knowledgeBaseID, Filters: filters}
+	scope := resourceapp.SearchScope{UserID: userID, KnowledgeBaseID: knowledgeBaseID, Filters: filters}
 	var distance string
 	err := r.DB().QueryRow(ctx, `
-		SELECT generation.id, generation.generation, generation.model_version_id,
+		SELECT tenant.id, generation.id, generation.generation, generation.model_version_id,
 			generation.collection_name, generation.dimension, generation.distance::text
 		FROM public.users requester
-		JOIN public.tenants tenant ON tenant.id = $2 AND tenant.status = 'active'
-		JOIN public.knowledge_bases kb ON kb.id = $3 AND kb.tenant_id = tenant.id AND kb.status = 'active'
+		JOIN public.knowledge_bases kb ON kb.id = $2 AND kb.status = 'active'
+		JOIN public.tenants tenant ON tenant.id = kb.tenant_id AND tenant.status = 'active'
 		JOIN public.vector_index_generations generation
 		  ON generation.knowledge_base_id = kb.id AND generation.tenant_id = tenant.id
 		 AND generation.generation = kb.active_generation AND generation.state = 'active'
@@ -36,9 +34,9 @@ func (r ResourceRepository) ResolveSearchScope(ctx context.Context, userID strin
 		  ON model.id = generation.model_version_id
 		 AND model.logical_name = 'resource_embedding'
 		 AND model.dimension = generation.dimension AND model.metric = generation.distance
-		WHERE requester.id = $1 AND requester.is_active = true AND requester.status = 'ACTIVE'`,
-		userID, scope.TenantID, knowledgeBaseID,
-	).Scan(&scope.GenerationID, &scope.Generation, &scope.ModelVersionID, &scope.Collection, &scope.Dimension, &distance)
+		WHERE requester.id = $1 AND public.resource_tenant_member(requester.id,tenant.id)`,
+		userID, knowledgeBaseID,
+	).Scan(&scope.TenantID, &scope.GenerationID, &scope.Generation, &scope.ModelVersionID, &scope.Collection, &scope.Dimension, &distance)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return resourceapp.SearchScope{}, false, nil
 	}
@@ -286,7 +284,7 @@ func validResourceSearchFilters(filters resourceapp.SearchFilters) bool {
 }
 
 func validResourceSearchScope(scope resourceapp.SearchScope) bool {
-	return validResourceSearchID(scope.UserID) && scope.TenantID == resourceSearchDefaultTenantID &&
+	return validResourceSearchID(scope.UserID) && validResourceSearchID(scope.TenantID) &&
 		validResourceSearchID(scope.KnowledgeBaseID) && validResourceSearchID(scope.ModelVersionID) &&
 		scope.Generation > 0 && scope.Dimension > 0 && scope.Dimension <= 65536 &&
 		scope.Collection != "" && len(scope.Collection) <= 255 &&
@@ -335,7 +333,7 @@ const resourceSearchFromSQL = resourceSearchResourceFromSQL + `
 
 // Resource scope only needs one visible chunk per document. The same predicates
 // govern coarse recall, lexical candidates, and final authorization. Unknown
-// department deny rules fail closed until authoritative memberships exist.
+// department rules resolve through authoritative memberships.
 const resourceSearchResourceVisibleSQL = `
 	requester.id = $1 AND requester.is_active = true AND requester.status = 'ACTIVE'
 	AND kb.status = 'active' AND generation.state = 'active'
@@ -352,41 +350,7 @@ const resourceSearchResourceVisibleSQL = `
 	AND version.process_status = 'succeeded' AND version.index_status = 'ready'
 	AND version.published_at IS NOT NULL AND version.deleted_at IS NULL
 	AND version.index_generation = generation.generation AND version.model_version_id = generation.model_version_id
-	AND NOT EXISTS (
-		SELECT 1 FROM public.knowledge_base_acl acl
-		WHERE acl.knowledge_base_id = kb.id AND acl.tenant_id = tenant.id
-		  AND acl.permission IN ('read', 'manage', 'publish') AND acl.effect = 'deny'
-		  AND (acl.valid_from IS NULL OR acl.valid_from <= statement_timestamp() AT TIME ZONE 'UTC')
-		  AND (acl.valid_to IS NULL OR acl.valid_to > statement_timestamp() AT TIME ZONE 'UTC')
-		  AND (
-			(acl.subject_type = 'user' AND acl.subject_id = requester.id)
-			OR (acl.subject_type = 'role' AND lower(acl.subject_id) = lower(requester.role::text))
-			OR (acl.subject_type = 'tenant' AND acl.subject_id = tenant.id)
-			OR (acl.subject_type = 'owner' AND acl.subject_id = requester.id AND c.owner_teacher_id = requester.id)
-			OR acl.subject_type = 'department'
-		  )
-	)
-	AND (
-		c.owner_teacher_id = requester.id
-		OR EXISTS (
-			SELECT 1 FROM public.content_acl legacy_acl
-			WHERE legacy_acl.content_id = c.id AND legacy_acl.teacher_id = requester.id
-			  AND legacy_acl.permission IN ('EDITOR', 'ADMIN')
-		)
-		OR EXISTS (
-			SELECT 1 FROM public.knowledge_base_acl acl
-			WHERE acl.knowledge_base_id = kb.id AND acl.tenant_id = tenant.id
-			  AND acl.permission IN ('read', 'manage', 'publish') AND acl.effect = 'allow'
-			  AND (acl.valid_from IS NULL OR acl.valid_from <= statement_timestamp() AT TIME ZONE 'UTC')
-			  AND (acl.valid_to IS NULL OR acl.valid_to > statement_timestamp() AT TIME ZONE 'UTC')
-			  AND (
-				(acl.subject_type = 'user' AND acl.subject_id = requester.id)
-				OR (acl.subject_type = 'role' AND lower(acl.subject_id) = lower(requester.role::text))
-				OR (acl.subject_type = 'tenant' AND acl.subject_id = tenant.id)
-				OR (acl.subject_type = 'owner' AND acl.subject_id = requester.id AND c.owner_teacher_id = requester.id)
-			  )
-		)
-	)
+		AND public.resource_content_access(requester.id,c.id,'read')
 `
 
 const resourceSearchChunkVisibleSQL = `

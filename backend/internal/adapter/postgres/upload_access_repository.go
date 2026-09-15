@@ -19,6 +19,26 @@ owned_object AS (
     FROM public.local_upload_objects
     WHERE url = $1
 ),
+resource_matches AS (
+    SELECT asset.content_id AS resource_id
+    FROM public.content_assets AS asset
+    JOIN public.contents AS content ON content.id = asset.content_id
+    WHERE asset.url = $1
+      AND content.type IN ('VIDEO'::public.contenttype, 'ARTICLE'::public.contenttype)
+
+    UNION
+
+    SELECT document.resource_id
+    FROM public.resource_documents AS document
+    WHERE document.object_uri = $1 OR document.source_uri = $1
+
+    UNION
+
+    SELECT document.resource_id
+    FROM public.document_versions AS version
+    JOIN public.resource_documents AS document ON document.id = version.document_id
+    WHERE version.source_metadata->>'uri' = $1
+),
 attachment_matches AS (
     SELECT (conversation.student_id = $2 OR conversation.teacher_id = $2) AS allowed
     FROM public.conversation_messages AS message
@@ -107,7 +127,12 @@ attachment_matches AS (
     WHERE message.attachments::jsonb @> path.legacy_value
        OR message.attachments::jsonb @> path.structured_value
 )
-SELECT EXISTS (
+-- A resource denial also applies to ownership and reused forum/message links.
+-- Keep historical source references guarded after withdrawal or replacement.
+SELECT NOT EXISTS (
+    SELECT 1 FROM resource_matches
+    WHERE NOT public.resource_content_access($2, resource_id, 'read')
+) AND EXISTS (
     SELECT 1
     FROM attachment_matches
     WHERE allowed

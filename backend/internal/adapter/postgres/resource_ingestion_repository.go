@@ -57,6 +57,9 @@ func (r ResourceRepository) RegisterIngestion(ctx context.Context, ownerID strin
 		if err := tx.requireIngestionOwner(ctx, ownerID); err != nil {
 			return err
 		}
+		if err := tx.requireIngestionKnowledgeBase(ctx, ownerID, input.KnowledgeBaseID); err != nil {
+			return err
+		}
 		var deleting bool
 		if err := tx.DB().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM public.resource_ingestion_uploads
 			WHERE source_uri=$1 AND storage_key=$2 AND state='deleting')`, input.Source.URI, input.Source.StorageKey).Scan(&deleting); err != nil {
@@ -67,7 +70,7 @@ func (r ResourceRepository) RegisterIngestion(ctx context.Context, ownerID strin
 		}
 		var resourceID, previousHash string
 		err := tx.DB().QueryRow(ctx, `SELECT resource_id, registration_sha256 FROM public.resource_documents
-			WHERE created_by = $1 AND registration_key = $2`, ownerID, input.IdempotencyKey).Scan(&resourceID, &previousHash)
+			WHERE created_by = $1 AND registration_key = $2 AND knowledge_base_id=$3`, ownerID, input.IdempotencyKey, input.KnowledgeBaseID).Scan(&resourceID, &previousHash)
 		if err == nil {
 			if previousHash != fingerprint {
 				return resourceapp.ErrIngestionConflict
@@ -79,6 +82,9 @@ func (r ResourceRepository) RegisterIngestion(ctx context.Context, ownerID strin
 			return tx.clearReferencedIngestionUpload(ctx, input.Source)
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if err := tx.checkIngestionQuota(ctx, input.KnowledgeBaseID, input.Metadata.ByteSize); err != nil {
 			return err
 		}
 		limit := input.QueueLimit
@@ -179,7 +185,7 @@ const ingestionStatusSelect = `SELECT c.id, v.id, d.knowledge_base_id, c.title, 
 	LEFT JOIN LATERAL (SELECT job.* FROM (` + ingestionJobStateSQL + `) job WHERE job.resource_id=c.id
 		ORDER BY job.created_at DESC,job.id DESC LIMIT 1) j ON true
 	WHERE c.owner_teacher_id=$1 AND owner.is_active=true AND owner.status='ACTIVE' AND owner.role IN ('TEACHER','ADMIN')
-	AND c.tenant_id='00000000-0000-4000-8000-000000000001'`
+	AND public.resource_kb_access($1,d.knowledge_base_id,'publish',c.owner_teacher_id)`
 
 func (r ResourceRepository) GetIngestion(ctx context.Context, ownerID, resourceID string) (resourceapp.IngestionStatus, bool, error) {
 	if !validResourceSearchID(ownerID) || !validResourceSearchID(resourceID) {

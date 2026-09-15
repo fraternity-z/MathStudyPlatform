@@ -174,6 +174,7 @@ func (r ResourceRepository) updateResource(ctx context.Context, resourceID strin
 		SELECT type::text, title, body, difficulty, tags, meta
 		FROM public.contents c
 		WHERE c.id = $1 AND c.owner_teacher_id = $2 AND c.deleted_at IS NULL
+			AND public.resource_content_access($2,c.id,'manage')
 			AND `+resourceContentTypeCondition+`
 		FOR UPDATE`,
 		resourceID,
@@ -263,6 +264,7 @@ func (r ResourceRepository) updateResource(ctx context.Context, resourceID strin
 			meta = $8::json,
 			updated_at = $9
 		WHERE c.id = $1 AND c.owner_teacher_id = $2 AND c.deleted_at IS NULL
+			AND public.resource_content_access($2,c.id,'manage')
 			AND `+resourceContentTypeCondition,
 		resourceID,
 		ownerID,
@@ -313,6 +315,7 @@ func (r ResourceRepository) DeleteResource(ctx context.Context, resourceID strin
 		UPDATE public.contents c
 		SET deleted_at = $3, status = 'ARCHIVED'::public.contentstatus
 		WHERE c.id = $1 AND c.owner_teacher_id = $2 AND c.deleted_at IS NULL
+			AND public.resource_content_access($2,c.id,'manage')
 			AND `+resourceContentTypeCondition,
 		resourceID,
 		ownerID,
@@ -334,9 +337,11 @@ func (r ResourceRepository) ToggleFavorite(ctx context.Context, userID string, r
 				SELECT 1
 				FROM public.contents c
 				WHERE c.id = $1 AND c.status = 'PUBLISHED' AND c.deleted_at IS NULL
+					AND public.resource_content_access($2,c.id)
 					AND `+resourceContentTypeCondition+`
 			)`,
 			resourceID,
+			userID,
 		)
 		if err != nil {
 			return err
@@ -394,15 +399,15 @@ func (r ResourceRepository) GetStats(ctx context.Context, userID string) (resour
 			count(*) FILTER (WHERE c.type = 'VIDEO')::int AS videos,
 			count(*) FILTER (WHERE c.type = 'ARTICLE')::int AS documents
 		FROM public.contents c
-		WHERE c.status = 'PUBLISHED' AND c.deleted_at IS NULL`,
+		WHERE c.status = 'PUBLISHED' AND c.deleted_at IS NULL AND public.resource_content_access($1,c.id)`, userID,
 	).Scan(&stats.Total, &stats.Videos, &stats.Documents)
 	if err != nil {
 		return resourceapp.Stats{}, err
 	}
 	err = r.DB().QueryRow(ctx, `
-		SELECT count(id)::int
-		FROM public.user_favorites
-		WHERE user_id = $1`,
+		SELECT count(f.id)::int
+		FROM public.user_favorites f JOIN public.contents c ON c.id=f.content_id
+		WHERE f.user_id = $1 AND c.status='PUBLISHED' AND c.deleted_at IS NULL AND public.resource_content_access($1,c.id)`,
 		userID,
 	).Scan(&stats.Favorites)
 	if err != nil {
@@ -418,6 +423,9 @@ func (r ResourceRepository) withTx(ctx context.Context, fn func(ResourceReposito
 }
 
 func (r ResourceRepository) insertResource(ctx context.Context, ownerID string, input resourceapp.ResourceInput, now time.Time) (string, error) {
+	if err := r.requireIngestionKnowledgeBase(ctx, ownerID, resourceapp.DefaultSearchKnowledgeBaseID); err != nil {
+		return "", err
+	}
 	resourceID, err := newUUID()
 	if err != nil {
 		return "", err
@@ -469,6 +477,11 @@ func (r ResourceRepository) insertResource(ctx context.Context, ownerID string, 
 		now,
 	)
 	if err != nil {
+		return "", err
+	}
+
+	if _, err := r.DB().Exec(ctx, `INSERT INTO public.resource_memberships(tenant_id,knowledge_base_id,resource_id)
+		SELECT tenant_id,id,$1 FROM public.knowledge_bases WHERE id=$2`, resourceID, resourceapp.DefaultSearchKnowledgeBaseID); err != nil {
 		return "", err
 	}
 
@@ -561,6 +574,7 @@ func (r ResourceRepository) getResource(ctx context.Context, resourceID string, 
 		) asset ON true
 		LEFT JOIN public.user_favorites uf ON uf.user_id = $2 AND uf.content_id = c.id
 		WHERE c.id = $1 AND c.deleted_at IS NULL
+			AND public.resource_content_access($2,c.id)
 			AND `+resourceContentTypeCondition+` `+publishedClause,
 		resourceID,
 		userID,
@@ -581,7 +595,7 @@ func resourceWhereClause(userID string, filter resourceapp.ListFilter) (string, 
 		"c.status = 'PUBLISHED'",
 		"c.deleted_at IS NULL",
 		resourceContentTypeCondition,
-		"($1::varchar IS NOT NULL)",
+		"public.resource_content_access($1,c.id)",
 	}
 	if filter.Type != "" {
 		args = append(args, resourceTypeToDB(filter.Type))

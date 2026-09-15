@@ -26,8 +26,8 @@ func (r ResourceRepository) CleanupIngestionHistory(ctx context.Context, now tim
 	cutoff := now.Add(-30 * 24 * time.Hour)
 	err := r.withIngestionTx(ctx, func(tx ResourceRepository) error {
 		rows, err := tx.DB().Query(ctx, `SELECT id FROM public.resource_processing_jobs
-			WHERE tenant_id=$1 AND generation_id IS NOT NULL AND status IN ('succeeded','failed','dead','cancelled')
-			AND finished_at<$2 AND updated_at<$2 ORDER BY finished_at,id FOR UPDATE SKIP LOCKED LIMIT $3`, resourceSearchDefaultTenantID, cutoff, limit)
+			WHERE generation_id IS NOT NULL AND status IN ('succeeded','failed','dead','cancelled')
+			AND finished_at<$1 AND updated_at<$1 ORDER BY finished_at,id FOR UPDATE SKIP LOCKED LIMIT $2`, cutoff, limit)
 		if err != nil {
 			return err
 		}
@@ -64,11 +64,11 @@ func (r ResourceRepository) CleanupIngestionHistory(ctx context.Context, now tim
 			result.Jobs = tag.RowsAffected()
 		}
 		tag, err := tx.DB().Exec(ctx, `WITH expired AS (SELECT e.id FROM public.outbox_events e
-			WHERE e.tenant_id=$1 AND e.aggregate_type='resource_ingestion'
-			AND coalesce(e.processed_at,e.dead_at)<$2
+			WHERE e.aggregate_type='resource_ingestion'
+			AND coalesce(e.processed_at,e.dead_at)<$1
 			AND NOT EXISTS(SELECT 1 FROM public.resource_processing_jobs j WHERE j.outbox_event_id=e.id)
-			ORDER BY coalesce(e.processed_at,e.dead_at),e.id FOR UPDATE SKIP LOCKED LIMIT $3)
-			DELETE FROM public.outbox_events e USING expired WHERE e.id=expired.id`, resourceSearchDefaultTenantID, cutoff, limit)
+			ORDER BY coalesce(e.processed_at,e.dead_at),e.id FOR UPDATE SKIP LOCKED LIMIT $2)
+			DELETE FROM public.outbox_events e USING expired WHERE e.id=expired.id`, cutoff, limit)
 		if err != nil {
 			return err
 		}

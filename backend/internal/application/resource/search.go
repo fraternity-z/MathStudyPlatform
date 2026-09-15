@@ -172,7 +172,7 @@ func (s *SearchService) Search(ctx context.Context, userID string, request Searc
 		return response, nil
 	}
 	if scope.UserID != userID || scope.KnowledgeBaseID != request.KnowledgeBaseID ||
-		scope.TenantID != "00000000-0000-4000-8000-000000000001" || scope.Generation < 1 {
+		!isSearchUUID(scope.TenantID) || scope.Generation < 1 {
 		return SearchResponse{}, ErrSearchUnavailable
 	}
 	scope.Filters = request.Filters
@@ -281,34 +281,9 @@ func (s *SearchService) Search(ctx context.Context, userID string, request Searc
 	if err := ctx.Err(); err != nil {
 		return SearchResponse{}, err
 	}
-	chunks := searchChunkMap(authorized)
 	fused = authorizedSearchOrder(fused, authorized)
 	observation.FilteredCandidates += len(candidates) - len(fused)
-	remaining := request.MaxContextBytes
-	selectedVersions := make(map[string]bool)
-	for _, item := range fused {
-		if !item.adjacent && len(response.Items) >= request.TopK {
-			continue
-		}
-		if item.adjacent && !selectedVersions[item.candidate.DocumentVersionID] {
-			continue
-		}
-		chunk, ok := chunks[searchKey(item.candidate)]
-		if !ok || strings.TrimSpace(chunk.Content) == "" {
-			continue
-		}
-		used := searchChunkBytes(chunk)
-		if used > remaining {
-			continue
-		}
-		remaining -= used
-		if item.adjacent {
-			response.Adjacent = append(response.Adjacent, searchHit(scope, chunk, item.score, item.sources()))
-		} else {
-			response.Items = append(response.Items, searchHit(scope, chunk, item.score, item.sources()))
-			selectedVersions[item.candidate.DocumentVersionID] = true
-		}
-	}
+	appendSearchContext(scope, request, fused, authorized, &response)
 	return response, nil
 }
 

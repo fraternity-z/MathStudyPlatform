@@ -61,7 +61,7 @@ func (h *Handler) uploadDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.MultipartForm.RemoveAll()
-	allowed := map[string]bool{"title": true, "chapter": true, "topic": true, "client_request_id": true}
+	allowed := map[string]bool{"title": true, "chapter": true, "topic": true, "client_request_id": true, "knowledge_base_id": true}
 	for key, values := range r.MultipartForm.Value {
 		if !allowed[key] || len(values) != 1 {
 			h.writeIngestionError(w, resourceapp.ErrIngestionInvalid)
@@ -83,7 +83,8 @@ func (h *Handler) uploadDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.ingestionService.Upload(r.Context(), owner, resourceapp.DocumentUpload{
-		Title: r.FormValue("title"), Chapter: r.FormValue("chapter"), Topic: r.FormValue("topic"), ClientRequestID: r.FormValue("client_request_id"),
+		KnowledgeBaseID: r.FormValue("knowledge_base_id"),
+		Title:           r.FormValue("title"), Chapter: r.FormValue("chapter"), Topic: r.FormValue("topic"), ClientRequestID: r.FormValue("client_request_id"),
 		Filename: header.Filename, MIMEType: header.Header.Get("Content-Type"), ByteSize: header.Size, Reader: file,
 	})
 	h.auditIngestion(w, owner, "upload", result, err)
@@ -182,11 +183,15 @@ func (h *Handler) writeIngestionError(w http.ResponseWriter, err error) {
 		writeResourceError(w, http.StatusUnsupportedMediaType, "UNSUPPORTED_DOCUMENT", "仅支持有效的 PDF、DOCX、TXT 和 Markdown 文档")
 	case errors.Is(err, resourceapp.ErrNotFound):
 		writeResourceError(w, http.StatusNotFound, "INGESTION_NOT_FOUND", "文档不存在或无权限访问")
+	case errors.Is(err, resourceapp.ErrAuthorizationDenied):
+		writeResourceError(w, http.StatusForbidden, "INGESTION_FORBIDDEN", "无权访问目标知识库")
 	case errors.Is(err, resourceapp.ErrIngestionConflict):
 		writeResourceError(w, http.StatusConflict, "INGESTION_CONFLICT", "文档状态已变化或重复请求的内容不一致")
 	case errors.Is(err, resourceapp.ErrIngestionQueueFull):
 		w.Header().Set("Retry-After", "30")
 		writeResourceError(w, http.StatusTooManyRequests, "INGESTION_QUEUE_FULL", "处理队列繁忙，请稍后重试")
+	case errors.Is(err, resourceapp.ErrIngestionQuotaExceeded):
+		writeResourceError(w, http.StatusTooManyRequests, "INGESTION_QUOTA_EXCEEDED", "知识库所属租户的文档、存储或任务额度已用尽")
 	case errors.Is(err, resourceapp.ErrIngestionModelUnavailable):
 		writeResourceError(w, http.StatusServiceUnavailable, "EMBEDDING_UNAVAILABLE", "文档模型暂不可用")
 	case errors.Is(err, resourceapp.ErrIngestionUnavailable):

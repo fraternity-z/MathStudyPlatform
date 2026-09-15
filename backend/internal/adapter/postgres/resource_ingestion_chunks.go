@@ -16,7 +16,8 @@ func (r ResourceRepository) loadIngestionChunks(ctx context.Context, versionID, 
 		coalesce(ch.section_path,''),coalesce(ch.start_offset,0),coalesce(ch.end_offset,0),ch.token_count,parent.ordinal
 		FROM public.document_chunks ch LEFT JOIN public.document_chunks parent ON parent.id=ch.parent_chunk_id
 		LEFT JOIN public.chunk_vector_manifests m ON m.chunk_id=ch.id AND m.generation_id=$2
-		WHERE ch.document_version_id=$1 AND ch.tenant_id=$3 AND ch.deleted_at IS NULL ORDER BY ch.ordinal`, versionID, generationID, resourceSearchDefaultTenantID)
+		WHERE ch.document_version_id=$1 AND ch.tenant_id=(SELECT tenant_id FROM public.vector_index_generations WHERE id=$2)
+		AND ch.deleted_at IS NULL ORDER BY ch.ordinal`, versionID, generationID)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,6 @@
 # 资源中心 PostgreSQL + Qdrant 双数据库技术方案
 
-> 状态（2026-09-07）：P0-P4/M4 在批准范围内完成；P4 已完成本地准生产三节点 TLS、双 worker、审计告警、发布回滚和备份恢复演练，外部上线另行安排。P3 真实模型质量与容量结论保持有效；P5/P6 尚未启动。详见 [P4 验收](../plans/resource-center-qdrant/TEST-ACCEPTANCE-2026-09-07.md)。
+> 状态（2026-09-16）：P0-P5 在各自批准范围完成；P6 已交付单站点租户/ACL、额度、附件隔离和检索上下文增量。项目负责人明确小范围上线、不需要跨区域。本文包含长期目标，不能把 RLS、多模态、共享分片、双索引灰度视为已交付；当前实现及剩余范围见 [P6 验收记录](../plans/resource-center-qdrant/TEST-P6-2026-09-16.md)。
 >
 > 适用范围：仅资源中心的文档知识检索、语义搜索和 RAG。其他业务模块继续只依赖 PostgreSQL、Redis、对象存储及既有应用接口。
 >
@@ -145,7 +145,7 @@ flowchart LR
 - `content_acl` 当前权限粒度有限，第一阶段可兼容读取，统一 subject ACL 通过 forward migration 演进。
 - `embedding_models` 已存在；`0017` 新增含 revision、dimension、metric、tokenizer、normalization 和 max tokens 的不可变 `embedding_model_versions`；`0018` 将版本关联到 `llm_models`，增加 `send_dimensions`、批量/超时/重试、验证/激活/退役时间和单 active 约束。渠道凭据仍只保存在加密的 provider 记录中，不复制到版本表。
 - 当前资源 worker 复用并补强 `outbox_events` 和 `resource_processing_jobs`；`0020` 补齐任务与 Outbox 绑定及代际恢复，`0021` 提供终态摘要、保留清理和上传预登记。下文目标模型中的 `resource_vector_outbox` 与 `vector_index_jobs` 是概念名称，不是当前额外维护的第二套队列。
-- 当前 `users` 没有完整 tenant/department 模型，先使用 `default` tenant，不能在接口层伪造已经存在的多租户能力。
+- `0025` 在 `users` 之外建立 tenant_memberships、tenant_departments 和部门成员关系；用户现有 role 必须结合有效租户成员关系判断。普通注册加入 default tenant，显式配置可扩展至其他租户；没有租户管理页面或层级部门模型，详见[租户边界](vector-tenancy.md)。
 - 旧资源创建接口保持兼容；新文档通过 `/resources/ingestions` 返回 202，以 `DRAFT` 等待处理，只有索引验证和代际激活事务成功后进入 `PUBLISHED`。已有入库资源的更新接口保护源文件、类型和技术状态等不可变字段。
 
 ## 4. 数据所有权与关联键

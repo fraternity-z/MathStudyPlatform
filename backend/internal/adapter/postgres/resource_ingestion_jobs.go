@@ -53,22 +53,22 @@ func (r ResourceRepository) ClaimIngestionJob(ctx context.Context, owner string,
 		// Exhausted crashed workers must not remain running indefinitely.
 		_, err := tx.DB().Exec(ctx, `WITH dead AS (UPDATE public.resource_processing_jobs SET status='dead',stage='dead',last_error_code='lease_expired',
 			claimed_by=NULL,lease_expires_at=NULL,finished_at=$1,updated_at=$1
-			WHERE tenant_id=$2 AND generation_id IS NOT NULL AND attempt_count>=max_attempts
+			WHERE generation_id IS NOT NULL AND attempt_count>=max_attempts
 			AND ((status='running' AND lease_expires_at<=$1) OR status='pending') RETURNING outbox_event_id)
-			UPDATE public.outbox_events SET dead_at=$1,error_code='lease_expired',lease_owner=NULL,lease_expires_at=NULL WHERE id IN(SELECT outbox_event_id FROM dead)`, now, resourceSearchDefaultTenantID)
+			UPDATE public.outbox_events SET dead_at=$1,error_code='lease_expired',lease_owner=NULL,lease_expires_at=NULL WHERE id IN(SELECT outbox_event_id FROM dead)`, now)
 		if err != nil {
 			return err
 		}
 		var id string
 		err = tx.DB().QueryRow(ctx, `WITH candidate AS (
 			SELECT j.id FROM public.resource_processing_jobs j JOIN public.vector_index_generations g ON g.id=j.generation_id
-			WHERE j.tenant_id=$1 AND j.job_type IN ('ingest','rebuild','purge') AND j.attempt_count<j.max_attempts
-			AND ((j.status='pending' AND j.available_at<=$2) OR (j.status='running' AND j.lease_expires_at<=$2))
+			WHERE j.tenant_id=g.tenant_id AND j.job_type IN ('ingest','rebuild','purge') AND j.attempt_count<j.max_attempts
+			AND ((j.status='pending' AND j.available_at<=$1) OR (j.status='running' AND j.lease_expires_at<=$1))
 			AND (j.job_type='purge' OR g.state IN ('active','building','ready'))
 			ORDER BY j.priority DESC,j.available_at,j.created_at,j.id FOR UPDATE OF j SKIP LOCKED LIMIT 1)
 			UPDATE public.resource_processing_jobs j SET status='running',stage=CASE WHEN job_type='purge' THEN 'purging' WHEN job_type='rebuild' THEN 'indexing' ELSE 'parsing' END,
-			attempt_count=attempt_count+1,claimed_by=$3,lease_expires_at=$4,heartbeat_at=$2,updated_at=$2
-			FROM candidate WHERE j.id=candidate.id RETURNING j.id`, resourceSearchDefaultTenantID, now, owner, until).Scan(&id)
+			attempt_count=attempt_count+1,claimed_by=$2,lease_expires_at=$3,heartbeat_at=$1,updated_at=$1
+			FROM candidate WHERE j.id=candidate.id RETURNING j.id`, now, owner, until).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -106,7 +106,7 @@ func (r ResourceRepository) loadIngestionWork(ctx context.Context, id string) (r
 		coalesce(d.filename,''),d.mime_type,d.byte_size,d.checksum_sha256
 		FROM public.resource_processing_jobs j JOIN public.document_versions v ON v.id=j.document_version_id AND v.tenant_id=j.tenant_id
 		JOIN public.resource_documents d ON d.id=v.document_id AND d.resource_id=j.resource_id AND d.tenant_id=j.tenant_id
-		WHERE j.id=$1 AND j.tenant_id=$2`, id, resourceSearchDefaultTenantID).
+		WHERE j.id=$1`, id).
 		Scan(&work.Job.ID, &work.Job.Type, &work.Job.TenantID, &work.Job.ResourceID, &work.Job.DocumentVersionID, &work.Job.IdempotencyKey, &work.Job.Attempt, &work.Job.MaxAttempts,
 			&work.Job.AvailableAt, &work.Job.LeaseExpiresAt, &work.Lease.Owner, &generationID, &work.Source.URI, &work.Source.StorageKey,
 			&work.Metadata.Filename, &work.Metadata.MIMEType, &work.Metadata.ByteSize, &work.Metadata.Checksum)
@@ -136,11 +136,12 @@ func (r ResourceRepository) fencedIngestionWork(ctx context.Context, lease resou
 		JOIN public.vector_index_generations g ON g.id=j.generation_id AND g.knowledge_base_id=kb.id AND g.tenant_id=j.tenant_id
 		JOIN public.resource_memberships rm ON rm.resource_id=c.id AND rm.knowledge_base_id=kb.id AND rm.tenant_id=j.tenant_id
 		WHERE j.id=$1 AND j.claimed_by=$2 AND j.attempt_count=$3 AND j.status='running' AND j.lease_expires_at>$4
-		AND j.tenant_id=$5 AND (j.job_type='purge' OR (c.deleted_at IS NULL AND c.status IN ('DRAFT','PUBLISHED')
+		AND (j.job_type='purge' OR (c.deleted_at IS NULL AND c.status IN ('DRAFT','PUBLISHED')
 		AND d.status='active' AND d.deleted_at IS NULL AND v.deleted_at IS NULL AND d.current_version_id=v.id
 		AND rm.status='active' AND kb.status='active' AND tenant.status='active' AND g.state IN ('active','building','ready')
-		AND EXISTS(SELECT 1 FROM public.users owner WHERE owner.id=c.owner_teacher_id AND owner.is_active=true AND owner.status='ACTIVE' AND owner.role IN ('TEACHER','ADMIN'))))
-		FOR UPDATE OF j,c,d,v,g,kb`, lease.JobID, lease.Owner, lease.Attempt, now, resourceSearchDefaultTenantID).Scan(&id)
+		AND public.resource_kb_access(c.owner_teacher_id,kb.id,'publish',c.owner_teacher_id)
+		AND EXISTS(SELECT 1 FROM public.users owner WHERE owner.id=c.owner_teacher_id AND owner.role IN ('TEACHER','ADMIN'))))
+		FOR UPDATE OF j,c,d,v,g,kb`, lease.JobID, lease.Owner, lease.Attempt, now).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return resourceapp.IngestionWork{}, resourceapp.ErrIngestionLeaseLost
 	}
@@ -245,6 +246,9 @@ func (r ResourceRepository) RetryIngestion(ctx context.Context, ownerID, resourc
 		if !current.CanRetry {
 			return nil
 		}
+		if err := tx.checkIngestionRetryQuota(ctx, current.KnowledgeBaseID); err != nil {
+			return err
+		}
 		var modelID string
 		if err := tx.DB().QueryRow(ctx, `SELECT id FROM public.embedding_model_versions WHERE logical_name='resource_embedding' AND status='active'`).Scan(&modelID); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -325,7 +329,7 @@ func (r ResourceRepository) WithdrawIngestion(ctx context.Context, ownerID, reso
 		if err != nil {
 			return err
 		}
-		rows, err := tx.DB().Query(ctx, ingestionGenerationSelect+` WHERE g.knowledge_base_id=$1 AND g.tenant_id=$2 ORDER BY g.id`, current.KnowledgeBaseID, resourceSearchDefaultTenantID)
+		rows, err := tx.DB().Query(ctx, ingestionGenerationSelect+` WHERE g.knowledge_base_id=$1 ORDER BY g.id`, current.KnowledgeBaseID)
 		if err != nil {
 			return err
 		}

@@ -24,7 +24,7 @@ type DocumentObjectStore interface {
 }
 
 type ingestionUploadStager interface {
-	StageIngestionUpload(context.Context, string, ObjectSource, time.Time) error
+	StageIngestionUpload(context.Context, string, string, ObjectSource, time.Time) error
 }
 
 type stagedDocumentObjectStore interface {
@@ -32,6 +32,7 @@ type stagedDocumentObjectStore interface {
 }
 
 type DocumentUpload struct {
+	KnowledgeBaseID string
 	Title           string
 	Chapter         string
 	Topic           string
@@ -73,7 +74,11 @@ func NewIngestionService(repo IngestionRepository, objects DocumentObjectStore, 
 func (s *IngestionService) Upload(ctx context.Context, ownerID string, input DocumentUpload) (IngestionStatus, error) {
 	input.Title, input.Chapter, input.Topic = strings.TrimSpace(input.Title), strings.TrimSpace(input.Chapter), strings.TrimSpace(input.Topic)
 	input.Filename = path.Base(strings.ReplaceAll(input.Filename, "\\", "/"))
-	if !isSearchUUID(ownerID) || !isSearchUUID(input.ClientRequestID) || input.Reader == nil || input.ByteSize <= 0 || input.ByteSize > MaxDocumentBytes ||
+	input.KnowledgeBaseID = strings.ToLower(strings.TrimSpace(input.KnowledgeBaseID))
+	if input.KnowledgeBaseID == "" {
+		input.KnowledgeBaseID = DefaultSearchKnowledgeBaseID
+	}
+	if !isSearchUUID(ownerID) || !isSearchUUID(input.KnowledgeBaseID) || !isSearchUUID(input.ClientRequestID) || input.Reader == nil || input.ByteSize <= 0 || input.ByteSize > MaxDocumentBytes ||
 		!validIngestionText(input.Title, 500, false) || !validIngestionText(input.Chapter, 100, true) || !validIngestionText(input.Topic, 100, true) ||
 		!validIngestionText(input.Filename, 255, false) {
 		return IngestionStatus{}, ErrIngestionInvalid
@@ -98,7 +103,7 @@ func (s *IngestionService) Upload(ctx context.Context, ownerID string, input Doc
 	}
 	sum := sha256.Sum256(data)
 	checksum := hex.EncodeToString(sum[:])
-	key := "documents/ingestions/" + strings.ToLower(ownerID) + "/" + strings.ToLower(input.ClientRequestID) + "/" + checksum + strings.ToLower(path.Ext(input.Filename))
+	key := "documents/ingestions/" + strings.ToLower(ownerID) + "/" + input.KnowledgeBaseID + "/" + strings.ToLower(input.ClientRequestID) + "/" + checksum + strings.ToLower(path.Ext(input.Filename))
 	var source ObjectSource
 	if staged, ok := s.objects.(stagedDocumentObjectStore); ok {
 		var stageError error
@@ -110,7 +115,7 @@ func (s *IngestionService) Upload(ctx context.Context, ownerID string, input Doc
 				return stageError
 			}
 			stageCalled, stagedSource = true, source
-			stageError = s.repo.(ingestionUploadStager).StageIngestionUpload(ctx, ownerID, source, s.now())
+			stageError = s.repo.(ingestionUploadStager).StageIngestionUpload(ctx, ownerID, input.KnowledgeBaseID, source, s.now())
 			return stageError
 		})
 		if stageError != nil {
@@ -127,7 +132,7 @@ func (s *IngestionService) Upload(ctx context.Context, ownerID string, input Doc
 	}
 	result, _, err := s.repo.RegisterIngestion(ctx, ownerID, IngestionRegistration{
 		Title: input.Title, Chapter: input.Chapter, Topic: input.Topic,
-		KnowledgeBaseID: DefaultSearchKnowledgeBaseID,
+		KnowledgeBaseID: input.KnowledgeBaseID,
 		Source:          source, Metadata: ObjectMetadata{Filename: input.Filename, MIMEType: contentType, ByteSize: input.ByteSize, Checksum: checksum},
 		IdempotencyKey: strings.ToLower(input.ClientRequestID), ModelVersionID: model.ID, QueueLimit: 1000,
 	}, s.now())

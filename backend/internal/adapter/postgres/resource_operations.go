@@ -28,6 +28,15 @@ func (r ResourceRepository) ApplyIngestionOperation(ctx context.Context, actor, 
 		if err != nil {
 			return err
 		}
+		var allowed bool
+		if err := tx.DB().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM public.vector_index_generations g
+			WHERE g.id=CASE WHEN $2='retry_job' THEN (SELECT generation_id FROM public.resource_processing_jobs WHERE id=$3) ELSE $3 END
+			AND public.resource_kb_access($1,g.knowledge_base_id,'manage'))`, actor, action, target).Scan(&allowed); err != nil {
+			return err
+		}
+		if !allowed {
+			return resourceapp.ErrAuthorizationDenied
+		}
 		if action == "retry_job" {
 			if err := tx.retryOperationsJob(ctx, target, now); err != nil {
 				return err
@@ -47,7 +56,7 @@ func (r ResourceRepository) switchOperationsGeneration(ctx context.Context, targ
 	if err := r.DB().QueryRow(ctx, `SELECT pg_advisory_xact_lock(hashtext('resource_embedding'))`).Scan(&ignored); err != nil {
 		return err
 	}
-	g, err := scanIngestionGeneration(r.DB().QueryRow(ctx, ingestionGenerationSelect+` WHERE g.id=$1 AND g.tenant_id=$2 AND m.status='active' FOR UPDATE OF g`, target, resourceSearchDefaultTenantID))
+	g, err := scanIngestionGeneration(r.DB().QueryRow(ctx, ingestionGenerationSelect+` WHERE g.id=$1 AND m.status='active' FOR UPDATE OF g`, target))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return resourceapp.ErrIngestionConflict
 	}
@@ -92,8 +101,8 @@ func (r ResourceRepository) switchOperationsGeneration(ctx context.Context, targ
 func (r ResourceRepository) retryOperationsJob(ctx context.Context, target string, now time.Time) error {
 	var id string
 	err := r.DB().QueryRow(ctx, `SELECT j.id FROM public.resource_processing_jobs j JOIN public.vector_index_generations g ON g.id=j.generation_id
-		WHERE j.id=$1 AND j.tenant_id=$2 AND j.status IN ('dead','failed')
-		AND (j.job_type='purge' OR g.state IN ('active','building','ready')) FOR UPDATE OF j`, target, resourceSearchDefaultTenantID).Scan(&id)
+		WHERE j.id=$1 AND j.tenant_id=g.tenant_id AND j.status IN ('dead','failed')
+		AND (j.job_type='purge' OR g.state IN ('active','building','ready')) FOR UPDATE OF j`, target).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return resourceapp.ErrIngestionConflict
 	}
@@ -112,7 +121,7 @@ func (r ResourceRepository) IngestionOperationsSnapshot(ctx context.Context) (ma
 		return nil, err
 	}
 	rows, err := r.DB().Query(ctx, `SELECT id,resource_id,generation_id,status,coalesce(last_error_code,''),attempt_count FROM public.resource_processing_jobs
-		WHERE tenant_id=$1 AND generation_id IS NOT NULL AND status IN ('dead','failed') ORDER BY updated_at,id LIMIT 100`, resourceSearchDefaultTenantID)
+		WHERE generation_id IS NOT NULL AND status IN ('dead','failed') ORDER BY updated_at,id LIMIT 100`)
 	if err != nil {
 		return nil, err
 	}

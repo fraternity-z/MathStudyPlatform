@@ -193,6 +193,10 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := h.service.CreateResource(r.Context(), principal.UserID, input)
 	if err != nil {
+		if errors.Is(err, resourceapp.ErrAuthorizationDenied) {
+			writeResourceError(w, http.StatusForbidden, "RESOURCE_FORBIDDEN", "无权向默认知识库发布资源")
+			return
+		}
 		if errors.Is(err, resourceapp.ErrBadRequest) {
 			writeResourceError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", redact.String(err.Error()))
 			return

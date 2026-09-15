@@ -1,5 +1,7 @@
 # 系统架构
 
+资源中心 2026-09-16 增量：租户/知识库由有效成员关系解析；SQL 统一授权覆盖检索、引用、旧资源接口及原文附件，deny 对全部有效知识库关联生效。默认注册仍进入 default tenant，其他租户由受控配置管理。单站点继续按知识库与代际独占 collection，未启用 RLS 或多集群路由。文档登记、上传暂存和公共重试执行租户额度；邻接原文去冗余保持主结果不变。详见[租户边界](vector-tenancy.md)、[检索上下文](vector-advanced-retrieval.md)及[小范围部署](vector-small-deployment.md)。
+
 本文描述 MathStudyPlatform 当前有效的技术架构。未完成工作见 [项目待办](../TODO.md)，历史时间点资料见 [归档索引](../archive/README.md)。资源中心完整目标见 [PostgreSQL + Qdrant 双数据库方案](resource-center-qdrant-architecture.md)。资源中心已连接文档异步入库与 P3 检索、引用和 Session：API 登记任务，独立 worker 解析并建立当前索引，查询使用管理员 query embedding、Qdrant、FTS/RRF、可选重排和两次 PostgreSQL 鉴权。质量、容量及 M3 验收结论以 [阶段验收口径](../plans/resource-center-qdrant/TEST-ACCEPTANCE-2026-09-06.md) 和对应阶段报告为准，测试环境结果不等于生产规模承诺。
 
 ## 系统边界
@@ -117,7 +119,7 @@ P5 的 `0023` 为中文改写补充汉字二元词项 GIN 索引：正文和标�
 
 - 业务 API 默认使用 `/api/v1`，健康检查和指标使用明确的独立入口。
 - `POST /resources/ingestions` 只对当前有效教师/管理员开放，接收一份 PDF/DOCX/TXT/MD、标题、章节、主题和客户端 UUID，成功返回 `202` 与可轮询状态。同一所有者和 UUID 的相同载荷幂等，载荷变化返回 `409`；模型、租户、知识库归属由服务器决定。列表/详情仅返回所有者文档和固定错误码，重试、下线、删除使用独立状态接口。原始文件内容与 URL 不进入状态响应，公开引用继续走 chunk 的当前授权读取。
-- `POST /resources/search` 使用当前认证用户与服务端默认租户，调用方不能指定模型、向量、用户或租户。PostgreSQL 先得到最多 1000 个粗授权资源；超过时向量降级，不截断为完整结果。FTS 与向量并行召回后 RRF 融合，先授权再向可选重排模型提供正文；重排与邻接扩展后再次授权，以当前账户、ACL、发布/删除、版本、generation 和 manifest 加载最终正文。deny 优先于 owner/allow。结果含 citation、模式、降级原因与独立邻接块；无索引为空结果，退役模型不影响有效文本 FTS。
+- `POST /resources/search` 使用当前认证用户与知识库解析出的有效成员租户，调用方不能指定模型、向量、用户或租户。PostgreSQL 先得到最多 1000 个粗授权资源；超过时向量降级，不截断为完整结果。FTS 与向量并行召回后 RRF 融合，先授权再向可选重排模型提供正文；重排与邻接扩展后再次授权，以当前账户、ACL、发布/删除、版本、generation 和 manifest 加载最终正文。deny 优先于 owner/allow。结果含 citation、模式、降级原因与独立邻接块；无索引为空结果，退役模型不影响有效文本 FTS。
 - `GET /resources/citations/{chunk_id}` 必须同时绑定知识库、版本与 generation，再次执行当前 PostgreSQL 授权；引用失效或撤权统一返回 `404 CITATION_UNAVAILABLE`，响应禁止缓存，旧引用不构成访问凭证。前端通过该接口展示页面与章节定位，不绕过检查跳往旧资源详情或原文件 URL。
 - Session 首次、续聊、流式及历史重开统一传递 `knowledge` 模式、降级信息和实际送入 prompt 的引用。知识正文作为独立的不可信资料消息，固定 Tutor 规则禁止执行资料内指令。16 KiB 动态输入预算共同约束当前问题、模式、附件占用、历史与完整知识序列化；知识最多 8 KiB且按整块保留，固定系统规则另占模型输入容量。数据库只保存引用元数据；带旧知识引用的助手回复不再次进入模型历史，以免撤权后重放资料。
 - Auth/Admin、Session/Exercise、Progress/Portrait、Classroom/Teacher、Resource/Upload、AI Config 和 Xidian/Security 的路由由对应 HTTP adapter 承接；实际路由注册是接口清单的代码事实来源。
@@ -175,4 +177,4 @@ P5 的 `0023` 为中文改写补充汉字二元词项 GIN 索引：正文和标�
 
 P5 的 `0024` 将标题与 chunk 的 FTS/汉字词项保存为数据库生成列，减少高命中率查询的重复分词计算。词法评分规则保持一致；同一文档版本内正文与 SHA-256 均相同的候选，先验证当前 generation 的已索引 manifest，再取最早有效 ordinal，避免重复文本挤占召回名额。正文比较使用 `C` collation，不跨文档合并，不只依赖 hash；不同正文即使 hash 一样也不合并。含汉字二元词项的完整子串已被汉字索引覆盖，无词项的短查询继续保留 substring 路径。应用层在首次授权后对融合结果按文档版本、正文与 hash 去重，保留最高排名的有效引用，最终再次授权和去重，避免向量副本挤占 TopK、重复重排和重复返回。召回为后处理保留 `min(剩余时间/3, 500ms)`，所有步骤仍受请求总 deadline 和最终 SQL 授权约束；短请求保留原有三分之一预算。管理员 JSON 备份只导出源字段，导入时忽略生成列。Qdrant adapter 支持部署侧 `QDRANT_SEARCH_HNSW_EF`（0–8192，默认 0 保留供应商默认），现代与兼容查询端点使用同一精度参数；公共请求不能覆盖该值，模型配置仍由管理员唯一 active 版本决定。
 
-PostgreSQL 是业务、版本和权限数据源，Redis 用于缓存和运行时辅助状态，Qdrant 仅保存可重建的向量和最小 payload。数据库结构由 `backend/migrations/` 中的 Go forward migration 管理；`0017` 追加资源中心契约，`0018` 追加管理员不可变模型配置，`0019` 增加 `pg_trgm`/检索索引与 nullable 会话引用元数据，`0020` 追加入库幂等、任务关联与对账游标，`0021` 追加终态保留快照与未引用上传 staging。`0022` 增加发布审批门与运维事务审计，`0023` 增加中文二元词项索引，`0024` 保存词法生成列与索引，后续从 `0025` 起追加。历史 Alembic 链和开发期增量链已退出当前工作区。迁移规则见 [Go 数据库迁移策略](../../backend/migrations/README.md)。
+PostgreSQL 是业务、版本和权限数据源，Redis 用于缓存和运行时辅助状态，Qdrant 仅保存可重建的向量和最小 payload。数据库结构由 `backend/migrations/` 中的 Go forward migration 管理；`0017` 追加资源中心契约，`0018` 追加管理员不可变模型配置，`0019` 增加 `pg_trgm`/检索索引与 nullable 会话引用元数据，`0020` 追加入库幂等、任务关联与对账游标，`0021` 追加终态保留快照与未引用上传 staging。`0022` 增加发布审批门与运维事务审计，`0023` 增加中文二元词项索引，`0024` 保存词法生成列与索引，`0025` 增加租户成员、部门、统一资源 ACL、复合租户外键和资源限额，后续从 `0026` 起追加。历史 Alembic 链和开发期增量链已退出当前工作区。迁移规则见 [Go 数据库迁移策略](../../backend/migrations/README.md)。

@@ -44,8 +44,9 @@ func (r ResourceRepository) ingestionGenerationForModel(ctx context.Context, kbI
 		return resourceapp.IngestionGeneration{}, err
 	}
 	var active int64
-	err := r.DB().QueryRow(ctx, `SELECT kb.active_generation FROM public.knowledge_bases kb JOIN public.tenants t ON t.id=kb.tenant_id
-		WHERE kb.id=$1 AND kb.tenant_id=$2 AND kb.status='active' AND t.status='active' FOR UPDATE OF kb`, kbID, resourceSearchDefaultTenantID).Scan(&active)
+	var tenantID string
+	err := r.DB().QueryRow(ctx, `SELECT kb.active_generation,kb.tenant_id FROM public.knowledge_bases kb JOIN public.tenants t ON t.id=kb.tenant_id
+		WHERE kb.id=$1 AND kb.status='active' AND t.status='active' FOR UPDATE OF kb`, kbID).Scan(&active, &tenantID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return resourceapp.IngestionGeneration{}, resourceapp.ErrAuthorizationDenied
 	}
@@ -99,7 +100,7 @@ func (r ResourceRepository) ingestionGenerationForModel(ctx context.Context, kbI
 	_, err = r.DB().Exec(ctx, `INSERT INTO public.vector_index_generations
 		(id,tenant_id,knowledge_base_id,model_version_id,generation,collection_name,dimension,distance,state,created_at,release_approved)
 		SELECT $1::varchar,$2::varchar,$3::varchar,$4::varchar,coalesce(max(generation),0)+1,$5::varchar,$6::integer,$7::public.distancemetric,'building',$8::timestamp,$9::boolean
-		FROM public.vector_index_generations WHERE knowledge_base_id=$3`, id, resourceSearchDefaultTenantID, kbID, modelID, collection, model.Dimension, metric, now, active == 0)
+		FROM public.vector_index_generations WHERE knowledge_base_id=$3`, id, tenantID, kbID, modelID, collection, model.Dimension, metric, now, active == 0)
 	if err != nil {
 		return g, err
 	}
@@ -182,7 +183,7 @@ func (r ResourceRepository) ListIngestionGenerations(ctx context.Context, afterI
 	if limit < 1 || limit > 1000 || len(afterID) > 36 {
 		return nil, resourceapp.ErrIngestionInvalid
 	}
-	rows, err := r.DB().Query(ctx, ingestionGenerationSelect+` WHERE g.tenant_id=$1 AND g.id>$2 ORDER BY g.id LIMIT $3`, resourceSearchDefaultTenantID, afterID, limit)
+	rows, err := r.DB().Query(ctx, ingestionGenerationSelect+` WHERE g.id>$1 ORDER BY g.id LIMIT $2`, afterID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +235,7 @@ func (r ResourceRepository) queryIngestionManifests(ctx context.Context, generat
 		JOIN public.resource_documents d ON d.id=v.document_id AND d.tenant_id=m.tenant_id
 		JOIN public.contents c ON c.id=d.resource_id AND c.tenant_id=m.tenant_id
 		JOIN public.resource_memberships rm ON rm.resource_id=c.id AND rm.knowledge_base_id=g.knowledge_base_id AND rm.tenant_id=m.tenant_id
-			WHERE m.generation_id=$1 AND m.id>$2 AND m.tenant_id=$3 AND ($5::varchar[] IS NULL OR m.id=ANY($5)) ORDER BY m.id LIMIT $4`, generationID, afterID, resourceSearchDefaultTenantID, limit, ids)
+			WHERE m.generation_id=$1 AND m.id>$2 AND m.tenant_id=g.tenant_id AND ($4::varchar[] IS NULL OR m.id=ANY($4)) ORDER BY m.id LIMIT $3`, generationID, afterID, limit, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -256,15 +257,15 @@ func (r ResourceRepository) IngestionQueueStats(ctx context.Context) (map[string
 	err := r.DB().QueryRow(ctx, `SELECT count(*) FILTER(WHERE status='pending'),count(*) FILTER(WHERE status='running'),
 		count(*) FILTER(WHERE status IN ('dead','failed')),
 		coalesce(greatest(0,extract(epoch FROM (statement_timestamp() AT TIME ZONE 'UTC' - min(created_at) FILTER(WHERE status='pending'))))::bigint,0)
-		FROM (`+ingestionJobStateSQL+`) jobs WHERE tenant_id=$1 AND generation_id IS NOT NULL`, resourceSearchDefaultTenantID).Scan(&queued, &running, &dead, &oldest)
+		FROM (`+ingestionJobStateSQL+`) jobs WHERE generation_id IS NOT NULL`).Scan(&queued, &running, &dead, &oldest)
 	if err != nil {
 		return nil, err
 	}
 	var expired, outboxPending, outboxDead int64
 	err = r.DB().QueryRow(ctx, `SELECT
-		(SELECT count(*) FROM public.resource_processing_jobs WHERE tenant_id=$1 AND generation_id IS NOT NULL AND status='running' AND lease_expires_at<=statement_timestamp() AT TIME ZONE 'UTC'),
+		(SELECT count(*) FROM public.resource_processing_jobs WHERE generation_id IS NOT NULL AND status='running' AND lease_expires_at<=statement_timestamp() AT TIME ZONE 'UTC'),
 		count(*) FILTER(WHERE processed_at IS NULL AND dead_at IS NULL),count(*) FILTER(WHERE dead_at IS NOT NULL)
-		FROM public.outbox_events WHERE tenant_id=$1 AND aggregate_type='resource_ingestion'`, resourceSearchDefaultTenantID).Scan(&expired, &outboxPending, &outboxDead)
+		FROM public.outbox_events WHERE aggregate_type='resource_ingestion'`).Scan(&expired, &outboxPending, &outboxDead)
 	return map[string]int64{"queued": queued, "running": running, "dead": dead, "oldest_wait_seconds": oldest, "expired_leases": expired, "outbox_pending": outboxPending, "outbox_dead": outboxDead}, err
 }
 
@@ -274,7 +275,7 @@ func (r ResourceRepository) ScheduleIngestionRepair(ctx context.Context, generat
 	}
 	created := false
 	err := r.withIngestionTx(ctx, func(tx ResourceRepository) error {
-		g, err := scanIngestionGeneration(tx.DB().QueryRow(ctx, ingestionGenerationSelect+` WHERE g.id=$1 AND g.tenant_id=$2 AND g.state IN ('active','building','ready') AND m.status='active'`, generationID, resourceSearchDefaultTenantID))
+		g, err := scanIngestionGeneration(tx.DB().QueryRow(ctx, ingestionGenerationSelect+` WHERE g.id=$1 AND g.state IN ('active','building','ready') AND m.status='active'`, generationID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -312,7 +313,7 @@ func (r ResourceRepository) SaveIngestionReconcileCursor(ctx context.Context, ge
 	if !validResourceSearchID(generationID) || len(cursor) > 128 || !validIngestionText(cursor, 128, true) {
 		return resourceapp.ErrIngestionInvalid
 	}
-	_, err := r.DB().Exec(ctx, `UPDATE public.vector_index_generations SET reconcile_cursor=$2 WHERE id=$1 AND tenant_id=$3`, generationID, cursor, resourceSearchDefaultTenantID)
+	_, err := r.DB().Exec(ctx, `UPDATE public.vector_index_generations SET reconcile_cursor=$2 WHERE id=$1`, generationID, cursor)
 	return err
 }
 

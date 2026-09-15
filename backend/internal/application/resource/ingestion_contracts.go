@@ -18,6 +18,7 @@ var (
 	ErrIngestionConflict         = errors.New("resource ingestion idempotency conflict")
 	ErrIngestionUnavailable      = errors.New("resource ingestion unavailable")
 	ErrIngestionQueueFull        = errors.New("resource ingestion queue is full")
+	ErrIngestionQuotaExceeded    = errors.New("resource tenant quota exceeded")
 	ErrIngestionLeaseLost        = errors.New("resource ingestion lease lost")
 	ErrIngestionModelUnavailable = errors.New("resource embedding model unavailable")
 )
@@ -128,7 +129,7 @@ type IngestionUploadCleanup struct {
 }
 
 type IngestionUploadStager interface {
-	StageIngestionUpload(ctx context.Context, ownerID string, source ObjectSource, now time.Time) error
+	StageIngestionUpload(ctx context.Context, ownerID, knowledgeBaseID string, source ObjectSource, now time.Time) error
 }
 
 // IngestionRepository keeps authoritative publication, fencing and outbox changes in one transaction.
