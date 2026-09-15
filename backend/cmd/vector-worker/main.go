@@ -264,7 +264,8 @@ func runtimeFromConfig(ctx context.Context, cfg config.Config, o options) (runti
 		return runtime{}, err
 	}
 	index, err := qdrantadapter.New(qdrantadapter.Config{BaseURL: cfg.QdrantURL, APIKey: cfg.QdrantAPIKey, Collection: cfg.QdrantCollection,
-		CAFile: cfg.QdrantCAFile, ShardNumber: cfg.QdrantShardNumber, ReplicationFactor: cfg.QdrantReplicationFactor, WriteConsistencyFactor: cfg.QdrantWriteConsistency,
+		SearchHNSWEF: cfg.QdrantSearchHNSWEF,
+		CAFile:       cfg.QdrantCAFile, ShardNumber: cfg.QdrantShardNumber, ReplicationFactor: cfg.QdrantReplicationFactor, WriteConsistencyFactor: cfg.QdrantWriteConsistency,
 		Timeout: cfg.QdrantTimeout, HealthTimeout: cfg.QdrantHealthTimeout, MaxBatchSize: cfg.QdrantMaxBatchSize, WaitForChanges: true, PayloadIndexes: cfg.QdrantPayloadIndexFields}, qdrantadapter.WithResourceCollections())
 	if err != nil {
 		return runtime{}, errors.New("worker vector configuration is invalid")

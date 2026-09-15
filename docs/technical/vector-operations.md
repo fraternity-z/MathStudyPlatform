@@ -75,7 +75,7 @@ python3 scripts/vector-backup.py restore --bundle /secure/backup.age --identity-
 
 依赖 Python 3、匹配主版本的 PostgreSQL 客户端、age。连接用 `PGSERVICE`/`PGPASSFILE`/`PGDATABASE`，恢复必须明确隔离目标 `PGDATABASE`；禁止把带口令连接串写命令行。明文临时目录必须在受控加密磁盘上，Linux 模式 0700，Windows 需预先设置私有 ACL；成功失败均删除临时明文。S3/Qiniu 须先导出与停写时刻一致的完整私有对象及版本记录，并在恢复时回到相同命名空间；本工具不声称自动管理云厂商版本/跨区复制。
 
-恢复拒绝非空业务数据库和非空对象目录。先恢复对象，再单事务恢复 PG。恢复匹配的 Fernet key、私有存储配置与管理员 active 模型后，保持向量读取关闭，重新建立 Qdrant 集群并对知识库执行 rebuild，核对维度、metric、payload index、manifest/hash、数量、授权和引用；验收后 promote，再开放读写。快照恢复可按 Qdrant 官方流程逐节点执行，不能替代业务真相复核。任一步失败保持隔离，禁止在不完整恢复目录上开启服务。
+恢复拒绝非空业务数据库和非空对象目录。先恢复对象，再单事务恢复 PG，随后执行 `ANALYZE` 更新优化器统计信息；任一步失败都不报告恢复成功。恢复匹配的 Fernet key、私有存储配置与管理员 active 模型后，保持向量读取关闭，重新建立 Qdrant 集群并对知识库执行 rebuild，核对维度、metric、payload index、manifest/hash、数量、授权和引用；验收后 promote，再开放读写。快照恢复可按 Qdrant 官方流程逐节点执行，不能替代业务真相复核。任一步失败保持隔离，禁止在不完整恢复目录上开启服务。
 
 ## Faults
 
@@ -105,6 +105,10 @@ python3 scripts/vector-backup.py restore --bundle /secure/backup.age --identity-
 P5 新增 `scripts/vector-quality-evaluate.py`，按独立标注、摘要冻结的私有数据集生成 Recall/MRR/nDCG、引用、授权白名单、检索空结果及正常/降级分组报告。使用方式、退出码、样本格式见[质量评估手册](vector-quality-evaluation.md)。当前已完成工具与原创合成材料的真实 PG/HTTP、Mock 向量依赖验证；Tutor 无答案、真实模型质量和容量 SLO 需分别验收，不据此自动 promote generation。
 
 ## Capacity
+
+`QDRANT_SEARCH_HNSW_EF` 是 API/worker 的部署配置，范围 0–8192；0 不发送参数，保留 Qdrant 默认值。当前 1024 维十万条本地合成实验以 2048 作为验证候选，现代 `/points/query` 与旧 `/points/search` 都携带同一设置。它不是模型、collection schema 或用户可覆盖的请求参数；调高会增加搜索 CPU/延迟，应对实际过滤选择性进行质量和负载评估。普通 Compose 从 `.env` 读取，准生产 worker 从 `VECTOR_RUNTIME_ENV` 读取。代码默认仍为 0，不能把局部基线自动外推为所有生产库的参数。
+
+`0024` 必须先于新版 API 部署；它保存词法生成列，并保留旧表达式索引以支持应用回滚。检索先筛选已索引身份，再对同版本重复正文去重；最终仍重新授权。回滚可以恢复上一应用镜像和原 HNSW ef 值，但保留新增列/索引与 v1 词项函数，不自动执行 down migration。观察指标包括 FTS/向量/授权/邻接耗时、degraded、质量、队列年龄、连接占用和内存；任一固定质量或延迟门禁失败时停止参数推广。
 
 先确认是否容量不足，再增加并发；并发会同时放大 PG 连接、模型费用和 Qdrant 内存占用。默认两个 worker 总并发 4，每实例 PG pool 不超过 12。达到 20% 磁盘余量、持续 backlog 或 P95 超标时停止新增容量，保留 FTS 降级，执行 P5 负载评估。生产容量/SLO 只能引用相同拓扑、数据量、模型和负载的实测结果。
 

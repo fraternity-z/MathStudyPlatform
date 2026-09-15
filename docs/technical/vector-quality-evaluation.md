@@ -55,6 +55,16 @@ python scripts/vector-quality-evaluate.py --api-base https://api.example.invalid
 
 ## 输出与自动化
 
+并发与持续运行使用 `scripts/vector-load-evaluate.py`，输入沿用同一冻结数据集、checksum、凭据和 CA 文件：
+
+```sh
+python scripts/vector-load-evaluate.py --api-base https://api.example.invalid/api --dataset /secure/frozen.json --dataset-sha256 APPROVED_DATASET_SHA256 --tokens-file /secure/actors.json --ca-file /secure/ca.crt --workers 5 --rounds 2 --duration-seconds 600 --max-searches 10000 --p95-ms 1000 --p99-ms 3000 --report /secure/load-report.json
+```
+
+并发限制为 1–32，搜索预算为 1–100000，时长为 0–3600 秒。每次搜索与引用都重新执行鉴权，不缓存响应或身份。失败请求计入搜索预算、质量分母和延迟统计；请求预算不足以覆盖轮次时拒绝启动，达到请求上限却没有跑满时长时门禁失败。报告聚合正常与降级组的排名、引用、错误码、P50/P95/P99、实际耗时及搜索次数。QPS 包含引用核验成本，为该受控闭环的吞吐，不是搜索端点的饱和 QPS。凭据、原文、查询和资源身份均不进入报告。
+
+该工具复用既有 0/1/2 退出码和原子输出，额外记录两个评估器源码摘要。内存/连接泄漏、后台队列和 Tutor 拒答明确保持 `not_evaluated`，需结合独立监控与演练判断；不能仅凭一个压力报告宣称整个 M5 通过。2026-09-08 的 8 个临时测试方法覆盖并发上限、预算耗尽、错误分母、延迟门槛、引用/ACL、缺失覆盖、摘要、输出和退出码，可执行行覆盖率 99%。
+
 报告原子替换，包含摘要、时间、计数、指标、阈值、场景缺失及失败的样本序号/固定错误码，不包含账号、资源 ID、query、正文、凭据、服务地址或供应商异常。
 
 退出码 `0` 表示本次检索门禁通过；`1` 表示评估已完成但门禁未通过；`2` 表示输入、连接配置或报告写入等执行问题。调用方必须同时检查**本次退出码**、`success` 和已批准数据摘要，不能仅检查磁盘上可能遗留的上次成功报告。报告路径禁止与输入路径重合。Linux 设置私有 umask；Windows 的输入和报告目录应使用受控 ACL。

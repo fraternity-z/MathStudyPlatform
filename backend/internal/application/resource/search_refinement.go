@@ -145,8 +145,20 @@ func validRerankOrder(chunks []AuthorizedSearchChunk, order []SearchCandidate) b
 func authorizedSearchOrder(fused []fusedSearchCandidate, chunks []AuthorizedSearchChunk) []fusedSearchCandidate {
 	allowed := searchChunkMap(chunks)
 	result := make([]fusedSearchCandidate, 0, len(fused))
+	// Keep the highest ranked occurrence of identical authorized text within one
+	// document version. Other documents and hash collisions remain independent.
+	type contentKey struct {
+		resource, version, hash, content string
+		generation                       int64
+	}
+	seen := make(map[contentKey]bool)
 	for _, item := range fused {
-		if _, ok := allowed[searchKey(item.candidate)]; ok {
+		if chunk, ok := allowed[searchKey(item.candidate)]; ok {
+			key := contentKey{item.candidate.ResourceID, item.candidate.DocumentVersionID, chunk.QuoteHash, chunk.Content, item.candidate.Generation}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 			result = append(result, item)
 		}
 	}

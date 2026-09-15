@@ -504,7 +504,7 @@ func (r AdminSettingsRepository) TableStats(ctx context.Context) ([]adminsetting
 func filterImportRow(table string, row map[string]any) map[string]any {
 	filtered := map[string]any{}
 	for column, value := range row {
-		if sensitiveExportFields[column] || !safeColumnName(column) {
+		if sensitiveExportFields[column] || generatedResourceSearchField(table, column) || !safeColumnName(column) {
 			continue
 		}
 		filtered[column] = value
@@ -534,9 +534,15 @@ func stringValue(value any) (string, bool) {
 }
 
 func shouldOmitExportField(table string, field string) bool {
-	return sensitiveExportFields[field] ||
+	return sensitiveExportFields[field] || generatedResourceSearchField(table, field) ||
 		(table == "security_logs" && field == "ip_address") ||
 		(table == "email_templates" && field == "updated_by")
+}
+
+// These derived fields are rebuilt by PostgreSQL and cannot be imported as values.
+func generatedResourceSearchField(table, field string) bool {
+	return (table == "contents" && (field == "resource_search_vector" || field == "resource_search_han_terms")) ||
+		(table == "document_chunks" && (field == "search_vector" || field == "search_han_terms"))
 }
 
 func normalizeExportValue(field string, value any) any {

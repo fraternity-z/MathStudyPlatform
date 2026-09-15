@@ -146,6 +146,7 @@ func main() {
 			Timeout:        cfg.QdrantTimeout,
 			HealthTimeout:  cfg.QdrantHealthTimeout,
 			MaxBatchSize:   cfg.QdrantMaxBatchSize,
+			SearchHNSWEF:   cfg.QdrantSearchHNSWEF,
 			WaitForChanges: cfg.QdrantWaitForChanges,
 			PayloadIndexes: cfg.QdrantPayloadIndexFields,
 			CAFile:         cfg.QdrantCAFile, ShardNumber: cfg.QdrantShardNumber,

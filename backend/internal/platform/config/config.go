@@ -84,6 +84,7 @@ type Config struct {
 	QdrantTimeout            time.Duration
 	QdrantHealthTimeout      time.Duration
 	QdrantMaxBatchSize       int
+	QdrantSearchHNSWEF       int
 	QdrantWaitForChanges     bool
 	QdrantCAFile             string
 	QdrantShardNumber        int
@@ -216,6 +217,7 @@ func Load() (Config, error) {
 		QdrantTimeout:             envSeconds("QDRANT_TIMEOUT_SECONDS", 5*time.Second),
 		QdrantHealthTimeout:       envSeconds("QDRANT_HEALTH_TIMEOUT_SECONDS", 3*time.Second),
 		QdrantMaxBatchSize:        envInt("QDRANT_MAX_BATCH_SIZE", 64),
+		QdrantSearchHNSWEF:        envInt("QDRANT_SEARCH_HNSW_EF", 0),
 		QdrantWaitForChanges:      envBool("QDRANT_WAIT_FOR_CHANGES", true),
 		QdrantCAFile:              envString("QDRANT_CA_FILE", ""),
 		QdrantShardNumber:         envInt("QDRANT_SHARD_NUMBER", 0),
@@ -900,6 +902,9 @@ func validateQdrantConfig(cfg Config) error {
 	}
 	if cfg.QdrantMaxBatchSize <= 0 || cfg.QdrantMaxBatchSize > 10000 {
 		return errors.New("QDRANT_MAX_BATCH_SIZE must be between 1 and 10000 when QDRANT_ENABLED=true")
+	}
+	if cfg.QdrantSearchHNSWEF < 0 || cfg.QdrantSearchHNSWEF > 8192 {
+		return errors.New("QDRANT_SEARCH_HNSW_EF must be between 0 and 8192 when QDRANT_ENABLED=true")
 	}
 	for _, field := range cfg.QdrantPayloadIndexFields {
 		if !validQdrantField(field) {

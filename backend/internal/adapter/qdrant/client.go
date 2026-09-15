@@ -29,7 +29,7 @@ const (
 var collectionNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$`)
 var resourceCollectionPattern = regexp.MustCompile(`^resource_[0-9a-f]{32}_[0-9a-f]{32}$`)
 
-// Config contains only provider connection and transport settings.  Model
+// Config contains provider connection, search and deployment settings. Model
 // identity and vector dimensions are supplied by the application generation
 // contract, not guessed by this adapter.
 type Config struct {
@@ -39,6 +39,7 @@ type Config struct {
 	Timeout                time.Duration
 	HealthTimeout          time.Duration
 	MaxBatchSize           int
+	SearchHNSWEF           int
 	WaitForChanges         bool
 	PayloadIndexes         []string
 	CAFile                 string
@@ -74,6 +75,7 @@ type Client struct {
 	timeout                time.Duration
 	healthTimeout          time.Duration
 	maxBatchSize           int
+	searchHNSWEF           int
 	waitForChanges         bool
 	payloadIndexes         []resourceapp.VectorPayloadIndex
 	httpClient             *http.Client
@@ -88,6 +90,9 @@ type Client struct {
 
 // New validates connection settings and creates a Qdrant client.
 func New(cfg Config, options ...Option) (*Client, error) {
+	if cfg.SearchHNSWEF < 0 || cfg.SearchHNSWEF > 8192 {
+		return nil, errors.New("qdrant search HNSW ef must be between 0 and 8192")
+	}
 	if cfg.ShardNumber < 0 || cfg.ShardNumber > 1024 || cfg.ReplicationFactor < 0 || cfg.ReplicationFactor > 32 || cfg.WriteConsistencyFactor < 0 || cfg.WriteConsistencyFactor > cfg.ReplicationFactor {
 		return nil, errors.New("invalid qdrant collection topology")
 	}
@@ -136,6 +141,7 @@ func New(cfg Config, options ...Option) (*Client, error) {
 		timeout:                requestTimeout,
 		healthTimeout:          healthTimeout,
 		maxBatchSize:           maxBatchSize,
+		searchHNSWEF:           cfg.SearchHNSWEF,
 		waitForChanges:         cfg.WaitForChanges,
 		payloadIndexes:         payloadIndexes,
 		httpClient:             httpClient,

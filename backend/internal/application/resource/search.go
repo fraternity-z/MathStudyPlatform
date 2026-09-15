@@ -177,9 +177,11 @@ func (s *SearchService) Search(ctx context.Context, userID string, request Searc
 	}
 	scope.Filters = request.Filters
 
-	// Leave a third of the remaining deadline for the mandatory final SQL check.
+	// Reserve final SQL time without discarding a valid cold embedding nearly a
+	// second before the request deadline. Short requests keep the one-third reserve.
 	deadline, _ := ctx.Deadline()
-	recallCtx, cancelRecall := context.WithTimeout(ctx, time.Until(deadline)*2/3)
+	remainingRecall := time.Until(deadline)
+	recallCtx, cancelRecall := context.WithTimeout(ctx, remainingRecall-min(remainingRecall/3, 500*time.Millisecond))
 	defer cancelRecall()
 	type recallResult struct {
 		candidates []SearchCandidate
@@ -280,7 +282,8 @@ func (s *SearchService) Search(ctx context.Context, userID string, request Searc
 		return SearchResponse{}, err
 	}
 	chunks := searchChunkMap(authorized)
-	observation.FilteredCandidates += len(candidates) - len(authorizedSearchOrder(fused, authorized))
+	fused = authorizedSearchOrder(fused, authorized)
+	observation.FilteredCandidates += len(candidates) - len(fused)
 	remaining := request.MaxContextBytes
 	selectedVersions := make(map[string]bool)
 	for _, item := range fused {

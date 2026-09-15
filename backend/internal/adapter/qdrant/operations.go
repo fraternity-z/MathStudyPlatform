@@ -68,6 +68,12 @@ type searchRequest struct {
 	Limit       int            `json:"limit"`
 	Filter      map[string]any `json:"filter,omitempty"`
 	WithPayload any            `json:"with_payload,omitempty"`
+	Params      *searchParams  `json:"params,omitempty"`
+}
+
+// Search tuning is deployment-owned and never accepted from a public request.
+type searchParams struct {
+	HNSWEF int `json:"hnsw_ef"`
 }
 
 type searchResponse struct {
@@ -317,6 +323,9 @@ func (c *Client) Search(ctx context.Context, request resourceapp.VectorSearchReq
 		withPayload = request.PayloadFields
 	}
 	modern := searchRequest{Query: request.Values, Limit: limit, Filter: request.Filter, WithPayload: withPayload}
+	if c.searchHNSWEF > 0 {
+		modern.Params = &searchParams{HNSWEF: c.searchHNSWEF}
+	}
 	var response searchResponse
 	err = c.request(ctx, "search", http.MethodPost, c.endpoint("collections", route, "points", "query"), nil, modern, &response, c.timeout)
 	if err != nil {
@@ -325,6 +334,7 @@ func (c *Client) Search(ctx context.Context, request resourceapp.VectorSearchReq
 			return nil, err
 		}
 		legacy := searchRequest{Vector: request.Values, Limit: limit, Filter: request.Filter, WithPayload: withPayload}
+		legacy.Params = modern.Params
 		if err := c.request(ctx, "search", http.MethodPost, c.endpoint("collections", route, "points", "search"), nil, legacy, &response, c.timeout); err != nil {
 			return nil, err
 		}

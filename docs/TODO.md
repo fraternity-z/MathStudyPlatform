@@ -20,7 +20,7 @@
 
 ### 资源中心向量检索
 
-- [ ] 按 P0-P6 分阶段接入 Qdrant：P0-P4/M4 已在批准范围通过。2026-09-08 P5 本轮完成中文词法修复（新编 30 条改写 Recall@5 1.0）、六组一万/八组十万条真实 Qdrant 索引对比及文本/入库 Mock 验证；十万条数值 ANN 质量门禁失败，P5 1/11、M5 未通过。按用户“收尾当前阶段并中断目标”的最新指令停止后续推进，P6 不启动，外部上线另行安排。详见[专项进度](plans/resource-center-qdrant/PROGRESS.md)和[本轮索引实验与收尾](plans/resource-center-qdrant/TEST-INDEX-2026-09-08.md)；历史[合成验收](plans/resource-center-qdrant/TEST-SYNTHETIC-2026-09-08.md)保留独立口径。
+- [ ] 按 P0-P6 分阶段接入 Qdrant：P0-P4/M4 在批准范围通过；2026-09-08 新授权后 P5 技术项 11/11、M5 本地性能/质量通过。自编 60 份四格式材料、240 正例，完成真实模型/Tutor、十万条精度/副本/恢复/发布回滚；最终五并发十分钟 3000 请求无错误或降级，P95 824.816 ms。项目负责人已接受不影响功能和验收的测试残留作为清理例外，P5 标记 DONE；P6 未启动、外部上线另验。详见[专项进度](plans/resource-center-qdrant/PROGRESS.md)和[本轮验收](plans/resource-center-qdrant/TEST-P5-2026-09-08.md)。
 
 ### AI 学习闭环
 

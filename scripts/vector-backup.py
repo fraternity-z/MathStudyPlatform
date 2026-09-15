@@ -168,6 +168,9 @@ def restore(args, work):
     objects.mkdir(parents=True, exist_ok=True)
     shutil.copytree(work / "objects", objects, dirs_exist_ok=True)
     run(["pg_restore", "--exit-on-error", "--single-transaction", "--no-owner", "--no-acl", "--dbname=" + os.environ.get("PGDATABASE", "postgres"), str(work / "postgres.dump")])
+    # Refresh planner statistics before reads, including dumps without complete
+    # statistics or restores into a different PostgreSQL environment.
+    run(["psql", "-X", "--set=ON_ERROR_STOP=1", "--command=ANALYZE"], stdout=subprocess.DEVNULL)
     return {"result": "sources_restored", "next": "restore private storage configuration and encryption key; rebuild, validate and promote generations before enabling vector reads"}
 
 
