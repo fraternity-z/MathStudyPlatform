@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   AIPracticeConfigurator,
   ExercisePanel,
@@ -21,7 +21,6 @@ import {
   Users,
   WandSparkles,
 } from 'lucide-react';
-import { buildExerciseTutorLaunch } from './exerciseTutorLaunch';
 import { DailyQuestionStatusEntry } from '@/modules/daily-question/components/DailyQuestionStatusEntry';
 import { useShanghaiDate } from '@/modules/daily-question/hooks/useShanghaiDate';
 import { dailyQuestionService } from '@/modules/daily-question/services/dailyQuestionService';
@@ -55,11 +54,13 @@ const tutorCopy = {
 } as const;
 
 export const ExercisePage: React.FC = () => {
-  const navigate = useNavigate();
   const todayDate = useShanghaiDate();
   const [searchParams] = useSearchParams();
   const requestedMode: ExerciseMode = searchParams.get('mode') === 'ai' ? 'ai' : 'class';
   const requestedConceptId = searchParams.get('concept_id')?.trim() ?? '';
+  const requestedTopic = searchParams.get('topic')?.trim().slice(0, 200) ?? '';
+  const sourceSession = searchParams.get('from_session');
+  const sourceSessionId = sourceSession && /^[0-9a-f-]{36}$/i.test(sourceSession) ? sourceSession : null;
   const shouldAutoStart = requestedMode === 'ai'
     && searchParams.get('autostart') === '1'
     && Boolean(requestedConceptId);
@@ -170,7 +171,7 @@ export const ExercisePage: React.FC = () => {
       }
       const requestedNode = requestedConceptId
         ? graph.nodes.find((node) => node.id === requestedConceptId)
-        : null;
+        : requestedTopic ? graph.nodes.find((node) => node.label === requestedTopic) : null;
       setSelectedConceptId((current) => requestedNode?.id || current || graph.nodes[0]?.id || '');
       if (requestedConceptId && !requestedNode) {
         setKnowledgeError(makeUiError(INVALID_CONCEPT_MESSAGE));
@@ -185,7 +186,7 @@ export const ExercisePage: React.FC = () => {
         setIsLoadingKnowledge(false);
       }
     }
-  }, [requestedConceptId]);
+  }, [requestedConceptId, requestedTopic]);
 
   useEffect(() => {
     setMode(requestedMode);
@@ -256,11 +257,6 @@ export const ExercisePage: React.FC = () => {
     : aiQuestion;
   const activeTutor = tutorCopy[mode];
 
-  const handleCallAITutor = () => {
-    if (!activeQuestion) return;
-    navigate('/session/new', { state: buildExerciseTutorLaunch(activeQuestion) });
-  };
-
   return (
     <MainLayout>
       <div className="container mx-auto max-w-6xl p-4 sm:p-6">
@@ -268,8 +264,11 @@ export const ExercisePage: React.FC = () => {
           <div className="min-w-0 space-y-6 lg:col-span-8">
             <div>
               <h1 className="text-3xl font-bold tracking-normal text-surface-900 dark:text-surface-100">
-                智能刷题
+                习题练习
               </h1>
+              <p className="mt-2 text-sm text-surface-500">选择题目 → 独立作答 → 提交判定 → 查看解析。需要帮助时可另开辅导页，当前作答保留。</p>
+              {requestedTopic && <p className="mt-2 text-sm">练习主题：{requestedTopic}。请确认下方知识点选择与主题对应。</p>}
+              {sourceSessionId && <Link className="mt-2 inline-block text-sm text-primary-600 underline" to={`/session/${sourceSessionId}`}>返回原学习会话</Link>}
             </div>
 
             <Tabs
@@ -367,15 +366,19 @@ export const ExercisePage: React.FC = () => {
                 <p className="text-sm leading-6 text-surface-600 dark:text-surface-400">
                   {activeTutor.description}
                 </p>
-                <Button
-                  onClick={handleCallAITutor}
-                  disabled={!activeQuestion}
-                  className="w-full gap-2"
+                {activeQuestion ? <a
+                  href={`/session/new?exercise_id=${encodeURIComponent(activeQuestion.id)}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-white"
                 >
                   <MessageCircle className="h-4 w-4" />
-                  询问 AI 导师
+                  给点提示（新页面）
                   <Sparkles className="h-4 w-4 opacity-75" />
-                </Button>
+                </a> : <Button disabled className="w-full">出题后可请求提示</Button>}
+                {activeQuestion && <Link
+                  to={`/session/new?${new URLSearchParams({ mode: 'study', topic: activeQuestion.knowledgePointNames[0] || activeQuestion.title })}`} target="_blank" rel="noopener noreferrer"
+                  className="block text-center text-sm text-primary-600 underline"
+                >学习相关知识（新页面）</Link>}
                 <p className="text-center text-xs text-surface-500 dark:text-surface-400">
                   {activeQuestion
                     ? `当前辅导：${activeQuestion.knowledgePointNames[0] || activeQuestion.title || '练习题'}`

@@ -41,6 +41,13 @@ export interface ListResponse {
   page_size: number;
 }
 
+export interface MessageSearchResponse {
+  messages: Message[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export interface Contact {
   id: string;
   display_name: string;
@@ -73,6 +80,14 @@ export const conversationService = {
 
   async acknowledgeRead(id: string, throughMessageId: string, signal?: AbortSignal): Promise<void> {
     await apiClient.put(`${BASE}/${id}/read`, { through_message_id: throughMessageId }, { signal });
+  },
+
+  async searchMessages(id: string, search: string, page: number, signal?: AbortSignal): Promise<MessageSearchResponse> {
+    const { data } = await apiClient.get<MessageSearchResponse>(`${BASE}/${id}/messages`, {
+      params: { search, page, page_size: 50 },
+      signal,
+    });
+    return data;
   },
 
   async create(body: {

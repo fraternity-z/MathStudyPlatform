@@ -5,6 +5,7 @@
  */
 
 import { apiClient } from '@/libs/http/apiClient';
+import type { StudyTurnInput } from '../study';
 import { createSSEConnection, cancelTask, type SSEHandlers, type SSEController } from '@/libs/http/sseClient';
 import { logger } from '@/libs/utils/logger';
 import type { SessionMode } from '@/modules/session/types';
@@ -207,7 +208,8 @@ export const sessionService = {
     sessionId: string,
     message: string,
     handlers: SSEHandlers,
-    attachments?: string[]
+    attachments?: string[],
+    study?: StudyTurnInput
   ): SSEController {
     sessionLogger.debug('Starting chat stream', {
       sessionId,
@@ -219,6 +221,7 @@ export const sessionService = {
       {
         message,
         attachments: attachments || null,
+        ...(study ? { study } : {}),
       },
       {
         ...handlers,

@@ -275,7 +275,7 @@ export const KnowledgeGraphPage = () => {
       .filter((label): label is string => Boolean(label));
     navigate('/session/new', {
       state: {
-        mode: 'explain',
+        mode: 'chat',
         topic: `知识点讲解 · ${node.label}`.slice(0, 36),
         initialMessage: [
           `【知识点讲解：${node.label}】`,

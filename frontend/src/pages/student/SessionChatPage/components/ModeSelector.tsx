@@ -73,11 +73,11 @@ export const ModeSelector = React.memo<ModeSelectorProps>(({ modes, currentMode,
         />
       </button>
 
-      {/* 弹出原来的四个模式卡片（第一张图），选择后收起并更新上面的按钮文案 */}
+      {/* 三个学习入口 */}
       {open && (
         <div className="absolute z-20 mt-3 w-[640px] max-w-[90vw] rounded-2xl border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 shadow-lg">
           <div className="px-4 py-4">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {modes.map((mode) => (
                 <button
                   key={mode.id}

@@ -92,6 +92,8 @@ func (r ForumRepository) ListPosts(ctx context.Context, viewerID string, role us
 		where += ` AND EXISTS (SELECT 1 FROM public.forum_replies mine WHERE mine.post_id = p.id AND mine.author_id = $1 AND mine.status = 'active')`
 	case "favorites":
 		where += ` AND EXISTS (SELECT 1 FROM public.forum_post_favorites mine WHERE mine.post_id = p.id AND mine.user_id = $1)`
+	case "unread":
+		where += ` AND EXISTS (SELECT 1 FROM public.forum_notifications n WHERE n.post_id = p.id AND n.recipient_id = $1 AND n.read_at IS NULL AND ` + forumNotificationTargetActiveSQL + `)`
 	}
 	// The featured view is a real scoped filter: it only contains selections
 	// that are still valid for the viewing teacher or student.

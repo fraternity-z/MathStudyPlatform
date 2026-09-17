@@ -1,4 +1,4 @@
-import type { Question } from '@/modules/exercise/services/exerciseService';
+import type { Question } from './services/exerciseService';
 import type { SessionMode } from '@/modules/session/types';
 
 export interface ExerciseTutorLaunchState {
@@ -34,7 +34,7 @@ export const buildExerciseTutorLaunch = (question: Question): ExerciseTutorLaunc
 
   return {
     source: question.source,
-    mode: 'explain',
+    mode: 'practice',
     topic: topic.slice(0, 36),
     initialMessage: [
       `【辅导场景：${sourceLabel(question.source)}】`,

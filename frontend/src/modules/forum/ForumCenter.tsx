@@ -62,6 +62,7 @@ const statusOptions = [
 
 const scopeOptions: Array<{ value: ForumScope; label: string }> = [
   { value: 'all', label: '全部' },
+  { value: 'unread', label: '未读互动' },
   { value: 'mine', label: '我的帖子' },
   { value: 'replied', label: '我参与的' },
   { value: 'favorites', label: '我的收藏' },
@@ -239,10 +240,11 @@ export function ForumCenter({ role, postId = '', onPostChange, onUnreadChange }:
       });
       setUnreadError(null);
       if (updatedCount > 0 || wasUnread) notifyUnreadChange();
+      if (updatedCount > 0 && scope === 'unread') setRefreshKey((current) => current + 1);
     } catch (error) {
       setUnreadError(toAppError(error, '论坛互动标记已读失败'));
     }
-  }, [notifyUnreadChange]);
+  }, [notifyUnreadChange, scope]);
 
   const loadDetail = useCallback(async (id: string, signal?: AbortSignal): Promise<boolean> => {
     const request = ++detailRequest.current;

@@ -32,6 +32,7 @@ import {
 } from '@/modules/session/limits';
 import type { DraftSessionIdentity, SessionMode } from '@/modules/session/types';
 import { normalizeSessionKnowledge } from '@/modules/session/knowledge';
+import type { StudyTurnInput } from '@/modules/session/study';
 
 const CANCEL_EVENT_FALLBACK_MS = 1500;
 
@@ -159,7 +160,7 @@ export const useChatStream = ({
 
   // 发送消息
   const handleSendMessage = useCallback(
-    async (messageContent: string): Promise<boolean> => {
+    async (messageContent: string, study?: StudyTurnInput): Promise<boolean> => {
       const parsedDocs = [...getParsedDocuments()];
       const imageSnapshot = [...selectedImages];
       if (
@@ -538,7 +539,8 @@ export const useChatStream = ({
             target.sessionId,
             fullMessage,
             streamHandlers,
-            uploadedImageUrls.length > 0 ? uploadedImageUrls : undefined
+            uploadedImageUrls.length > 0 ? uploadedImageUrls : undefined,
+            study
           );
         }
         return true;

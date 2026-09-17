@@ -95,12 +95,14 @@ export function MessageComposer({
 }: MessageComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const composingRef = useRef(false);
   const speechBaseValueRef = useRef('');
   const [listening, setListening] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState<PendingMessageAttachment[]>([]);
   const speechWindow = typeof window === 'undefined' ? undefined : window as SpeechRecognitionWindow;
   const SpeechRecognition = speechWindow?.SpeechRecognition ?? speechWindow?.webkitSpeechRecognition;
   const canSend = !disabled
+    && !sending
     && !uploading
     && !listening
     && (value.trim().length > 0 || (allowAttachmentOnly && attachments.length > 0));
@@ -191,7 +193,10 @@ export function MessageComposer({
           maxLength={maxLength}
           value={value}
           onChange={(event) => onChange(event.target.value)}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={() => { composingRef.current = false; }}
           onKeyDown={(event) => {
+            if (composingRef.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault();
               submit();
