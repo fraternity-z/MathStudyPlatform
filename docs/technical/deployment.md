@@ -127,11 +127,11 @@ FROM public.go_schema_migrations
 ORDER BY version;
 ```
 
-当前迁移链由 `0001` 至 `0021` 二十一个迁移组成。`0017` 提供资源中心版本、generation 和入库任务基础，`0018` 提供管理员 embedding 不可变配置，`0019` 增加 `session_messages.knowledge` nullable JSONB、`pg_trgm` 与检索索引。`0020` 补齐入库幂等登记、任务与 outbox/generation 关联及对账游标，`0021` 增加终态任务摘要和未引用上传 staging 的清理租约。部署前确认迁移账号可以在 `public` 安装 `pg_trgm`，并为索引创建预留维护窗口、磁盘和锁等待时间。
+当前迁移链由 `0001` 至 `0028` 二十八个迁移组成。`0017` 至 `0021` 建立资源版本、模型、入库任务、检索和保留清理基础；`0022` 至 `0024` 增加发布运维审计及中文/通用词法索引；`0025` 增加小范围租户资源隔离，`0026`、`0027` 增加知识学习流程结构，`0028` 增加可解释资源授权和租户配置审计。部署前确认迁移账号可以在 `public` 安装 `pg_trgm`，并为索引创建及 `0024` 表重写预留维护窗口、磁盘和锁等待时间。
 
-空库首次记录版本 `1` 至 `22`，version 21 库只应用 `0022`，更早版本顺序补齐，重复执行为 `applied_count=0`。执行前停止 API 和 worker 写入、完成可恢复备份；先迁移再启动新版本。`0022` 增加发布审批和审计，不失效登录会话；旧 worker 不理解审批门，存在待发布代时禁止回退到旧二进制。只有从 `0015` 之前升级时，旧的无 `auth_version` 令牌才需要统一重新登录。
+空库首次记录版本 `1` 至 `28`，version 27 库只应用 `0028`，更早版本顺序补齐，重复执行为 `applied_count=0`。执行前停止 API 和 worker 写入、完成可恢复备份；先迁移再启动新版本。`0022` 增加发布审批和审计，`0025` 起新增租户约束，`0028` 增加授权诊断函数和六类租户配置变更审计；这些迁移不失效登录会话。旧 worker 不理解审批门，存在待发布代时禁止回退到旧二进制。只有从 `0015` 之前升级时，旧的无 `auth_version` 令牌才需要统一重新登录。
 
-迁移后确认版本 22、`public.pg_trgm`、检索索引、`session_messages.knowledge`、任务关联、`resource_ingestion_uploads`、`release_approved` 和 `resource_operations_audit` 均生效。知识列只存引用与降级元数据，不存来源正文。检索仅消费当前已发布且有 indexed manifest 的版本；迁移不会回填旧资源 chunk，也不会启动 worker。历史本地对象仍必须具备可信所有权，引用打开统一走当前授权接口，不得绕过 Go API。旧草稿迁移账本仍按 [迁移策略](../../backend/migrations/README.md) 单独校准。
+迁移后确认版本 28、`public.pg_trgm`、词法检索索引、`session_messages.knowledge`、任务关联、`resource_ingestion_uploads`、`release_approved`、`resource_operations_audit`、租户复合约束和 `resource_tenancy_audit` 均生效。知识列只存引用与降级元数据，不存来源正文。检索仅消费当前已发布且有 indexed manifest 的版本；迁移不会回填旧资源 chunk，也不会启动 worker。历史本地对象仍必须具备可信所有权，引用打开统一走当前授权接口，不得绕过 Go API。旧草稿迁移账本仍按 [迁移策略](../../backend/migrations/README.md) 单独校准。
 
 重整前执行过旧开发迁移链的数据库（该旧链也曾占用 `0001` 至 `0015`，但迁移名称和内容不同）不属于可原地升级目标。migration runner 会校验迁移版本、名称和未知记录，并在账本与当前代码不一致时拒绝继续。可丢弃的开发库应删除并重建；任何不可丢弃的库必须先停止发布，完成实际 schema、业务数据和 `go_schema_migrations` 核对，再设计专门的数据保留迁移，禁止删除版本记录后重放基线。
 

@@ -20,7 +20,7 @@
 
 ### 资源中心向量检索
 
-- [ ] 按 P0-P6 分阶段接入 Qdrant：P0-P5/M5 在批准范围完成，P5 已提交 `41aa6b9`。2026-09-18 继续推进 P6 授权隔离：`0028` 增加可解释授权与六类白名单租户配置审计，保留原布尔权限谓词；失败任务/generation 运维查询补齐 tenant/knowledge base 上下文和同租户关联，本轮切片验证通过。解释结果仅供受控 SQL，不开放普通 HTTP；审计数据库身份不等同应用 actor。当前仍使用可信服务账号，RLS、数据库角色拆分、完整隔离矩阵、多模态、跨语言质量、自动查询扩展及模型 shadow/双写未关闭，P6/M6 保持进行中；详见[专项进度](plans/resource-center-qdrant/PROGRESS.md)、[授权隔离验收](plans/resource-center-qdrant/TEST-P6-AUTH-2026-09-18.md)及[前次交付](plans/resource-center-qdrant/TEST-P6-2026-09-16.md)。
+- [ ] 按 P0-P6 分阶段接入 Qdrant：P0-P5/M5 在批准范围完成，P5 已提交 `41aa6b9`。2026-09-18 小范围核心回归已通过，覆盖 28 个数据库迁移及幂等复跑、真实单节点 Qdrant 写入/索引/检索、引用撤回和基础异常；embedding 与认证主体使用 Mock，未复测真实模型质量或完整登录，详见[小范围验收](plans/resource-center-qdrant/TEST-SMALL-2026-09-18.md)。不增加原 P6 计数。此前 `0028` 授权解释与租户配置审计切片的证据继续保留；RLS、数据库角色拆分、完整隔离矩阵、多集群、分布式扩展、弹性伸缩、多模态、跨语言质量、自动查询扩展及模型 shadow/双写暂缓。P6/M6 保持进行中；详见[专项进度](plans/resource-center-qdrant/PROGRESS.md)、[授权隔离验收](plans/resource-center-qdrant/TEST-P6-AUTH-2026-09-18.md)及[前次交付](plans/resource-center-qdrant/TEST-P6-2026-09-16.md)。
 
 ### AI 学习闭环
 
