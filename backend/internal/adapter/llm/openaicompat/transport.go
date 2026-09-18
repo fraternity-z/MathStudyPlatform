@@ -92,7 +92,7 @@ func IsProtocolError(err error) bool {
 	return errors.As(err, &protocolErr)
 }
 
-// Transport automatically selects Chat Completions or Responses for non-streaming requests.
+// Transport automatically selects Chat Completions or Responses for model requests.
 type Transport struct {
 	base       http.RoundTripper
 	cache      *EndpointCache
@@ -186,10 +186,10 @@ func (t *Transport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, &ProtocolError{cause: err}
 	}
-	if streaming {
-		return t.base.RoundTrip(chatRequest)
-	}
 	cacheKey := endpointCacheKey(request.URL, model)
+	if streaming {
+		cacheKey += "\x00stream"
+	}
 	if t.preference == ProtocolResponsesFirst {
 		cacheKey += "\x00responses-first"
 	}
@@ -243,6 +243,10 @@ func (t *Transport) tryResponsesFirst(request *http.Request, body []byte, cacheK
 }
 
 func (t *Transport) roundTripResponses(request *http.Request, chatBody []byte, cacheKey string) (*http.Response, error) {
+	_, streaming, err := inspectChatRequest(chatBody)
+	if err != nil {
+		return nil, &ProtocolError{cause: err}
+	}
 	responsesBody, err := chatRequestToResponses(chatBody)
 	if err != nil {
 		return nil, &ProtocolError{cause: err}
@@ -250,12 +254,19 @@ func (t *Transport) roundTripResponses(request *http.Request, chatBody []byte, c
 	responsesURL := responsesEndpointURL(request.URL)
 	responsesRequest := cloneRequest(request, responsesURL, responsesBody)
 	responsesRequest.Header.Set("Accept", "application/json")
+	if streaming {
+		responsesRequest.Header.Set("Accept", "text/event-stream")
+	}
 	response, err := t.base.RoundTrip(responsesRequest)
 	if err != nil {
 		return nil, err
 	}
 	if !isSuccess(response.StatusCode) {
 		return response, nil
+	}
+	if streaming {
+		t.cache.store(cacheKey, endpointResponses)
+		return responsesStreamToChat(request.Context(), response), nil
 	}
 	converted, err := responsesResponseToChat(response)
 	if err != nil {
