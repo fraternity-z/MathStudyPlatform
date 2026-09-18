@@ -31,7 +31,7 @@ func writeOperationsStatus(ctx context.Context, rt runtime, output io.Writer) er
 	}
 	items := make([]map[string]any, 0, len(generations))
 	for _, g := range generations {
-		items = append(items, map[string]any{"id": g.ID, "knowledge_base_id": g.KnowledgeBaseID, "generation": g.Number, "state": g.State, "retain_until": g.RetainUntil})
+		items = append(items, map[string]any{"id": g.ID, "tenant_id": g.TenantID, "knowledge_base_id": g.KnowledgeBaseID, "generation": g.Number, "state": g.State, "retain_until": g.RetainUntil})
 	}
 	result["generations"], result["generations_limit"] = items, 100
 	return json.NewEncoder(output).Encode(result)

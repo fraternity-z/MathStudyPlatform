@@ -30,8 +30,9 @@ func (r ResourceRepository) ApplyIngestionOperation(ctx context.Context, actor, 
 		}
 		var allowed bool
 		if err := tx.DB().QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM public.vector_index_generations g
-			WHERE g.id=CASE WHEN $2='retry_job' THEN (SELECT generation_id FROM public.resource_processing_jobs WHERE id=$3) ELSE $3 END
-			AND public.resource_kb_access($1,g.knowledge_base_id,'manage'))`, actor, action, target).Scan(&allowed); err != nil {
+				LEFT JOIN public.resource_processing_jobs j ON $2='retry_job' AND j.id=$3 AND j.generation_id=g.id AND j.tenant_id=g.tenant_id
+				WHERE (($2='retry_job' AND j.id IS NOT NULL) OR ($2<>'retry_job' AND g.id=$3))
+				AND public.resource_kb_access($1,g.knowledge_base_id,'manage'))`, actor, action, target).Scan(&allowed); err != nil {
 			return err
 		}
 		if !allowed {
@@ -120,20 +121,21 @@ func (r ResourceRepository) IngestionOperationsSnapshot(ctx context.Context) (ma
 	if err != nil {
 		return nil, err
 	}
-	rows, err := r.DB().Query(ctx, `SELECT id,resource_id,generation_id,status,coalesce(last_error_code,''),attempt_count FROM public.resource_processing_jobs
-		WHERE generation_id IS NOT NULL AND status IN ('dead','failed') ORDER BY updated_at,id LIMIT 100`)
+	rows, err := r.DB().Query(ctx, `SELECT j.id,j.tenant_id,j.resource_id,j.generation_id,g.knowledge_base_id,j.status,coalesce(j.last_error_code,''),j.attempt_count
+		FROM public.resource_processing_jobs j JOIN public.vector_index_generations g ON g.id=j.generation_id AND g.tenant_id=j.tenant_id
+		WHERE j.status IN ('dead','failed') ORDER BY j.updated_at,j.id LIMIT 100`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	items := make([]map[string]any, 0)
 	for rows.Next() {
-		var id, resource, generation, status, code string
+		var id, tenant, resource, generation, knowledgeBase, status, code string
 		var attempts int
-		if err := rows.Scan(&id, &resource, &generation, &status, &code, &attempts); err != nil {
+		if err := rows.Scan(&id, &tenant, &resource, &generation, &knowledgeBase, &status, &code, &attempts); err != nil {
 			return nil, err
 		}
-		items = append(items, map[string]any{"job_id": id, "resource_id": resource, "generation_id": generation, "status": status, "error_code": code, "attempts": attempts})
+		items = append(items, map[string]any{"job_id": id, "tenant_id": tenant, "resource_id": resource, "generation_id": generation, "knowledge_base_id": knowledgeBase, "status": status, "error_code": code, "attempts": attempts})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

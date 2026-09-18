@@ -2,7 +2,7 @@
 
 本文是仓库唯一的当前待办清单。技术文档和历史记录只引用这里，不再维护独立路线图。
 
-**更新时间**：2026-09-16
+**更新时间**：2026-09-18
 
 ## 优先级说明
 
@@ -20,7 +20,7 @@
 
 ### 资源中心向量检索
 
-- [ ] 按 P0-P6 分阶段接入 Qdrant：P0-P5/M5 在批准范围完成，P5 已提交 `41aa6b9`。2026-09-16 按小范围上线要求推进 P6，交付 `0025` 租户成员/部门、统一 ACL、原文附件隔离、限额/重试和上下文去冗余；真实 PG、独立 Qdrant 与 HTTP/Mock/race 验证通过。跨可用区/跨区域建设移出本轮。RLS、多模态、跨语言质量、自动查询扩展、模型 shadow/双写等原高级项未全部关闭，专项保持进行中；详见[专项进度](plans/resource-center-qdrant/PROGRESS.md)及[本轮交付](plans/resource-center-qdrant/TEST-P6-2026-09-16.md)。
+- [ ] 按 P0-P6 分阶段接入 Qdrant：P0-P5/M5 在批准范围完成，P5 已提交 `41aa6b9`。2026-09-18 继续推进 P6 授权隔离：`0028` 增加可解释授权与六类白名单租户配置审计，保留原布尔权限谓词；失败任务/generation 运维查询补齐 tenant/knowledge base 上下文和同租户关联，本轮切片验证通过。解释结果仅供受控 SQL，不开放普通 HTTP；审计数据库身份不等同应用 actor。当前仍使用可信服务账号，RLS、数据库角色拆分、完整隔离矩阵、多模态、跨语言质量、自动查询扩展及模型 shadow/双写未关闭，P6/M6 保持进行中；详见[专项进度](plans/resource-center-qdrant/PROGRESS.md)、[授权隔离验收](plans/resource-center-qdrant/TEST-P6-AUTH-2026-09-18.md)及[前次交付](plans/resource-center-qdrant/TEST-P6-2026-09-16.md)。
 
 ### AI 学习闭环
 

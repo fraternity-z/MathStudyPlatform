@@ -10,9 +10,13 @@
 
 `resource_kb_access` 统一计算 user、role、tenant、owner、department 的组合授权，匹配的 deny 优先于 allow、owner 和旧 content_acl。部门必须属于同一租户且 active，并有明确部门成员记录；无关部门的 deny 不影响用户。role 使用用户现有角色，但必须先通过目标租户成员校验。已有默认知识库为教师保留 publish、管理员保留 manage 权限。
 
+`0028_resource_access_decisions_and_tenancy_audit.up.sql` 增加 `resource_kb_access_decision` 和 `resource_content_access_decision`，返回 `allowed`、稳定原因码及租户/知识库上下文，用于受控 SQL 排障和授权解释。原 `resource_kb_access`、`resource_content_access` 布尔谓词继续作为业务查询兼容入口；可解释结果不作为普通 HTTP API 开放，也不能由客户端据此扩大访问范围。
+
 检索范围从当前用户和知识库解析 tenant、generation、collection，不接受客户端租户或索引路由。召回、最终内容授权、引用及邻居读取共用当前 SQL 权限条件。旧资源列表、详情、统计、收藏和修改也执行 `resource_content_access`；无文档的历史公开资源仍向同租户成员开放，知识库 deny 继续生效。入库文档还必须具备有效文档和知识库成员关联。
 
 数据库以复合外键约束知识库、资源、文档、版本、分块、manifest、generation 和 job 的租户关系；collection 名称全局唯一。当前采用应用入口和统一 SQL 函数授权，没有启用 PostgreSQL RLS，数据库账户属于受信服务边界。
+
+`resource_tenancy_audit` 只记录租户成员、部门、部门成员、知识库 ACL、资源知识库关联以及租户状态/额度六类白名单配置变更。审计中的 `session_user`、`current_user` 是数据库身份，不等同应用用户 actor；应用层人员归因仍使用既有业务审计。当前服务账号必须视为可信账号，尚未拆分普通应用、后台 worker 与运维角色，也没有 RLS 作为数据库内第二道隔离。
 
 ## 上传、后台任务与额度
 
@@ -20,9 +24,19 @@
 
 后台 worker、reconcile、清理和运维快照覆盖全部租户，并保持 job/version/generation 的同租户连接与 lease fencing。带 actor 的运维修改还需目标知识库 manage 权限，并写入既有审计表。运维快照和无 actor 的重建接口仅供受控后台/CLI 使用，不能作为公共 HTTP 接口开放。
 
+失败任务和 generation 运维读模型显式携带 tenant 与 knowledge base 上下文；重试查询按 generation ID 和 tenant ID 关联任务，再检查该 generation 所属知识库的 manage 权限。
+
 租户默认上限为 10,000 份未删除入库文档、5 GiB 登记源文件字节、100 个活跃入库任务；分别由 `tenants.resource_document_limit`、`resource_byte_limit`、`resource_job_limit` 配置。存储字节包含已软删除但仍保留的源文档。暂存上传也占用租户任务额度。全局 1,000 个任务/暂存上限仍保留。额度检查与登记共享短事务锁，避免并发争用最后额度；幂等重试不重复扣额度。
 
 额度不计历史外链资源，也不是物理磁盘/向量存储用量计量；重建和修复不按新文档重复计费。资源返回 `INGESTION_QUOTA_EXCEEDED`（429）、无目标知识库权限返回 `INGESTION_FORBIDDEN`（403）。
+
+## 授权解释与审计增量（2026-09-18）
+
+在受控数据库会话中，可使用参数化查询 `SELECT * FROM public.resource_kb_access_decision($1,$2,'read')` 或 `SELECT * FROM public.resource_content_access_decision($1,$2,'read')` 排障；前两个参数分别是用户 ID 和目标 ID。`allowed` 调用既有布尔授权函数取得，解释分支不参与线上召回热路径。有效 permission 仅为 `read/publish/manage`，其他值（含 NULL）拒绝。资源解释的 `knowledge_base_ids` 表示受阻的知识库范围，不是用户可读知识库列表。函数只解释 ACL，不替代调用方对发布、删除、版本和 manifest 的校验。
+
+审计保留白名单字段的变更前后值，UPDATE 白名单值未变则不新增记录；租户表只审计状态和额度的 UPDATE。部门名称等非白名单字段不保存。记录与原变更同事务，删除主体不级联删除审计；数据库 owner/superuser 仍可改表或停用触发器，不能据此宣称审计不可篡改。部署前先备份，再使用正式迁移入口应用 `0028`；回退使用备份和匹配应用版本，不手工移除仍被调用的函数。
+
+`0028` 的空库迁移、升级、授权原因码、原布尔谓词兼容、六类审计触发器以及失败任务/代际的同租户运维关联已完成本轮验证，证据汇总见[授权隔离验收](../plans/resource-center-qdrant/TEST-P6-AUTH-2026-09-18.md)。该结论只覆盖本轮授权解释、审计和运维查询切片；RLS、数据库角色拆分、完整跨租户矩阵及 P6 其他高级能力仍在开发或验证中。
 
 ## 本地验证证据（2026-09-16）
 
