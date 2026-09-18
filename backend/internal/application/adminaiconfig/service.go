@@ -800,11 +800,11 @@ func (s *Service) TestProvider(ctx context.Context, providerID string, requested
 		return ProviderTestResult{Success: false, Message: "API 密钥不可用", LatencyMS: 0}, nil
 	}
 	modelID := strings.TrimSpace(requestedModelID)
+	models, err := s.repo.ListModels(ctx, ModelFilter{ProviderID: provider.ID})
+	if err != nil {
+		return ProviderTestResult{}, err
+	}
 	if modelID == "" {
-		models, err := s.repo.ListModels(ctx, ModelFilter{ProviderID: provider.ID})
-		if err != nil {
-			return ProviderTestResult{}, err
-		}
 		for _, model := range models {
 			if model.IsDefault && model.IsActive {
 				modelID = model.ModelID
@@ -823,7 +823,26 @@ func (s *Service) TestProvider(ctx context.Context, providerID string, requested
 		return ProviderTestResult{}, err
 	}
 	start := time.Now()
-	err = s.chatCompletionProbe(ctx, baseURL, apiKey, modelID)
+	capabilities := map[string]any{}
+	for _, model := range models {
+		if model.ModelID == modelID {
+			capabilities = model.Capabilities
+			break
+		}
+	}
+	switch modelProbeKind(modelID, capabilities) {
+	case "embedding":
+		body, _ := json.Marshal(map[string]any{"model": modelID, "input": []string{"ping"}})
+		result, probeErr := performEmbeddingProbe(ctx, s.httpClient, joinProviderURL(baseURL, "/v1/embeddings"), body, apiKey)
+		err = probeErr
+		if err == nil && result.message != "" {
+			err = errors.New(result.message)
+		}
+	case "rerank":
+		err = errors.New("该模型用于重排，通用连接测试尚不支持 /rerank；请使用重排请求验证，不能调用文本生成接口")
+	default:
+		err = s.chatCompletionProbe(ctx, baseURL, apiKey, modelID, provider.Code)
+	}
 	latency := float64(time.Since(start).Microseconds()) / 1000
 	if err != nil {
 		return ProviderTestResult{Success: false, Message: "连接失败: " + redact.String(err.Error()), LatencyMS: latency, ModelID: &modelID}, nil
@@ -1369,10 +1388,31 @@ func (s *Service) fetchModels(ctx context.Context, baseURL string, apiKey string
 	return FetchModelsResponse{Success: true, Models: models, Message: "获取模型列表成功"}, nil
 }
 
-func (s *Service) chatCompletionProbe(ctx context.Context, baseURL string, apiKey string, modelID string) error {
+// Explicit capabilities override conventional model-name hints for imported models.
+func modelProbeKind(modelID string, capabilities map[string]any) string {
+	name := strings.ToLower(modelID)
+	for _, kind := range []string{"rerank", "embedding"} {
+		if enabled, _ := capabilities[kind].(bool); enabled {
+			return kind
+		}
+	}
+	for _, kind := range []string{"rerank", "embedding"} {
+		if _, ok := capabilities[kind].(bool); ok {
+			continue
+		}
+		if strings.Contains(name, kind) || (kind == "embedding" && strings.Contains(name, "embed")) {
+			return kind
+		}
+	}
+	return "generation"
+}
+
+func (s *Service) chatCompletionProbe(ctx context.Context, baseURL string, apiKey string, modelID string, providerCode string) error {
 	payload := map[string]any{
 		"model":    modelID,
 		"messages": []map[string]string{{"role": "user", "content": "ping"}},
+		"stream":   false,
+		"store":    false,
 	}
 	if isReasoningModel(modelID) {
 		payload["max_completion_tokens"] = 32
@@ -1387,13 +1427,31 @@ func (s *Service) chatCompletionProbe(ctx context.Context, baseURL string, apiKe
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.httpClient.Do(req)
+	req.Header.Set("Accept", "application/json")
+	var resp *http.Response
+	if client, ok := s.httpClient.(interface {
+		DoForProvider(*http.Request, string) (*http.Response, error)
+	}); ok {
+		resp, err = client.DoForProvider(req, providerCode)
+	} else {
+		resp, err = s.httpClient.Do(req)
+	}
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		path := req.URL.Path
+		if resp.Request != nil && resp.Request.URL != nil {
+			path = resp.Request.URL.Path
+		}
+		return fmt.Errorf("接口 %s 返回 HTTP %d，请检查渠道地址、接口协议及模型用途", path, resp.StatusCode)
+	}
+	var result struct {
+		Choices []json.RawMessage `json:"choices"`
+	}
+	if err := httpjson.DecodeLimited(resp.Body, 4<<20, &result); err != nil || len(result.Choices) == 0 {
+		return errors.New("生成接口响应格式无效或没有返回结果")
 	}
 	return nil
 }

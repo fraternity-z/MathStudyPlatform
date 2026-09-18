@@ -26,6 +26,14 @@ const (
 	endpointResponses
 )
 
+// ProtocolPreference controls which OpenAI-compatible endpoint is tried first.
+type ProtocolPreference uint8
+
+const (
+	ProtocolAuto ProtocolPreference = iota
+	ProtocolResponsesFirst
+)
+
 // EndpointCache remembers the successful protocol for a base URL and model.
 type EndpointCache struct {
 	values sync.Map
@@ -86,8 +94,9 @@ func IsProtocolError(err error) bool {
 
 // Transport automatically selects Chat Completions or Responses for non-streaming requests.
 type Transport struct {
-	base  http.RoundTripper
-	cache *EndpointCache
+	base       http.RoundTripper
+	cache      *EndpointCache
+	preference ProtocolPreference
 }
 
 // NewTransport wraps base with the process-wide endpoint cache.
@@ -97,17 +106,51 @@ func NewTransport(base http.RoundTripper) *Transport {
 
 // NewTransportWithCache wraps base with an explicit cache.
 func NewTransportWithCache(base http.RoundTripper, cache *EndpointCache) *Transport {
+	return newTransport(base, cache, ProtocolAuto)
+}
+
+func newTransport(base http.RoundTripper, cache *EndpointCache, preference ProtocolPreference) *Transport {
 	if base == nil {
 		base = http.DefaultTransport
 	}
 	if cache == nil {
 		cache = NewEndpointCache()
 	}
-	return &Transport{base: base, cache: cache}
+	return &Transport{base: base, cache: cache, preference: preference}
 }
 
 // WrapClient clones client and installs automatic endpoint routing.
 func WrapClient(client *http.Client) *http.Client {
+	return wrapClient(client, ProtocolAuto)
+}
+
+// WrapClientForProvider clones client and applies the provider's preferred OpenAI protocol.
+// OpenAI channels try Responses first; other compatible providers retain automatic routing.
+func WrapClientForProvider(client *http.Client, providerCode string) *http.Client {
+	preference := ProtocolAuto
+	switch strings.ToLower(strings.TrimSpace(providerCode)) {
+	case "openai", "openai-responses":
+		preference = ProtocolResponsesFirst
+	}
+	return wrapClient(client, preference)
+}
+
+// ProviderClient supports channel-specific routing without sharing mutable client settings.
+type ProviderClient struct {
+	*http.Client
+}
+
+// NewProviderClient creates a client for administrator-managed channels.
+func NewProviderClient(client *http.Client) *ProviderClient {
+	return &ProviderClient{Client: WrapClient(client)}
+}
+
+// DoForProvider sends a request using the channel's protocol preference.
+func (c *ProviderClient) DoForProvider(request *http.Request, providerCode string) (*http.Response, error) {
+	return WrapClientForProvider(c.Client, providerCode).Do(request)
+}
+
+func wrapClient(client *http.Client, preference ProtocolPreference) *http.Client {
 	if client == nil {
 		client = &http.Client{}
 	}
@@ -116,8 +159,12 @@ func WrapClient(client *http.Client) *http.Client {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	if _, wrapped := base.(*Transport); !wrapped {
-		cloned.Transport = NewTransport(base)
+	if wrapped, ok := base.(*Transport); ok {
+		if wrapped.preference != preference {
+			cloned.Transport = newTransport(wrapped.base, wrapped.cache, preference)
+		}
+	} else {
+		cloned.Transport = newTransport(base, defaultEndpointCache, preference)
 	}
 	return &cloned
 }
@@ -143,8 +190,11 @@ func (t *Transport) RoundTrip(request *http.Request) (*http.Response, error) {
 		return t.base.RoundTrip(chatRequest)
 	}
 	cacheKey := endpointCacheKey(request.URL, model)
+	if t.preference == ProtocolResponsesFirst {
+		cacheKey += "\x00responses-first"
+	}
 	selected := t.cache.load(cacheKey)
-	if selected == endpointResponses || (selected == endpointUnknown && IsReasoningModel(model)) {
+	if selected == endpointResponses || (selected == endpointUnknown && (t.preference == ProtocolResponsesFirst || IsReasoningModel(model))) {
 		return t.tryResponsesFirst(chatRequest, body, cacheKey)
 	}
 	return t.tryChatFirst(chatRequest, body, cacheKey)
@@ -198,7 +248,9 @@ func (t *Transport) roundTripResponses(request *http.Request, chatBody []byte, c
 		return nil, &ProtocolError{cause: err}
 	}
 	responsesURL := responsesEndpointURL(request.URL)
-	response, err := t.base.RoundTrip(cloneRequest(request, responsesURL, responsesBody))
+	responsesRequest := cloneRequest(request, responsesURL, responsesBody)
+	responsesRequest.Header.Set("Accept", "application/json")
+	response, err := t.base.RoundTrip(responsesRequest)
 	if err != nil {
 		return nil, err
 	}

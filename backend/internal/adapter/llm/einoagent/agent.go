@@ -95,6 +95,7 @@ const questionGeneratorInstruction = `你是高等数学学习平台的题目生
 // Config stores Eino runtime settings for the tutor agent.
 type Config struct {
 	Enabled         bool
+	ProviderCode    string
 	BaseURL         string
 	APIKey          string
 	Model           string
@@ -794,6 +795,7 @@ func configFromRuntime(runtime adminaiconfigapp.RuntimeConfig) Config {
 	}
 	return Config{
 		Enabled:         true,
+		ProviderCode:    runtime.ProviderCode,
 		BaseURL:         runtime.BaseURL,
 		APIKey:          runtime.APIKey,
 		Model:           runtime.Model,
@@ -906,16 +908,16 @@ func newSharedModelHTTPClient() *http.Client {
 	if transport, ok := client.Transport.(*http.Transport); ok {
 		transport.MaxIdleConnsPerHost = 20
 	}
-	return openaicompat.WrapClient(client)
+	return client
 }
 
 func modelHTTPClient(cfg Config) *http.Client {
 	if cfg.HTTPClient != nil {
-		return openaicompat.WrapClient(cfg.HTTPClient)
+		return openaicompat.WrapClientForProvider(cfg.HTTPClient, cfg.ProviderCode)
 	}
 	client := *sharedModelHTTPClient
 	client.Timeout = cfg.Timeout
-	return &client
+	return openaicompat.WrapClientForProvider(&client, cfg.ProviderCode)
 }
 
 func chatModelConfig(cfg Config) *einoopenai.ChatModelConfig {

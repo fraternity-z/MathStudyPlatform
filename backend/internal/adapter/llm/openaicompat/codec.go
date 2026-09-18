@@ -25,8 +25,9 @@ func chatRequestToResponses(body []byte) ([]byte, error) {
 		return nil, err
 	}
 	responses := map[string]any{
-		"model": chat["model"],
-		"input": input,
+		"model":  chat["model"],
+		"input":  input,
+		"stream": false,
 	}
 	copyFields(responses, chat, "temperature", "top_p", "parallel_tool_calls", "store", "metadata", "service_tier")
 	if value, exists := chat["max_completion_tokens"]; exists {
@@ -229,9 +230,20 @@ func responsesResponseToChat(response *http.Response) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read Responses response: %w", err)
 	}
+	body, err = responsesJSONBody(body, response.Header.Get("Content-Type"))
+	if err != nil {
+		return nil, err
+	}
 	var payload responsesResponse
 	if err := decodeJSON(body, &payload); err != nil {
 		return nil, fmt.Errorf("decode Responses response: %w", err)
+	}
+	if (len(payload.Error) > 0 && string(payload.Error) != "null") ||
+		(payload.Status != "" && payload.Status != "completed" && payload.Status != "incomplete") {
+		return nil, errors.New("Responses request did not complete successfully")
+	}
+	if payload.ID == "" && len(payload.Output) == 0 && payload.OutputText == "" {
+		return nil, errors.New("Responses response is missing its result")
 	}
 	chatBody, err := payload.chatCompletion()
 	if err != nil {
@@ -246,10 +258,56 @@ func responsesResponseToChat(response *http.Response) (*http.Response, error) {
 	}
 	converted.Header.Del("Content-Encoding")
 	converted.Header.Del("Transfer-Encoding")
+	converted.Header.Set("Content-Type", "application/json")
 	converted.Header.Set("Content-Length", strconv.Itoa(len(chatBody)))
 	converted.TransferEncoding = nil
 	converted.Uncompressed = false
 	return &converted, nil
+}
+
+func responsesJSONBody(body []byte, contentType string) ([]byte, error) {
+	trimmed := bytes.TrimSpace(body)
+	isSSE := strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "text/event-stream") ||
+		bytes.HasPrefix(trimmed, []byte("event:")) || bytes.HasPrefix(trimmed, []byte("data:"))
+	if !isSSE {
+		return body, nil
+	}
+	var terminal []byte
+	err := readSSE(bytes.NewReader(body), func(frame sseFrame) error {
+		if bytes.Equal(bytes.TrimSpace(frame.Data), []byte("[DONE]")) {
+			return nil
+		}
+		var event map[string]any
+		if err := decodeJSON(frame.Data, &event); err != nil {
+			return &ProtocolError{cause: fmt.Errorf("decode Responses SSE event: %w", err)}
+		}
+		eventType, _ := event["type"].(string)
+		if strings.TrimSpace(eventType) == "" {
+			eventType = strings.TrimSpace(frame.Event)
+		}
+		switch eventType {
+		case "response.completed", "response.incomplete":
+			responseObject, ok := event["response"].(map[string]any)
+			if !ok {
+				return &ProtocolError{cause: errors.New("Responses SSE terminal event has no response object")}
+			}
+			encoded, err := json.Marshal(responseObject)
+			if err != nil {
+				return &ProtocolError{cause: errors.New("encode Responses SSE terminal response")}
+			}
+			terminal = encoded
+		case "response.failed", "response.cancelled", "response.canceled", "error":
+			return &ProtocolError{cause: errors.New("provider returned a failed Responses SSE terminal event")}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(terminal) == 0 {
+		return nil, &ProtocolError{cause: errors.New("Responses SSE ended without a terminal response event")}
+	}
+	return terminal, nil
 }
 
 type responsesResponse struct {
@@ -257,6 +315,7 @@ type responsesResponse struct {
 	CreatedAt         int64             `json:"created_at"`
 	Model             string            `json:"model"`
 	Status            string            `json:"status"`
+	Error             json.RawMessage   `json:"error"`
 	Output            []json.RawMessage `json:"output"`
 	OutputText        string            `json:"output_text"`
 	SystemFingerprint string            `json:"system_fingerprint"`

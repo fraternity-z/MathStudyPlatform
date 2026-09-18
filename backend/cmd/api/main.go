@@ -296,7 +296,7 @@ func main() {
 	if transport, ok := providerBaseHTTPClient.Transport.(*http.Transport); ok {
 		transport.MaxIdleConnsPerHost = 20
 	}
-	providerHTTPClient := openaicompatadapter.WrapClient(providerBaseHTTPClient)
+	providerHTTPClient := openaicompatadapter.NewProviderClient(providerBaseHTTPClient)
 	adminAIConfigService, err := adminaiconfigapp.NewService(adminAIConfigRepo, appCipher, providerHTTPClient)
 	if err != nil {
 		logger.Error("configure admin AI config service", "error", err)
