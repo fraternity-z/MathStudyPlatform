@@ -29,7 +29,7 @@ func chatRequestToResponses(body []byte) ([]byte, error) {
 		"input":  input,
 		"stream": false,
 	}
-	copyFields(responses, chat, "temperature", "top_p", "parallel_tool_calls", "store", "metadata", "service_tier")
+	copyFields(responses, chat, "stream", "temperature", "top_p", "parallel_tool_calls", "store", "metadata", "service_tier")
 	if value, exists := chat["max_completion_tokens"]; exists {
 		responses["max_output_tokens"] = value
 	} else if value, exists := chat["max_tokens"]; exists {
