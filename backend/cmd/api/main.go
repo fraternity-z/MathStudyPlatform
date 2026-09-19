@@ -558,6 +558,7 @@ func main() {
 		sessionapp.WithAIRequestGuard(aiRiskService),
 		sessionapp.WithLogger(logger),
 		sessionapp.WithKnowledgeRetriever(resourceSearchService),
+		sessionapp.WithStudentContextReader(sessionRepo),
 	)
 	if err != nil {
 		logger.Error("configure session service", "error", err)

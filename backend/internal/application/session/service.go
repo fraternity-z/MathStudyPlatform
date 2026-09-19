@@ -246,6 +246,7 @@ type ChatAgentInput struct {
 	Attachments       []string
 	History           []Message
 	KnowledgeContext  string
+	StudentContext    string
 }
 
 // ChatAgentOutput stores the generated assistant message.
@@ -349,16 +350,17 @@ type CancelTaskResponse struct {
 
 // Service implements session use cases.
 type Service struct {
-	repo               Repository
-	agent              ChatAgent
-	knowledgeRetriever KnowledgeRetriever
-	guard              AIRequestGuard
-	logger             *slog.Logger
-	now                func() time.Time
-	newID              func() (string, error)
-	activeTasksMu      sync.Mutex
-	activeTasks        map[string]*activeChatTask
-	stoppedTasks       map[string]stoppedChatTask
+	repo                 Repository
+	agent                ChatAgent
+	knowledgeRetriever   KnowledgeRetriever
+	studentContextReader StudentContextReader
+	guard                AIRequestGuard
+	logger               *slog.Logger
+	now                  func() time.Time
+	newID                func() (string, error)
+	activeTasksMu        sync.Mutex
+	activeTasks          map[string]*activeChatTask
+	stoppedTasks         map[string]stoppedChatTask
 }
 
 type activeChatTask struct {
@@ -977,7 +979,7 @@ func welcomeMessage(mode string) string {
 func sessionModeInstruction(mode string) string {
 	switch mode {
 	case "study":
-		return "当前入口是知识学习。围绕一个知识点分段教学，每次只推进当前环节，简短讲解后给学生回应的机会。只依据已有对话反馈，不编造掌握度、课程或学习记录。"
+		return "当前入口是知识学习。围绕一个知识点分段教学，每次只推进当前环节，简短讲解后给学生回应的机会。依据已有对话反馈和平台提供的学习证据，不编造掌握度、课程或学习记录。"
 	case "practice":
 		return "当前入口是习题练习的辅导对话。优先给切入点和逐步提示，等待学生作答，不主动透露最终答案。真实题目提交、判题及练习记录在练习页面完成，不声称聊天已提交或计入掌握度。需要完整解析时引导学生在练习页提交后查看。"
 	case "explain":

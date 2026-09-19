@@ -23,6 +23,14 @@
 
 自动化验证使用临时测试源码和独立 PostgreSQL 数据库，不操作真实用户学习记录；测试完成后清理源码与测试容器。真实模型验收使用合成数学问题，分别检查答疑的直接性、学习的分段和练习提示的答案边界，单次采样不等于稳定教学效果保证。
 
+## Tutor 学生状态接入与验收
+
+`session.StudentContextReader` 是 Tutor 的可选只读端口；`cmd/api` 注入现有 `SessionRepository`。修改快照契约或数据查询时，应同步检查 `session/student_context.go`、`postgres/session_student_context.go`、共享生成入口和 Eino 消息映射。当前按知识点名称进行字面匹配，不执行语义主题识别；快照只提供近期证据与估计，不作为新的掌握度写入来源。
+
+临时回归应覆盖认证用户透传及双学生隔离、当前问题优先于会话主题、无历史与无画像、未知掌握度、只读遗忘投影、历史 `calculation` 错因、先修方向、30 天边界和未来记录排除；错误知识点验证冻结快照优先、JSON null/旧格式回退及空数组不回退。上下文验证 500 ms 超时降级、父取消传播、日志不输出原始错误或学习数据、中文 JSON 完整性、4 KiB 快照与 16 KiB 整体动态预算、逐轮重新读取及无 reader 时兼容原链路。SQL 使用独立 PostgreSQL 实例和合成数据验证，不连接业务数据库；模型侧使用 Mock 验证实际输入，不用提示词文本存在代替教学效果验收。
+
+2026-09-19 已通过上述临时单元及独立 PostgreSQL 18 查询验证，后端全量 `go test -race ./... -count=1`、`go vet ./...`、`go build ./...` 通过；补充快照时间和历史计算错因兼容后，三个受影响包的竞态回归再次通过。临时测试源码按仓库规则清理，不新增依赖、迁移或前端接口。真实外部 Tutor 的多轮个性化教学效果仍由当前待办中的真实模型质量验收负责。
+
 ## 环境要求
 
 - Go 1.25.13（`go.mod` 声明 `go 1.25.0` 和 `toolchain go1.25.13`）
@@ -217,7 +225,7 @@ go run ./cmd/vector-worker rebuild --knowledge-base='<knowledge-base-uuid>' --ap
 
 P3 的 `POST /api/v1/resources/search` 最小 JSON 为 `{"query":"导数"}`；支持 `knowledge_base_id`、`top_k`（1-20，默认 5）、`timeout_ms`（100-10000，默认 3000）与 `filters.type/chapter/topic`。16 KiB 请求体拒绝未知字段和尾随 JSON，身份与 trace 来自中间件。响应含 `items`、可选 `adjacent`、`mode`、`degraded`、`degraded_reasons`、`trace_id`；每项带完整正文和 knowledge-base/resource/version/chunk/generation/page/section/title/hash 引用。FTS 使用加权 `simple` 词项与汉字查询的转义子串匹配；模型退役仍可检索有效已发布文本。向量关闭/失败时 FTS-only，重排失败时保留融合；没有当前索引或授权候选时为空，最终授权失败固定 503，参数错误 400，超时 504。
 
-`GET /api/v1/resources/citations/{chunk_id}?knowledge_base_id=...&document_version_id=...&generation=...` 返回重新授权的 `SearchHit`；失效/撤权统一 404，禁止缓存。资源中心“知识搜索”和聊天引用均使用该入口。Session 请求检索最多 1500 ms，知识最多 8 KiB，并与问题、模式、附件和历史共享原有 16 KiB 动态输入预算；固定系统规则另占模型容量。整块无法容纳则跳过，引用只对应实际输入。首次、续聊、SSE done 与历史返回相同 `knowledge` 元数据；不会在会话表保存资料正文，也不会把旧知识助手回复再次注入历史。无知识或检索失败时继续普通聊天。
+`GET /api/v1/resources/citations/{chunk_id}?knowledge_base_id=...&document_version_id=...&generation=...` 返回重新授权的 `SearchHit`；失效/撤权统一 404，禁止缓存。资源中心“知识搜索”和聊天引用均使用该入口。Session 请求检索最多 1500 ms，知识最多 8 KiB，学生状态最多 4 KiB，两者与问题、模式、附件和历史共享原有 16 KiB 动态输入预算；固定系统规则另占模型容量。整块无法容纳则跳过，引用只对应实际输入。首次、续聊、SSE done 与历史返回相同 `knowledge` 元数据；不会在会话表保存资料正文，也不会把旧知识助手回复再次注入历史。无知识或检索失败时继续普通聊天。
 
 `/metrics` 提供 `msp_resource_search_requests_total`、阶段耗时直方图、候选/过滤/引用/空结果计数及降级原因计数。标签为固定 mode/outcome/stage/source/reason，不含查询、用户、资源、trace 或 provider 原始错误。结构化检索日志记录已校验的 trace ID、固定阶段耗时、状态和数量；trace 不进入指标标签。完整验证证据和边界见 [P3 计划](../plans/resource-center-qdrant/03-retrieval-and-rag-integration.md)。
 

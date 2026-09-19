@@ -714,13 +714,18 @@ func (s *Service) buildAssistantMessage(
 	completionStatus := "interrupted"
 	knowledge := emptyKnowledgeState()
 	knowledgeContext := ""
+	studentContext := ""
 	if generationErr == nil {
 		budget, valid := chatHistoryByteBudget(message, systemInstruction, attachments)
 		if !valid {
 			generationErr = ErrMessageTooLarge
 		} else {
-			knowledgeContext, knowledge, generationErr = s.prepareChatKnowledge(ctx, userID, message, min(budget, 8<<10))
-			history = selectRecentChatHistory(history, budget-len(knowledgeContext))
+			studentContext, generationErr = s.prepareStudentContext(ctx, userID, session.CurrentTopic, message, budget)
+			if generationErr == nil {
+				budget -= len(studentContext)
+				knowledgeContext, knowledge, generationErr = s.prepareChatKnowledge(ctx, userID, message, min(budget, 8<<10))
+				history = selectRecentChatHistory(history, budget-len(knowledgeContext))
+			}
 		}
 	}
 	if generationErr == nil {
@@ -732,6 +737,7 @@ func (s *Service) buildAssistantMessage(
 			Attachments:       attachments,
 			History:           history,
 			KnowledgeContext:  knowledgeContext,
+			StudentContext:    studentContext,
 		}, func(chunk ChatAgentChunk) error {
 			if stream.OnChunk == nil {
 				return nil
