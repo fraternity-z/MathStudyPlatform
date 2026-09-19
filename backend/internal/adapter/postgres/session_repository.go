@@ -453,14 +453,26 @@ func (r SessionRepository) InsertMeteredAssistantMessage(ctx context.Context, st
 
 // ListMessages returns session messages in ascending chronological order.
 func (r SessionRepository) ListMessages(ctx context.Context, sessionID string, limit int, offset int) ([]sessionapp.Message, int, error) {
+	return r.listMessages(ctx, sessionID, limit, offset, true)
+}
+
+// ListMessagesPage reads a page without repeating a count already used by the caller.
+func (r SessionRepository) ListMessagesPage(ctx context.Context, sessionID string, limit int, offset int) ([]sessionapp.Message, error) {
+	messages, _, err := r.listMessages(ctx, sessionID, limit, offset, false)
+	return messages, err
+}
+
+func (r SessionRepository) listMessages(ctx context.Context, sessionID string, limit int, offset int, withTotal bool) ([]sessionapp.Message, int, error) {
 	var total int
-	if err := r.DB().QueryRow(ctx, `
+	if withTotal {
+		if err := r.DB().QueryRow(ctx, `
 		SELECT count(id)::int
 		FROM public.session_messages
 		WHERE session_id = $1`,
-		sessionID,
-	).Scan(&total); err != nil {
-		return nil, 0, err
+			sessionID,
+		).Scan(&total); err != nil {
+			return nil, 0, err
+		}
 	}
 	rows, err := r.DB().Query(ctx, `
 		SELECT id, session_id, role::text, content, agent_type::text, attachments, created_at, knowledge

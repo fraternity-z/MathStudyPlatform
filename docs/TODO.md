@@ -97,7 +97,11 @@
 - [ ] 使用真实数据和 `EXPLAIN (ANALYZE, BUFFERS)` 验证用户、知识点、题目和资源的前后通配搜索；只为确认的热点引入 `pg_trgm` 与匹配表达式索引。当前开发库数据过少，不支持建索引结论；诊断 SQL 应在生产维护窗口临时创建，验证后删除。
 - [x] 将管理端 `KnowledgeGraphEditor` 和全量节点请求延迟到关系表单或图谱 tab 首次使用时加载；2026-07-25 生产构建确认图谱编辑器和 `adminGraphConfig` 为独立异步块。
 - [ ] 保持现有 package 和公开契约，按用例拆分练习、教师分析、大型系统设置及学生/教师消息中心模块；消息中心先提取可独立验证的公共流程，保留角色权限、通知和答疑状态差异，避免整体合并或引入新的跨层抽象。
-- [ ] 优化 Session `recentHistory` 的首尾两次分页读取：当前长会话执行两次计数和两次列表查询；实施前用隔离 PostgreSQL 验证损坏历史数据的错误行为、并发追加/删除、时间与 ID 排序及孤立助手回复裁剪，保持公共历史分页接口不变。
+- [x] 2026-09-19 优化 Session `recentHistory` 的重复计数：PostgreSQL 仓储增加可选的只读分页能力，复用同一列表 SQL 和消息解码；尾页沿用首次计数确定的偏移量，不再读取未使用的第二次总数。长会话 SQL 从 4 条降为 3 条（COUNT 2→1），空/短会话仍为 2 条。保留首屏解码及其失败行为、时间与 ID 排序、孤立助手裁剪和公共分页接口；原 Repository 接口不变，未实现可选能力的替代仓储保留旧路径，不新增缓存、事务或迁移。
+
+  验证记录：在 `backend/` 执行 `go test -race ./internal/application/session -run 'TestHistoryVerification' -count=10`（30 场景，含 64 路并发）及 `go test -race -count=1 -v ./internal/adapter/postgres -run '^TestHistoryVerification'`（16 个 Mock、16 个 PostgreSQL 场景），均通过。临时覆盖率记录中 `recentHistory`、`GetHistory`、`ListMessages`、`ListMessagesPage`、`listMessages`、`scanMessage` 的语句覆盖率均为 100%，不代表全包覆盖率。清理测试源码后，后端全量 `go test -race ./... -count=1`、`go vet ./...`、`go build ./...` 通过。
+
+  数据库验证使用独立 PostgreSQL 18.1 临时集群及最小消息表 schema，对照旧/新读取序列，覆盖首尾页损坏数据、附件旧格式降级、排序、会话隔离、取消、首屏与尾屏间并发追加/删除/删穿偏移量、Repeatable Read 可见性、事务内写入及回滚；Mock 补充计数/查询/扫描/迭代失败、关闭 rows 和部分结果错误语义。未单独注入计数与首屏之间的写入，未测生产规模时延或外部 Tutor；临时测试、覆盖率文件和集群均已清理，未连接业务库。
 - [ ] 评估资源入库 chunk/manifest 的逐条写入与完成状态更新是否需要批处理；先记录目标数据量下的 SQL 次数和耗时，再验证事务回滚、错误归因、取消和重试幂等性，不能仅以吞吐收益替代兼容性验收。
 
 ### 安全与运维

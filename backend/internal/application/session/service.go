@@ -78,6 +78,12 @@ type Repository interface {
 	BatchDeleteSessions(context.Context, []string, string) (int, error)
 }
 
+// messagePageReader avoids recounting when a caller already has its page offset.
+// Repositories without this optional capability retain the pagination contract.
+type messagePageReader interface {
+	ListMessagesPage(context.Context, string, int, int) ([]Message, error)
+}
+
 // LearningSession stores one learning session.
 type LearningSession struct {
 	ID           string
@@ -612,6 +618,7 @@ func normalizeChatAttachments(attachments []string) ([]string, error) {
 }
 
 func (s *Service) recentHistory(ctx context.Context, sessionID string) ([]Message, error) {
+	// Keep the first page's decoding and errors, even when only the tail is used.
 	messages, total, err := s.repo.ListMessages(ctx, sessionID, maxChatHistoryMessages, 0)
 	if err != nil {
 		return nil, err
@@ -619,7 +626,12 @@ func (s *Service) recentHistory(ctx context.Context, sessionID string) ([]Messag
 	if total <= maxChatHistoryMessages {
 		return messages, nil
 	}
-	messages, _, err = s.repo.ListMessages(ctx, sessionID, maxChatHistoryMessages, total-maxChatHistoryMessages)
+	// The original count determines the offset even if messages change between reads.
+	if reader, ok := s.repo.(messagePageReader); ok {
+		messages, err = reader.ListMessagesPage(ctx, sessionID, maxChatHistoryMessages, total-maxChatHistoryMessages)
+	} else {
+		messages, _, err = s.repo.ListMessages(ctx, sessionID, maxChatHistoryMessages, total-maxChatHistoryMessages)
+	}
 	if err != nil {
 		return nil, err
 	}
