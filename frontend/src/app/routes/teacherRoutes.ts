@@ -17,15 +17,15 @@ const MessageCenterPage = lazy(() => import('@/pages/teacher/MessageCenterPage')
  * 教师路由 - 需要登录 + teacher 角色
  */
 export const teacherRoutes: RouteConfig[] = [
-  { path: '/teacher/dashboard', component: TeacherDashboardPage, title: '教学概览', protected: true, requiredRole: 'teacher' },
-  { path: '/teacher/classes', component: ClassManagementPage, title: '班级管理', protected: true, requiredRole: 'teacher' },
-  { path: '/teacher/students', component: StudentsPage, title: '学生管理', protected: true, requiredRole: 'teacher' },
-  { path: '/teacher/messages', component: MessageCenterPage, title: '消息中心', protected: true, requiredRole: 'teacher' },
-  { path: '/teacher/question-bank', component: QuestionBankPage, title: '题库管理', protected: true, requiredRole: 'teacher' },
-  { path: '/teacher/question/new', component: QuestionEditPage, title: '新建题目', protected: true, requiredRole: 'teacher' },
-  { path: '/teacher/question/:id/edit', component: QuestionEditPage, title: '编辑题目', protected: true, requiredRole: 'teacher' },
-  { path: '/teacher/resources', component: TeacherResourcesPage, title: '教学资源', protected: true, requiredRole: 'teacher' },
-  { path: '/teacher/class/:id', component: ClassDetailPage, title: '班级详情', protected: true, requiredRole: 'teacher' },
-  { path: '/teacher/student/:id', component: StudentDetailPage, title: '学生详情', protected: true, requiredRole: 'teacher' },
-  { path: '/teacher/profile', component: ProfilePage, title: '个人资料', protected: true, requiredRole: 'teacher' },
+  { path: '/teacher/dashboard', component: TeacherDashboardPage, protected: true, requiredRole: 'teacher' },
+  { path: '/teacher/classes', component: ClassManagementPage, protected: true, requiredRole: 'teacher' },
+  { path: '/teacher/students', component: StudentsPage, protected: true, requiredRole: 'teacher' },
+  { path: '/teacher/messages', component: MessageCenterPage, protected: true, requiredRole: 'teacher' },
+  { path: '/teacher/question-bank', component: QuestionBankPage, protected: true, requiredRole: 'teacher' },
+  { path: '/teacher/question/new', component: QuestionEditPage, protected: true, requiredRole: 'teacher' },
+  { path: '/teacher/question/:id/edit', component: QuestionEditPage, protected: true, requiredRole: 'teacher' },
+  { path: '/teacher/resources', component: TeacherResourcesPage, protected: true, requiredRole: 'teacher' },
+  { path: '/teacher/class/:id', component: ClassDetailPage, protected: true, requiredRole: 'teacher' },
+  { path: '/teacher/student/:id', component: StudentDetailPage, protected: true, requiredRole: 'teacher' },
+  { path: '/teacher/profile', component: ProfilePage, protected: true, requiredRole: 'teacher' },
 ];

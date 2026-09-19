@@ -56,15 +56,20 @@ export function mergeMessagesByID<T extends { id: string; time: string }>(
 ): T[] {
   const byID = new Map(current.map((message) => [message.id, message]));
   incoming.forEach((message) => byID.set(message.id, message));
+  if (byID.size < 2) return [...byID.values()];
 
-  return [...byID.values()].sort((left, right) => {
-    const leftTime = Date.parse(left.time);
-    const rightTime = Date.parse(right.time);
-    if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
-      return leftTime - rightTime;
+  const messages = Array.from(byID.values(), (message) => ({
+    message,
+    timestamp: Date.parse(message.time),
+  }));
+
+  messages.sort((left, right) => {
+    if (Number.isFinite(left.timestamp) && Number.isFinite(right.timestamp) && left.timestamp !== right.timestamp) {
+      return left.timestamp - right.timestamp;
     }
 
-    const timeOrder = left.time.localeCompare(right.time);
-    return timeOrder !== 0 ? timeOrder : left.id.localeCompare(right.id);
+    const timeOrder = left.message.time.localeCompare(right.message.time);
+    return timeOrder !== 0 ? timeOrder : left.message.id.localeCompare(right.message.id);
   });
+  return messages.map(({ message }) => message);
 }

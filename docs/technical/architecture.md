@@ -16,7 +16,7 @@ React + Vite/Nginx
 Go net/http API
   |-- PostgreSQL + pgvector
   |-- Redis
-  |-- Optional Qdrant vector index (resource profile)
+  |-- Optional Qdrant vector index (vector profile)
   |-- Local/Qiniu/S3 storage
   |-- OpenAI-compatible providers through Eino
   `-- Xidian IDS account verification
@@ -38,7 +38,7 @@ Go API 是唯一默认后端。旧 Python FastAPI、LangGraph、LiteLLM、SymPy 
 | 交互与展示 | Framer Motion、KaTeX、ECharts、AntV G6、React Hook Form、Zod |
 | 后端 | Go 1.25、`net/http`、pgx、go-redis |
 | AI/Agent | CloudWeGo Eino、OpenAI-compatible ChatModel、持久化 provider/model/Agent 配置 |
-| 数据 | PostgreSQL 18、pgvector、Redis 7；可选 Qdrant `v1.14.1`（resource profile） |
+| 数据 | PostgreSQL 18、pgvector、Redis 7；可选 Qdrant `v1.14.1`（vector profile） |
 | 交付 | Docker、Docker Compose、Nginx、Prometheus text exposition |
 
 具体版本以 [backend/go.mod](../../backend/go.mod) 和 [frontend/package.json](../../frontend/package.json) 为准。
@@ -58,6 +58,8 @@ frontend/src/
 ```
 
 页面保持为组合层，业务逻辑进入模块 Hook 或 Service。模块外部通过 `index.ts` 公共接口访问，避免深层路径耦合。
+
+角色首页规则集中在 `modules/auth/constants/homePath.ts`，入口路由、权限守卫、页头和个人首页共用：管理员进入 `/admin/dashboard`，其余角色进入 `/home`。路由表只维护页面路径、懒加载组件和权限要求。
 
 ## Go 后端分层
 

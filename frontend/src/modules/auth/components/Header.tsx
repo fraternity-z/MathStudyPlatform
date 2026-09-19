@@ -7,6 +7,7 @@ import { cn } from '@/libs/utils/cn';
 import { Loader2, LogOut, User, Users } from 'lucide-react';
 import { selectIsAuthenticated, selectCurrentUser } from '@/modules/auth/store/authSlice';
 import { getNavItemsByRole } from '@/modules/auth/constants/navigationConfig';
+import { getHomePath } from '@/modules/auth/constants/homePath';
 import { useAuth } from '@/modules/auth/hooks/useAuth';
 import { animationCombos } from '@/libs/animations';
 import { ResponsiveNavigation } from '@/modules/auth/components/ResponsiveNavigation';
@@ -41,7 +42,7 @@ export const Header: React.FC<HeaderProps> = ({ variant = 'default', onLoginClic
   // 获取导航菜单配置
   const navItems = getNavItemsByRole(user?.role);
   const isTeacher = user?.role === 'teacher';
-  const homePath = user?.role === 'admin' ? '/admin/dashboard' : '/home';
+  const homePath = getHomePath(user?.role);
 
   const isDark = variant === 'dark' || variant === 'transparent';
 

@@ -29,7 +29,7 @@
 
 临时回归应覆盖认证用户透传及双学生隔离、当前问题优先于会话主题、无历史与无画像、未知掌握度、只读遗忘投影、历史 `calculation` 错因、先修方向、30 天边界和未来记录排除；错误知识点验证冻结快照优先、JSON null/旧格式回退及空数组不回退。上下文验证 500 ms 超时降级、父取消传播、日志不输出原始错误或学习数据、中文 JSON 完整性、4 KiB 快照与 16 KiB 整体动态预算、逐轮重新读取及无 reader 时兼容原链路。SQL 使用独立 PostgreSQL 实例和合成数据验证，不连接业务数据库；模型侧使用 Mock 验证实际输入，不用提示词文本存在代替教学效果验收。
 
-2026-09-19 已通过上述临时单元及独立 PostgreSQL 18 查询验证，后端全量 `go test -race ./... -count=1`、`go vet ./...`、`go build ./...` 通过；补充快照时间和历史计算错因兼容后，三个受影响包的竞态回归再次通过。临时测试源码按仓库规则清理，不新增依赖、迁移或前端接口。真实外部 Tutor 的多轮个性化教学效果仍由当前待办中的真实模型质量验收负责。
+已完成的验证记录和真实外部 Tutor 的多轮教学质量验收统一见[项目待办](../TODO.md#ai-学习闭环)。本文只维护当前契约和回归方法，临时测试源码按仓库规则清理。
 
 ## 环境要求
 
@@ -180,7 +180,7 @@ docker compose --profile vector up -d qdrant
 docker compose --profile vector ps qdrant
 ```
 
-将后端 `.env` 中的 `QDRANT_ENABLED` 设为 `true`，容器内访问地址使用 `http://qdrant:6333`（宿主机运行 Go API 时使用 `http://localhost:6333`）。本地 `QDRANT_API_KEY` 留空时，Compose 会在启动 Qdrant 前移除空的服务端 key 环境变量，避免 Qdrant 把“存在但为空”解释为已开启鉴权；设置非空 key 时，healthcheck 和 adapter 都使用该 key，不能把值写入日志或文档。healthcheck 使用镜像自带 Bash 的 `/dev/tcp`，不依赖镜像中不存在的 `curl`。collection 的维度、距离与 payload index 由 worker 按管理员 active 模型和 generation 显式创建/校验，适配器不会猜测模型参数。停止完整 profile 使用 `docker compose --profile vector stop vector-worker qdrant`，不要删除 PostgreSQL 或 Qdrant 数据卷。
+将仓库根目录 `.env` 中的 `QDRANT_ENABLED` 设为 `true`，容器内访问地址使用 `http://qdrant:6333`（宿主机运行 Go API 时使用 `http://localhost:6333`）。本地 `QDRANT_API_KEY` 留空时，Compose 会在启动 Qdrant 前移除空的服务端 key 环境变量，避免 Qdrant 把“存在但为空”解释为已开启鉴权；设置非空 key 时，healthcheck 和 adapter 都使用该 key，不能把值写入日志或文档。healthcheck 使用镜像自带 Bash 的 `/dev/tcp`，不依赖镜像中不存在的 `curl`。collection 的维度、距离与 payload index 由 worker 按管理员 active 模型和 generation 显式创建/校验，适配器不会猜测模型参数。停止完整 profile 使用 `docker compose --profile vector stop vector-worker qdrant`，不要删除 PostgreSQL 或 Qdrant 数据卷。
 
 ### 文档入库与独立 worker
 

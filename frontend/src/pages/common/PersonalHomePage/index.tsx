@@ -4,6 +4,7 @@ import { MainLayout } from '@/components/layout/MainLayout';
 import { RequestErrorNotice } from '@/components/feedback';
 import { useAppSelector } from '@/store';
 import { selectCurrentUser } from '@/modules/auth/store/authSlice';
+import { getHomePath } from '@/modules/auth/constants/homePath';
 import { HomeHero } from './HomeHero';
 import { HomeStatsStrip } from './HomeStatsStrip';
 import { HomeSections } from './HomeSections';
@@ -193,7 +194,7 @@ export function PersonalHomePage() {
   }, [load, role, user?.role]);
 
   if (user?.role === 'admin') {
-    return <Navigate to="/admin/dashboard" replace />;
+    return <Navigate to={getHomePath(user.role)} replace />;
   }
 
   const displayName = user?.name?.trim() || (role === 'teacher' ? '老师' : '同学');

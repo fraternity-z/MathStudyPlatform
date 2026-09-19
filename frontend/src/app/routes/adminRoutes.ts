@@ -14,17 +14,17 @@ const AnnouncementManagementPage = lazy(() => import('@/pages/admin/Announcement
 const ForumManagementPage = lazy(() => import('@/pages/admin/ForumManagementPage').then(m => ({ default: m.ForumManagementPage })));
 
 /**
- * 管理员路由 - 需要登录 + admin 角色
+ * 管理员路由 - 登录页公开，其余页面要求 admin 角色
  */
 export const adminRoutes: RouteConfig[] = [
-  { path: '/admin', component: AdminLoginPage, title: '管理员登录', protected: false },
-  { path: '/admin/dashboard', component: AdminDashboardPage, title: '运维控制台', protected: true, requiredRole: 'admin' },
-  { path: '/admin/inbox', component: InboxPage, title: '信箱', protected: true, requiredRole: 'admin' },
-  { path: '/admin/accounts', component: AccountManagementPage, title: '账户管理', protected: true, requiredRole: 'admin' },
-  { path: '/admin/forum', component: ForumManagementPage, title: '论坛管理', protected: true, requiredRole: 'admin' },
-  { path: '/admin/ai-models', component: AIModelSettingsPage, title: 'AI 模型设置', protected: true, requiredRole: 'admin' },
-  { path: '/admin/risk-control', component: AIRiskControlPage, title: 'AI 风控中心', protected: true, requiredRole: 'admin' },
-  { path: '/admin/announcements', component: AnnouncementManagementPage, title: '系统公告', protected: true, requiredRole: 'admin' },
-  { path: '/admin/settings', component: SystemSettingsPage, title: '系统设置', protected: true, requiredRole: 'admin' },
-  { path: '/admin/knowledge', component: KnowledgeManagementPage, title: '知识点管理', protected: true, requiredRole: 'admin' },
+  { path: '/admin', component: AdminLoginPage, protected: false },
+  { path: '/admin/dashboard', component: AdminDashboardPage, protected: true, requiredRole: 'admin' },
+  { path: '/admin/inbox', component: InboxPage, protected: true, requiredRole: 'admin' },
+  { path: '/admin/accounts', component: AccountManagementPage, protected: true, requiredRole: 'admin' },
+  { path: '/admin/forum', component: ForumManagementPage, protected: true, requiredRole: 'admin' },
+  { path: '/admin/ai-models', component: AIModelSettingsPage, protected: true, requiredRole: 'admin' },
+  { path: '/admin/risk-control', component: AIRiskControlPage, protected: true, requiredRole: 'admin' },
+  { path: '/admin/announcements', component: AnnouncementManagementPage, protected: true, requiredRole: 'admin' },
+  { path: '/admin/settings', component: SystemSettingsPage, protected: true, requiredRole: 'admin' },
+  { path: '/admin/knowledge', component: KnowledgeManagementPage, protected: true, requiredRole: 'admin' },
 ];

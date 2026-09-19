@@ -3,6 +3,7 @@ import { useAppSelector } from '@/store';
 import { AnimatePresence } from 'framer-motion';
 import { selectIsAuthenticated, selectCurrentUser } from '@/modules/auth/store/authSlice';
 import { ProtectedRoute } from '@/modules/auth/components/ProtectedRoute';
+import { getHomePath } from '@/modules/auth/constants/homePath';
 import { routes, notFoundRoute } from './index';
 
 /**
@@ -17,22 +18,13 @@ export const AppRoutes = () => {
   // 真正的登录状态：token 存在且 user 信息已加载
   const isLoggedIn = isAuthenticated && user !== null;
 
-  const getDefaultHome = (role: NonNullable<typeof user>['role']) => {
-    switch (role) {
-      case 'admin':
-        return '/admin/dashboard';
-      default:
-        return '/home';
-    }
-  };
-
   return (
     <AnimatePresence mode="sync">
       <Routes location={location} key={location.pathname}>
         {/* 首页特殊处理：未登录显示欢迎页，已登录显示主页 */}
         <Route
           path="/"
-          element={isLoggedIn && user ? <Navigate to={getDefaultHome(user.role)} replace /> : <Navigate to="/welcome" replace />}
+          element={isLoggedIn && user ? <Navigate to={getHomePath(user.role)} replace /> : <Navigate to="/welcome" replace />}
         />
 
         {/* 动态生成路由 */}

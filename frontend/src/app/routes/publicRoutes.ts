@@ -12,16 +12,16 @@ const FAQPage = lazy(() => import('@/pages/common/FAQPage').then(m => ({ default
 const AboutPage = lazy(() => import('@/pages/common/AboutPage').then(m => ({ default: m.AboutPage })));
 const ContactPage = lazy(() => import('@/pages/common/ContactPage').then(m => ({ default: m.ContactPage })));
 /**
- * 公共路由 - 无需登录即可访问
+ * 公共页面路由 - 首页和个人资料仍要求登录
  */
 export const publicRoutes: RouteConfig[] = [
-  { path: '/welcome', component: WelcomePage, title: '欢迎', protected: false },
-  { path: '/home', component: PersonalHomePage, title: '首页', protected: true },
-  { path: '/privacy-policy', component: PrivacyPolicyPage, title: '隐私政策', protected: false },
-  { path: '/terms-of-service', component: TermsOfServicePage, title: '服务条款', protected: false },
-  { path: '/guide', component: GuidePage, title: '使用指南', protected: false },
-  { path: '/faq', component: FAQPage, title: '常见问题', protected: false },
-  { path: '/about', component: AboutPage, title: '团队介绍', protected: false },
-  { path: '/contact', component: ContactPage, title: '联系我们', protected: false },
-  { path: '/profile', component: ProfilePage, title: '个人资料', protected: true },
+  { path: '/welcome', component: WelcomePage, protected: false },
+  { path: '/home', component: PersonalHomePage, protected: true },
+  { path: '/privacy-policy', component: PrivacyPolicyPage, protected: false },
+  { path: '/terms-of-service', component: TermsOfServicePage, protected: false },
+  { path: '/guide', component: GuidePage, protected: false },
+  { path: '/faq', component: FAQPage, protected: false },
+  { path: '/about', component: AboutPage, protected: false },
+  { path: '/contact', component: ContactPage, protected: false },
+  { path: '/profile', component: ProfilePage, protected: true },
 ];

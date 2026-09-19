@@ -1,6 +1,7 @@
 package qdrant
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -373,7 +374,7 @@ func decodePointID(raw json.RawMessage) (string, error) {
 		return text, nil
 	}
 	var number json.Number
-	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	if err := decoder.Decode(&number); err != nil {
 		return "", err

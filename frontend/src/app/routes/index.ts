@@ -10,10 +10,8 @@ import { adminRoutes } from './adminRoutes';
 export interface RouteConfig {
   path: string;
   component: React.LazyExoticComponent<React.FC>;
-  title: string;
   protected?: boolean;
   requiredRole?: 'student' | 'teacher' | 'admin';
-  exact?: boolean;
 }
 
 /** 合并所有路由配置 */
@@ -32,6 +30,5 @@ const NotFoundPage = lazy(() =>
 export const notFoundRoute: RouteConfig = {
   path: '*',
   component: NotFoundPage,
-  title: '页面未找到',
   protected: false,
 };

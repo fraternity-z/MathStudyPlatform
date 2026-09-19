@@ -1,6 +1,7 @@
 package qdrant
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -224,7 +225,7 @@ func (c *Client) request(ctx context.Context, operation, method, endpoint string
 		if err != nil {
 			return &Error{Operation: operation, Code: resourceapp.ErrVectorInvalid, Cause: err}
 		}
-		body = strings.NewReader(string(encoded))
+		body = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
 	if err != nil {
