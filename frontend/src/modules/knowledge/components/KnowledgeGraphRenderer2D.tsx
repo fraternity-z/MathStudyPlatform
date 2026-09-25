@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -26,9 +27,17 @@ const KnowledgeGraphRenderer2D = forwardRef<GraphRendererHandle, GraphRendererPr
   onNodeHover,
   onRendererError,
 }, ref) => {
+  const nodesById = useMemo(() => {
+    const index = new Map<string, GraphRendererProps['nodes'][number]>();
+    for (const node of nodes) {
+      if (!index.has(node.id)) index.set(node.id, node);
+    }
+    return index;
+  }, [nodes]);
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
   const nodesRef = useRef(nodes);
+  const nodesByIdRef = useRef(nodesById);
   const onNodeClickRef = useRef(onNodeClick);
   const onNodeHoverRef = useRef(onNodeHover);
   const onRendererErrorRef = useRef(onRendererError);
@@ -36,10 +45,11 @@ const KnowledgeGraphRenderer2D = forwardRef<GraphRendererHandle, GraphRendererPr
 
   useEffect(() => {
     nodesRef.current = nodes;
+    nodesByIdRef.current = nodesById;
     onNodeClickRef.current = onNodeClick;
     onNodeHoverRef.current = onNodeHover;
     onRendererErrorRef.current = onRendererError;
-  }, [nodes, onNodeClick, onNodeHover, onRendererError]);
+  }, [nodes, nodesById, onNodeClick, onNodeHover, onRendererError]);
 
   useImperativeHandle(ref, () => ({
     zoomIn: () => graphZoomIn(graphRef.current),
@@ -70,12 +80,12 @@ const KnowledgeGraphRenderer2D = forwardRef<GraphRendererHandle, GraphRendererPr
           nodesep: 70,
           ranksep: 92,
           onNodeClick: (nodeId) => {
-            const node = nodesRef.current.find((item) => item.id === nodeId);
+            const node = nodesByIdRef.current.get(nodeId);
             if (node) onNodeClickRef.current?.(node);
           },
           onNodeHover: (nodeId) => {
             const node = nodeId
-              ? nodesRef.current.find((item) => item.id === nodeId) ?? null
+              ? nodesByIdRef.current.get(nodeId) ?? null
               : null;
             onNodeHoverRef.current?.(node);
           },

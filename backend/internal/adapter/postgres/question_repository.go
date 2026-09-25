@@ -1105,13 +1105,14 @@ func questionUpdateFields(update questionapp.QuestionUpdate) []string {
 	return fields
 }
 
+var groupKeywordSplitter = regexp.MustCompile(`[与和、,，/\s]+`)
+
 func splitGroupKeywords(groupName string) []string {
 	groupName = strings.TrimSpace(groupName)
 	if groupName == "" {
 		return []string{}
 	}
-	splitter := regexp.MustCompile(`[与和、,，/\s]+`)
-	parts := splitter.Split(groupName, -1)
+	parts := groupKeywordSplitter.Split(groupName, -1)
 	keywords := []string{}
 	for _, part := range parts {
 		part = strings.TrimSpace(part)

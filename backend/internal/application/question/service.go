@@ -850,9 +850,10 @@ func canonicalQuestionOption(options []string, answer string) (string, bool) {
 	return "", false
 }
 
+var choiceWhitespaceReplacer = strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "")
+
 func normalizeChoiceValue(value string) string {
-	replacer := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "")
-	return strings.ToLower(replacer.Replace(strings.TrimSpace(value)))
+	return strings.ToLower(choiceWhitespaceReplacer.Replace(strings.TrimSpace(value)))
 }
 
 func validRequiredString(value string, maxBytes int) bool {

@@ -3059,9 +3059,10 @@ func nextRecommendation(isCorrect bool, masteryUpdate map[string]float64) string
 	return "continue"
 }
 
+var answerWhitespaceReplacer = strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "")
+
 func normalizeAnswer(value string) string {
-	replacer := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "")
-	return strings.ToLower(replacer.Replace(strings.TrimSpace(value)))
+	return strings.ToLower(answerWhitespaceReplacer.Replace(strings.TrimSpace(value)))
 }
 
 func metaStringDefault(meta map[string]any, key string, fallback string) string {

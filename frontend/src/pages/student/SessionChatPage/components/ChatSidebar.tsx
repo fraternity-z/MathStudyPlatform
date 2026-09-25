@@ -91,6 +91,8 @@ export const ChatSidebar = React.memo<ChatSidebarProps>(
     onSelectAll,
     onBatchDelete,
   }) => {
+    const selectedSessionIdSet = React.useMemo(() => new Set(selectedSessionIds), [selectedSessionIds]);
+
     return (
       <>
         {isOpen && <button type="button" aria-label="收起历史会话" onClick={onToggleSidebar} className="absolute inset-0 z-30 bg-surface-900/30 md:hidden" />}
@@ -186,7 +188,7 @@ export const ChatSidebar = React.memo<ChatSidebarProps>(
                       ? 'bg-primary-50 dark:bg-primary-900/30 border border-primary-200 dark:border-primary-800'
                       : 'hover:bg-surface-100 dark:hover:bg-surface-800 border border-transparent',
                     isSelectMode &&
-                      selectedSessionIds.includes(session.id) &&
+                      selectedSessionIdSet.has(session.id) &&
                       'bg-primary-50 dark:bg-primary-900/30 border border-primary-200 dark:border-primary-800'
                   )}
                 >
@@ -202,7 +204,7 @@ export const ChatSidebar = React.memo<ChatSidebarProps>(
                         disabled={interactionDisabled}
                         className="mt-0.5 p-1"
                       >
-                        {selectedSessionIds.includes(session.id) ? (
+                        {selectedSessionIdSet.has(session.id) ? (
                           <CheckSquare className="w-4 h-4 text-primary-500" />
                         ) : (
                           <Square className="w-4 h-4 text-surface-400" />
