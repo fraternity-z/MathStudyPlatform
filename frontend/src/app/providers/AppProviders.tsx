@@ -11,6 +11,7 @@ import { ThemeProvider } from './ThemeProvider';
 import { AuthProvider } from './AuthProvider';
 import { useRateLimitToast } from '@/hooks/useRateLimitToast';
 import { SystemAnnouncementDialog } from '@/modules/announcement/SystemAnnouncementDialog';
+import { AIPracticeProvider } from '@/modules/exercise/components/AIPracticeProvider';
 
 /** 全局事件监听桥接（需要在 ToastProvider 内部） */
 const GlobalEventListeners: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -39,9 +40,11 @@ export const AppProviders: React.FC<{ children: React.ReactNode }> = ({ children
                 <AuthProvider>
                   <ScrollToTop />
                   <SystemAnnouncementDialog />
-                  <Suspense fallback={<LoadingFallback />}>
-                    {children}
-                  </Suspense>
+                  <AIPracticeProvider>
+                    <Suspense fallback={<LoadingFallback />}>
+                      {children}
+                    </Suspense>
+                  </AIPracticeProvider>
                 </AuthProvider>
               </GlobalEventListeners>
             </BrowserRouter>

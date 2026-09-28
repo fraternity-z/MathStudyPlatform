@@ -5,7 +5,7 @@ import {
   ExercisePanel,
   useExerciseViewModel,
 } from '@/modules/exercise';
-import type { GenerateQuestionType } from '@/modules/exercise/services/exerciseService';
+import { useAIPractice, type ExerciseMode } from '@/modules/exercise/hooks/aiPracticeContext';
 import { knowledgeService } from '@/modules/knowledge/services/knowledgeService';
 import type { KnowledgeNode } from '@/modules/knowledge/types/knowledge';
 import { Badge } from '@/components/ui/Badge';
@@ -26,8 +26,6 @@ import { useShanghaiDate } from '@/modules/daily-question/hooks/useShanghaiDate'
 import { dailyQuestionService } from '@/modules/daily-question/services/dailyQuestionService';
 import type { DailyQuestionAssignment } from '@/modules/daily-question/types/dailyQuestion';
 import { toAppError, type AppError } from '@/libs/http/apiClient';
-
-type ExerciseMode = 'class' | 'ai';
 
 const INVALID_CONCEPT_MESSAGE = '指定的知识点不存在，请重新选择';
 
@@ -56,7 +54,16 @@ const tutorCopy = {
 export const ExercisePage: React.FC = () => {
   const todayDate = useShanghaiDate();
   const [searchParams] = useSearchParams();
-  const requestedMode: ExerciseMode = searchParams.get('mode') === 'ai' ? 'ai' : 'class';
+  const requestedMode = searchParams.get('mode');
+  const {
+    exercise: aiExercise,
+    mode, setMode,
+    selectedConceptId, setSelectedConceptId,
+    difficulty, setDifficulty,
+    questionType, setQuestionType,
+    answerDraft, setAnswerDraft,
+    autoStartedRequest, appliedConceptRequest,
+  } = useAIPractice();
   const requestedConceptId = searchParams.get('concept_id')?.trim() ?? '';
   const requestedTopic = searchParams.get('topic')?.trim().slice(0, 200) ?? '';
   const sourceSession = searchParams.get('from_session');
@@ -95,19 +102,14 @@ export const ExercisePage: React.FC = () => {
     generateQuestion: requestAIQuestion,
     submitAnswer: submitAIAnswer,
     loadSolution: loadAISolution,
-  } = useExerciseViewModel();
+  } = aiExercise;
   const classLoadStarted = useRef(false);
   const knowledgeLoaded = useRef(false);
   const knowledgeLoadInFlight = useRef(false);
   const knowledgeRequestId = useRef(0);
-  const autoStartedRequest = useRef<string | null>(null);
-  const [mode, setMode] = useState<ExerciseMode>(requestedMode);
   const [knowledgeNodes, setKnowledgeNodes] = useState<KnowledgeNode[]>([]);
   const [isLoadingKnowledge, setIsLoadingKnowledge] = useState(false);
   const [knowledgeError, setKnowledgeError] = useState<AppError | null>(null);
-  const [selectedConceptId, setSelectedConceptId] = useState('');
-  const [difficulty, setDifficulty] = useState(0.5);
-  const [questionType, setQuestionType] = useState<GenerateQuestionType>('multiple_choice');
   const [dailyAssignment, setDailyAssignment] = useState<DailyQuestionAssignment | null>(null);
   const [isDailyStatusLoading, setIsDailyStatusLoading] = useState(true);
   const [dailyStatusError, setDailyStatusError] = useState<AppError | null>(null);
@@ -147,6 +149,7 @@ export const ExercisePage: React.FC = () => {
   useEffect(() => {
     return () => {
       knowledgeRequestId.current += 1;
+      knowledgeLoadInFlight.current = false;
     };
   }, []);
 
@@ -172,7 +175,10 @@ export const ExercisePage: React.FC = () => {
       const requestedNode = requestedConceptId
         ? graph.nodes.find((node) => node.id === requestedConceptId)
         : requestedTopic ? graph.nodes.find((node) => node.label === requestedTopic) : null;
-      setSelectedConceptId((current) => requestedNode?.id || current || graph.nodes[0]?.id || '');
+      const conceptRequest = requestedConceptId || requestedTopic;
+      const applyRequestedNode = requestedNode && appliedConceptRequest.current !== conceptRequest;
+      if (applyRequestedNode) appliedConceptRequest.current = conceptRequest;
+      setSelectedConceptId((current) => applyRequestedNode ? requestedNode.id : current || graph.nodes[0]?.id || '');
       if (requestedConceptId && !requestedNode) {
         setKnowledgeError(makeUiError(INVALID_CONCEPT_MESSAGE));
       }
@@ -186,11 +192,11 @@ export const ExercisePage: React.FC = () => {
         setIsLoadingKnowledge(false);
       }
     }
-  }, [requestedConceptId, requestedTopic]);
+  }, [appliedConceptRequest, requestedConceptId, requestedTopic, setSelectedConceptId]);
 
   useEffect(() => {
-    setMode(requestedMode);
-  }, [requestedMode]);
+    if (requestedMode === 'ai' || requestedMode === 'class') setMode(requestedMode);
+  }, [requestedMode, setMode]);
 
   useEffect(() => {
     if (mode === 'ai') {
@@ -200,24 +206,30 @@ export const ExercisePage: React.FC = () => {
 
   useEffect(() => {
     if (mode !== 'ai' || !requestedConceptId || knowledgeNodes.length === 0) return;
+    if (appliedConceptRequest.current === requestedConceptId) return;
     const requestedNode = knowledgeNodes.find((node) => node.id === requestedConceptId);
     if (!requestedNode) {
       setKnowledgeError(makeUiError(INVALID_CONCEPT_MESSAGE));
       return;
     }
     setSelectedConceptId(requestedNode.id);
+    appliedConceptRequest.current = requestedConceptId;
     setKnowledgeError((current) => current?.message === INVALID_CONCEPT_MESSAGE ? null : current);
-  }, [knowledgeNodes, mode, requestedConceptId]);
+  }, [appliedConceptRequest, knowledgeNodes, mode, requestedConceptId, setSelectedConceptId]);
 
   useEffect(() => {
     if (!shouldAutoStart || mode !== 'ai' || isLoadingKnowledge) return;
+    if (aiQuestion || isGenerating) return;
     if (!knowledgeNodes.some((node) => node.id === requestedConceptId)) return;
     if (autoStartedRequest.current === requestedConceptId) return;
 
     autoStartedRequest.current = requestedConceptId;
     void requestAIQuestion(requestedConceptId, difficulty);
   }, [
+    aiQuestion,
+    autoStartedRequest,
     difficulty,
+    isGenerating,
     isLoadingKnowledge,
     knowledgeNodes,
     mode,
@@ -339,6 +351,8 @@ export const ExercisePage: React.FC = () => {
                     onNextQuestion={generateQuestion}
                     submitAnswer={submitAIAnswer}
                     onLoadSolution={loadAISolution}
+                    answerDraft={answerDraft}
+                    onAnswerDraftChange={setAnswerDraft}
                   />
                 ) : null}
               </TabsContent>
