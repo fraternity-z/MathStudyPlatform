@@ -46,6 +46,13 @@ const renderMathContent = (
   />
 );
 
+export interface ExerciseAnswerDraft {
+  answer: string;
+  answerImage: File | null;
+  submittedWithImage: boolean;
+  lastSubmission: { answerText: string; answerImage: File | null } | null;
+}
+
 export interface ExercisePanelProps {
   currentQuestion: Question | null;
   isLoading: boolean;
@@ -63,6 +70,8 @@ export interface ExercisePanelProps {
   onLoadSolution: () => void | Promise<void>;
   nextButtonLabel?: string;
   resetKey?: string | number;
+  answerDraft?: ExerciseAnswerDraft;
+  onAnswerDraftChange?: (draft: ExerciseAnswerDraft) => void;
 }
 
 const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
@@ -81,14 +90,19 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
   submitAnswer,
   onLoadSolution,
   nextButtonLabel = '下一题',
+  answerDraft,
+  onAnswerDraftChange,
 }) => {
-  const [answer, setAnswer] = useState('');
-  const [answerImage, setAnswerImage] = useState<File | null>(null);
-  const [submittedWithImage, setSubmittedWithImage] = useState(false);
-  const [lastSubmission, setLastSubmission] = useState<{
-    answerText: string;
-    answerImage: File | null;
-  } | null>(null);
+  const [localDraft, setLocalDraft] = useState<ExerciseAnswerDraft>({
+    answer: '', answerImage: null, submittedWithImage: false, lastSubmission: null,
+  });
+  const draft = answerDraft ?? localDraft;
+  const { answer, answerImage, submittedWithImage, lastSubmission } = draft;
+  const updateDraft = useCallback((update: Partial<ExerciseAnswerDraft>) => {
+    const nextDraft = { ...draft, ...update };
+    if (onAnswerDraftChange) onAnswerDraftChange(nextDraft);
+    else setLocalDraft(nextDraft);
+  }, [draft, onAnswerDraftChange]);
 
   // 提交答案
   const handleSubmit = useCallback(async () => {
@@ -96,17 +110,19 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
     if (!normalizedAnswer && !answerImage) return;
 
     const isImageOnly = !normalizedAnswer && Boolean(answerImage);
-    setSubmittedWithImage(isImageOnly);
-    setLastSubmission({
-      answerText: normalizedAnswer,
-      answerImage: normalizedAnswer ? null : answerImage,
+    updateDraft({
+      submittedWithImage: isImageOnly,
+      lastSubmission: {
+        answerText: normalizedAnswer,
+        answerImage: normalizedAnswer ? null : answerImage,
+      },
     });
     await submitAnswer(
       normalizedAnswer
         ? { answerText: normalizedAnswer }
         : { answerImage }
     );
-  }, [answer, answerImage, submitAnswer]);
+  }, [answer, answerImage, submitAnswer, updateDraft]);
 
   // 下一题
   const handleNext = useCallback(async () => {
@@ -123,15 +139,13 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
       return;
     }
 
-    setSubmittedWithImage(
-      !lastSubmission.answerText && Boolean(lastSubmission.answerImage),
-    );
+    updateDraft({ submittedWithImage: !lastSubmission.answerText && Boolean(lastSubmission.answerImage) });
     await submitAnswer(
       lastSubmission.answerText
         ? { answerText: lastSubmission.answerText }
         : { answerImage: lastSubmission.answerImage },
     );
-  }, [errorSource, lastSubmission, onNextQuestion, submitAnswer]);
+  }, [errorSource, lastSubmission, onNextQuestion, submitAnswer, updateDraft]);
 
   // ========== 渲染 ==========
 
@@ -266,7 +280,7 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
                           name={`exercise-${currentQuestion.id}-answer`}
                           value={option}
                           checked={isSelected}
-                          onChange={(event) => setAnswer(event.target.value)}
+                          onChange={(event) => updateDraft({ answer: event.target.value })}
                           className="h-4 w-4 shrink-0 accent-primary-600"
                         />
                         <span className="w-5 shrink-0 text-sm font-semibold text-surface-500">
@@ -282,7 +296,7 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
               <div className="space-y-3">
                 <Input
                   value={answer}
-                  onChange={(event) => setAnswer(event.target.value)}
+                  onChange={(event) => updateDraft({ answer: event.target.value })}
                   placeholder="输入答案（支持 LaTeX 格式，如 \frac{x^3}{3} + C）"
                   className="text-lg"
                   disabled={isBusy || hasRecordedResult}
@@ -291,7 +305,7 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
                   <AnswerImageInput
                     file={answerImage}
                     disabled={isBusy || hasRecordedResult}
-                    onChange={setAnswerImage}
+                    onChange={(answerImage) => updateDraft({ answerImage })}
                   />
                 ) : null}
               </div>
