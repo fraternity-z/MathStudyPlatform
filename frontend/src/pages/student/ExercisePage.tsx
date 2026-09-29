@@ -6,6 +6,7 @@ import {
   useExerciseViewModel,
 } from '@/modules/exercise';
 import { useAIPractice, type ExerciseMode } from '@/modules/exercise/hooks/aiPracticeContext';
+import { ExerciseHintButton } from '@/modules/exercise/components/ExerciseHintButton';
 import { knowledgeService } from '@/modules/knowledge/services/knowledgeService';
 import type { KnowledgeNode } from '@/modules/knowledge/types/knowledge';
 import { Badge } from '@/components/ui/Badge';
@@ -380,7 +381,7 @@ export const ExercisePage: React.FC = () => {
                 <p className="text-sm leading-6 text-surface-600 dark:text-surface-400">
                   {activeTutor.description}
                 </p>
-                {activeQuestion ? <a
+                {activeQuestion && mode === 'ai' ? <ExerciseHintButton key={activeQuestion.id} exerciseId={activeQuestion.id} /> : activeQuestion ? <a
                   href={`/session/new?exercise_id=${encodeURIComponent(activeQuestion.id)}`}
                   target="_blank" rel="noopener noreferrer"
                   className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-white"

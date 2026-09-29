@@ -21,6 +21,9 @@ import (
 
 // Service is the session application surface used by HTTP handlers.
 type Service interface {
+	PrepareExerciseTutor(context.Context, string, string) (sessionapp.ExerciseTutorResponse, error)
+	GetExerciseTutor(context.Context, string, string) (*sessionapp.ExerciseTutorResponse, error)
+	StartExerciseHint(context.Context, string, string, sessionapp.ChatStreamCallbacks) (sessionapp.ChatResult, error)
 	CreateSession(context.Context, string, *string, string) (sessionapp.CreateSessionResponse, error)
 	StartChat(context.Context, string, string, *string, string, string, []string, sessionapp.StartChatNotifier, sessionapp.ChatStreamCallbacks) (sessionapp.ChatResult, error)
 	ProcessChat(context.Context, string, string, string, []string, sessionapp.ChatStreamCallbacks) (sessionapp.ChatResult, error)
@@ -67,6 +70,9 @@ func NewHandler(logger *slog.Logger, service Service, auth Authenticator) (*Hand
 func (h *Handler) Register(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc("POST "+prefix+"/start", h.start)
 	mux.HandleFunc("POST "+prefix+"/study", h.createStudy)
+	mux.HandleFunc("POST "+prefix+"/exercise-tutor", h.prepareExerciseTutor)
+	mux.HandleFunc("GET "+prefix+"/{session_id}/exercise-tutor", h.exerciseTutor)
+	mux.HandleFunc("POST "+prefix+"/{session_id}/exercise-hint", h.exerciseHint)
 	mux.HandleFunc("POST "+prefix+"/start-chat", h.startChat)
 	mux.HandleFunc("GET "+prefix+"/list", h.list)
 	mux.HandleFunc("POST "+prefix+"/batch-delete", h.batchDelete)
@@ -240,6 +246,8 @@ func (h *Handler) writeChatStreamFailure(stream *chatSSEWriter, err error, logMe
 		code, message = "FIRST_CHAT_IN_PROGRESS", "首次消息仍在处理中，请稍后同步会话历史"
 	case errors.Is(err, sessionapp.ErrFirstChatCannotResume):
 		code, message = "FIRST_CHAT_NOT_RESUMABLE", "会话历史已发生变化，无法安全补写首次回复"
+	case errors.Is(err, sessionapp.ErrTutorExerciseUnavailable):
+		code, message = "EXERCISE_TUTOR_UNAVAILABLE", "题目不存在或无权访问，请返回练习页"
 	default:
 		if riskCode, riskMessage, ok := aiRiskSSEError(err); ok {
 			code, message = riskCode, riskMessage
@@ -295,6 +303,8 @@ func (h *Handler) writeChatFailure(w http.ResponseWriter, err error, logMessage 
 		writeSessionError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", fmt.Sprintf("消息和文档内容合计不能超过 %d KiB", sessionapp.MaxChatMessageKiB))
 	case errors.Is(err, sessionapp.ErrNotFound):
 		writeSessionSSEError(w, "SESSION_NOT_FOUND", "会话不存在或无权访问")
+	case errors.Is(err, sessionapp.ErrTutorExerciseUnavailable):
+		writeSessionSSEError(w, "EXERCISE_TUTOR_UNAVAILABLE", "题目不存在或无权访问，请返回练习页")
 	default:
 		h.logSessionError(logMessage, err)
 		writeSessionSSEError(w, "PROCESSING_ERROR", "处理消息时发生错误，请稍后重试")

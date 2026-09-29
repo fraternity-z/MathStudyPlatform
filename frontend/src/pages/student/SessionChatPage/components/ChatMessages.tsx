@@ -6,6 +6,7 @@ import { RequestErrorNotice } from '@/components/feedback';
 import type { AppError } from '@/libs/http/appError';
 
 interface ChatMessagesProps {
+  intro?: React.ReactNode;
   messages: SessionMessage[];
   draftWelcome?: string;
   draftModeName?: string;
@@ -17,12 +18,13 @@ interface ChatMessagesProps {
 }
 
 export const ChatMessages = React.memo<ChatMessagesProps>(
-  ({ messages, draftWelcome, draftModeName, streamingMessageId, isLoading, error, onRetry, messagesContainerRef }) => {
+  ({ intro, messages, draftWelcome, draftModeName, streamingMessageId, isLoading, error, onRetry, messagesContainerRef }) => {
     return (
       <div
         ref={messagesContainerRef}
         className="min-w-0 flex-1 overflow-y-auto scroll-optimized px-3 py-4 space-y-4 sm:px-6"
       >
+        {intro}
         {isLoading && messages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <div className="flex items-center gap-2 text-surface-500">

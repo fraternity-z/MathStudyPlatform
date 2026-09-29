@@ -360,6 +360,7 @@ type Service struct {
 	agent                ChatAgent
 	knowledgeRetriever   KnowledgeRetriever
 	studentContextReader StudentContextReader
+	exerciseTutorReader  ExerciseTutorReader
 	guard                AIRequestGuard
 	logger               *slog.Logger
 	now                  func() time.Time
@@ -426,7 +427,7 @@ func NewService(repo Repository, options ...Option) (*Service, error) {
 	service := &Service{
 		repo:         repo,
 		logger:       slog.Default(),
-		now:          time.Now,
+		now:          func() time.Time { return time.Now().UTC() },
 		newID:        NewUUID,
 		activeTasks:  make(map[string]*activeChatTask),
 		stoppedTasks: make(map[string]stoppedChatTask),
@@ -484,13 +485,13 @@ func (s *Service) CreateSession(ctx context.Context, userID string, topic *strin
 		Topic:     topic,
 		Mode:      mode,
 		Status:    "active",
-		CreatedAt: timefmt.DateTimeMicros(now),
+		CreatedAt: timefmt.DateTimeRFC3339(now.UTC()),
 		WelcomeMessage: MessageResponse{
 			ID:          messageID,
 			Role:        "assistant",
 			Content:     welcome.Content,
 			Agent:       &agent,
-			Timestamp:   timefmt.DateTimeMicros(now),
+			Timestamp:   timefmt.DateTimeRFC3339(now.UTC()),
 			Attachments: []string{},
 		},
 	}, nil
@@ -526,6 +527,10 @@ func (s *Service) processChat(ctx context.Context, sessionID string, userID stri
 	if !ok || !current.IsActive {
 		return ChatResult{}, ErrNotFound
 	}
+	tutorInstruction, err := s.exerciseTutorInstruction(ctx, sessionID, userID)
+	if err != nil {
+		return ChatResult{}, err
+	}
 	firstChat, hasFirstChat, err := s.repo.GetFirstChatRequest(ctx, sessionID)
 	if err != nil {
 		return ChatResult{}, err
@@ -539,6 +544,7 @@ func (s *Service) processChat(ctx context.Context, sessionID string, userID stri
 	if err != nil {
 		return ChatResult{}, err
 	}
+	systemInstruction += tutorInstruction
 	studyAction := "discuss"
 	if turn != nil {
 		if current.Mode != "study" {
@@ -937,7 +943,7 @@ func toMessageResponses(messages []Message) []MessageResponse {
 			Role:        message.Role,
 			Content:     message.Content,
 			Agent:       ptrutil.Clone(message.Agent),
-			Timestamp:   timefmt.DateTimeMicros(message.CreatedAt),
+			Timestamp:   timefmt.DateTimeRFC3339(message.CreatedAt.UTC()),
 			Attachments: sliceutil.CloneStrings(message.Attachments),
 			Knowledge:   message.Knowledge,
 		})
@@ -947,14 +953,19 @@ func toMessageResponses(messages []Message) []MessageResponse {
 
 func toSessionResponse(row SessionListItem) SessionResponse {
 	session := row.Session
+	var endedAt *string
+	if session.EndedAt != nil {
+		formatted := timefmt.DateTimeRFC3339(session.EndedAt.UTC())
+		endedAt = &formatted
+	}
 	return SessionResponse{
 		SessionID:    session.ID,
 		UserID:       session.StudentID,
 		Topic:        ptrutil.Clone(session.CurrentTopic),
 		Mode:         session.Mode,
 		Status:       sessionStatus(session.IsActive),
-		StartedAt:    timefmt.DateTimeMicros(session.StartedAt),
-		EndedAt:      timefmt.OptionalDateTimeMicros(session.EndedAt),
+		StartedAt:    timefmt.DateTimeRFC3339(session.StartedAt.UTC()),
+		EndedAt:      endedAt,
 		MessageCount: row.MessageCount,
 	}
 }

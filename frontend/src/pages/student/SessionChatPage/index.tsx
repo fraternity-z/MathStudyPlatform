@@ -58,6 +58,8 @@ import { useFileUpload } from './hooks/useFileUpload';
 import { CHAT_MODES, QUICK_ACTIONS, ANSWER_ACTIONS } from './constants.tsx';
 import { StudyPanel } from '@/modules/session/components/StudyPanel';
 import { useExerciseTutorContext } from '@/modules/exercise/hooks/useExerciseTutorContext';
+import { useBoundExerciseTutor } from '@/modules/exercise/hooks/useBoundExerciseTutor';
+import { ExerciseTutorQuestion } from '@/modules/exercise/components/ExerciseTutorQuestion';
 import type { ExerciseTutorLaunchState } from '@/modules/exercise/tutorContext';
 import type { StudyAction, StudyProgress } from '@/modules/session/study';
 import { useToast, type ToastOptions } from '@/components/ui/Toast';
@@ -108,6 +110,7 @@ export const SessionChatPage: React.FC = () => {
   // 从刷题页面跳转时携带的初始消息
   const locationState = location.state as Partial<ExerciseTutorLaunchState> | null;
   const initialMessageHandled = useRef(false);
+  const initialHintSession = useRef<string | null>(null);
 
   // Redux state
   const currentSession = useAppSelector(selectCurrentSession);
@@ -150,6 +153,7 @@ export const SessionChatPage: React.FC = () => {
   const composerHasContentRef = useRef(false);
 
   const isDraftSession = !sessionId || sessionId === 'new';
+  const { tutor: boundTutor, loading: tutorLoading, error: tutorError, refresh: refreshTutor } = useBoundExerciseTutor(isDraftSession ? null : sessionId);
   const query = new URLSearchParams(location.search);
   const exerciseId = isDraftSession ? query.get('exercise_id') : null;
   const { context: exerciseContext, loading: exerciseLoading, error: exerciseError, retry: retryExercise } = useExerciseTutorContext(exerciseId);
@@ -167,8 +171,8 @@ export const SessionChatPage: React.FC = () => {
   const isModeUpdating = modeUpdateState === 'loading';
   const isReconciling = reconcileState === 'loading';
   const isDeleting = deletingSessionId !== null || isBatchDeleting;
-  const interactionBusy = isBusy || isModeUpdating || isReconciling || isDeleting || studyBusy || exerciseLoading;
-  const composerDisabled = isLoading || isModeUpdating || isReconciling || isDeleting || studyBusy || exerciseLoading;
+  const interactionBusy = isBusy || isModeUpdating || isReconciling || isDeleting || studyBusy || exerciseLoading || tutorLoading;
+  const composerDisabled = isLoading || isModeUpdating || isReconciling || isDeleting || studyBusy || exerciseLoading || tutorLoading || Boolean(tutorError) || Boolean(boundTutor?.initial_pending);
   const persistedSessionReady = !isDraftSession
     && historySessionId === sessionId
     && historySessionStatus === 'active';
@@ -297,6 +301,10 @@ export const SessionChatPage: React.FC = () => {
 
   const handleChatSettled = useCallback((settlement: ChatSettlement) => {
     setStudyRefresh((value) => value + 1);
+    refreshTutor();
+    if (settlement.isExerciseHint && settlement.sessionId) {
+      void dispatch(fetchHistoryAsync({ sessionId: settlement.sessionId }));
+    }
     const {
       sessionId: settledSessionId,
       outcome,
@@ -418,7 +426,7 @@ export const SessionChatPage: React.FC = () => {
           });
         }
       });
-  }, [discardDraftRecovery, dispatch, isDraftSession, navigate, recoverMissingSession, refreshSessionList, toast]);
+  }, [discardDraftRecovery, dispatch, isDraftSession, navigate, recoverMissingSession, refreshSessionList, refreshTutor, toast]);
 
   const {
     handleSendMessage: sendMessage,
@@ -522,13 +530,26 @@ export const SessionChatPage: React.FC = () => {
   // 发送消息
   const handleSendMessage = useCallback(
     async (customMessage?: string, studyAction: StudyAction = 'reply') => {
-      if (isModeUpdating || isReconciling || studyBusy || exerciseLoading) return false;
+      if (isModeUpdating || isReconciling || studyBusy || exerciseLoading || tutorLoading || tutorError || boundTutor?.initial_pending) return false;
       const messageContent = customMessage ?? inputValue;
       const progress = displayMode === 'study' && studySnapshot?.sessionId === activeSessionId ? studySnapshot.progress : null;
       return sendMessage(messageContent, progress ? { action: studyAction, revision: progress.revision } : undefined);
     },
-    [inputValue, isModeUpdating, isReconciling, studyBusy, exerciseLoading, sendMessage, displayMode, studySnapshot, activeSessionId]
+    [inputValue, isModeUpdating, isReconciling, studyBusy, exerciseLoading, tutorLoading, tutorError, boundTutor, sendMessage, displayMode, studySnapshot, activeSessionId]
   );
+
+  const requestInitialHint = useCallback(() => {
+    if (!boundTutor?.initial_pending || !persistedSessionReady || interactionBusy || isLoading) return;
+    initialHintSession.current = boundTutor.session_id;
+    void sendMessage(boundTutor.initial_message, undefined, true);
+  }, [boundTutor, persistedSessionReady, interactionBusy, isLoading, sendMessage]);
+
+  useEffect(() => {
+    if (!boundTutor?.initial_pending || initialHintSession.current === boundTutor.session_id || !persistedSessionReady || interactionBusy || isLoading) return;
+    // Wait for StrictMode cleanup and history loading before opening the SSE.
+    const timer = window.setTimeout(requestInitialHint, 0);
+    return () => window.clearTimeout(timer);
+  }, [boundTutor, persistedSessionReady, interactionBusy, isLoading, requestInitialHint]);
 
   // 从刷题页面跳转时，自动发送初始消息
   useEffect(() => {
@@ -752,6 +773,7 @@ export const SessionChatPage: React.FC = () => {
         <div className="flex min-w-0 flex-1 flex-col">
           {/* 顶部栏 + 同一行的模式选择器 */}
           <ChatHeader
+            title={boundTutor ? boundTutor.exercise.title || 'AI 练习题' : undefined}
             currentMode={currentModeConfig}
             sidebarOpen={sidebarOpen}
             onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
@@ -776,7 +798,23 @@ export const SessionChatPage: React.FC = () => {
               onPrompt={handleSendMessage} onPractice={openPractice}
               onProgress={handleStudyProgress} refreshKey={studyRefresh} />
           )}
-          {displayMode === 'practice' && !interactionBusy && (
+          {tutorError && <div role="alert" className="shrink-0 border-b border-surface-200 px-4 py-3 text-sm dark:border-surface-700">
+            {tutorError.message}
+            <button type="button" className="ml-2 text-primary-600 underline" onClick={refreshTutor}>重试</button>
+            <button type="button" className="ml-2 text-primary-600 underline" onClick={() => navigate('/exercise?mode=ai')}>返回练习</button>
+          </div>}
+          {boundTutor && <div className="shrink-0 border-b border-surface-200 px-4 py-3 text-sm dark:border-surface-700">
+            <div className="flex items-center justify-between gap-3">
+              <span className="min-w-0 truncate">当前辅导：{boundTutor.exercise.title || 'AI 练习题'}</span>
+              <div className="flex shrink-0 gap-3">
+                <button type="button" className="text-primary-600 underline" onClick={() => messagesContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}>查看题目</button>
+                <button type="button" className="text-primary-600 underline" onClick={() => navigate('/exercise?mode=ai')}>返回练习</button>
+              </div>
+            </div>
+            <p className="mt-1 text-surface-500">先给一个切入点，你可以继续追问。正式作答和解析请回练习页完成。</p>
+            {boundTutor.initial_pending && !interactionBusy && !isLoading && <button type="button" className="mt-2 text-primary-600 underline" onClick={requestInitialHint}>重新获取提示</button>}
+          </div>}
+          {displayMode === 'practice' && !boundTutor && !tutorError && !interactionBusy && (
             <div className="shrink-0 border-b border-surface-200 px-4 py-2 text-sm dark:border-surface-700">
               这里提供分步提示，作答与解析请在练习页完成。
               <button type="button" className="ml-2 text-primary-600 underline" onClick={() => openPractice(suggestedTopic)}>进入习题练习</button>
@@ -785,6 +823,7 @@ export const SessionChatPage: React.FC = () => {
 
           {/* 消息列表 */}
           <ChatMessages
+            intro={boundTutor ? <ExerciseTutorQuestion question={boundTutor.exercise} /> : undefined}
             messages={showDraftWelcome ? [] : messages}
             draftWelcome={showDraftWelcome ? draftWelcome : undefined}
             draftModeName={showDraftWelcome ? currentModeConfig.name : undefined}
