@@ -71,6 +71,20 @@ export interface StartChatStreamRequest {
   attachments?: string[];
 }
 
+export interface ExerciseTutorResponse {
+  session_id: string;
+  exercise: {
+    id: string;
+    title: string;
+    content: string;
+    options: string[];
+    knowledge_point_names: string[];
+    submitted: boolean;
+  };
+  initial_pending: boolean;
+  initial_message: string;
+}
+
 /** 历史消息响应 */
 export interface HistoryResponse {
   session_id: string;
@@ -125,6 +139,19 @@ const fetchHistoryPage = async (
 // ========== 服务实现 ==========
 
 export const sessionService = {
+  async prepareExerciseTutor(exerciseId: string, signal?: AbortSignal): Promise<ExerciseTutorResponse> {
+    const response = await apiClient.post<ExerciseTutorResponse>('/session/exercise-tutor', { exercise_id: exerciseId }, { signal });
+    return response.data;
+  },
+
+  async getExerciseTutor(sessionId: string, signal?: AbortSignal): Promise<ExerciseTutorResponse | null> {
+    const response = await apiClient.get<ExerciseTutorResponse | null>(`/session/${sessionId}/exercise-tutor`, { signal });
+    return response.data;
+  },
+
+  exerciseHintStream(sessionId: string, handlers: SSEHandlers): SSEController {
+    return createSSEConnection(`/api/v1/session/${sessionId}/exercise-hint`, {}, handlers);
+  },
   /**
    * 创建会话
    *

@@ -154,7 +154,7 @@ func isSessionChatRequest(r *http.Request, apiPrefix string) bool {
 	}
 	sessionPath := strings.TrimPrefix(r.URL.Path, apiPrefix+"/session/")
 	parts := strings.Split(sessionPath, "/")
-	return len(parts) == 2 && parts[0] != "" && parts[1] == "chat"
+	return len(parts) == 2 && parts[0] != "" && (parts[1] == "chat" || parts[1] == "exercise-hint")
 }
 
 func muxWithFallbacks(mux *http.ServeMux) http.Handler {

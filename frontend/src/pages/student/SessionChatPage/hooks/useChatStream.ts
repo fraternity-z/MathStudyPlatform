@@ -66,6 +66,7 @@ interface UseChatStreamProps {
 export type ChatSendOutcome = 'done' | 'error' | 'cancelled' | 'closed';
 
 export interface ChatSettlement {
+  isExerciseHint?: boolean;
   sessionId: string | null;
   outcome: ChatSendOutcome;
   requestStarted: boolean;
@@ -160,7 +161,7 @@ export const useChatStream = ({
 
   // 发送消息
   const handleSendMessage = useCallback(
-    async (messageContent: string, study?: StudyTurnInput): Promise<boolean> => {
+    async (messageContent: string, study?: StudyTurnInput, exerciseHint = false): Promise<boolean> => {
       const parsedDocs = [...getParsedDocuments()];
       const imageSnapshot = [...selectedImages];
       if (
@@ -173,6 +174,7 @@ export const useChatStream = ({
 
       const target = resolveChatTarget();
       if (!target) return false;
+      if (exerciseHint && (target.kind !== 'existing' || imageSnapshot.length > 0 || parsedDocs.length > 0)) return false;
       const sentInputText = messageContent;
       if (
         !messageContent.trim() &&
@@ -271,6 +273,7 @@ export const useChatStream = ({
             requestAccepted,
             error,
             isFirstTurn: target.kind === 'draft',
+            isExerciseHint: exerciseHint,
           });
         }
       };
@@ -407,10 +410,10 @@ export const useChatStream = ({
 
         const userMessageId = crypto.randomUUID();
         const aiMessageId = crypto.randomUUID();
-        optimisticMessageIds = [userMessageId, aiMessageId];
+        optimisticMessageIds = exerciseHint ? [aiMessageId] : [userMessageId, aiMessageId];
 
         // 1. 添加用户消息到 UI
-        dispatch(
+        if (!exerciseHint) dispatch(
           addMessage({
             id: userMessageId,
             sessionId: optimisticSessionId,
@@ -513,7 +516,10 @@ export const useChatStream = ({
         };
 
         // 草稿通过一个原子接口创建；已有会话继续使用原聊天接口。
-        if (target.kind === 'draft') {
+        if (exerciseHint) {
+          requestStarted = true;
+          sseControllerRef.current = sessionService.exerciseHintStream(recoverySessionId, streamHandlers);
+        } else if (target.kind === 'draft') {
           requestStarted = true;
           sseControllerRef.current = sessionService.startChatStream(
             {

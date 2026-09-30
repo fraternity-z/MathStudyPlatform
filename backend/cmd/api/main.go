@@ -559,6 +559,7 @@ func main() {
 		sessionapp.WithLogger(logger),
 		sessionapp.WithKnowledgeRetriever(resourceSearchService),
 		sessionapp.WithStudentContextReader(sessionRepo),
+		sessionapp.WithExerciseTutorReader(exerciseService),
 	)
 	if err != nil {
 		logger.Error("configure session service", "error", err)

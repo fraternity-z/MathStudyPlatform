@@ -73,6 +73,11 @@ func (s *Service) StartChat(
 		return ChatResult{}, err
 	}
 	systemInstruction := sessionModeInstruction(validatedMode)
+	tutorInstruction, err := s.exerciseTutorInstruction(ctx, sessionID, userID)
+	if err != nil {
+		return ChatResult{}, err
+	}
+	systemInstruction += tutorInstruction
 	historyByteBudget, ok := chatHistoryByteBudget(message, systemInstruction, attachments)
 	if !ok {
 		return ChatResult{}, ErrMessageTooLarge
@@ -216,6 +221,10 @@ func (s *Service) replayStartChat(
 	taskLease *chatTaskLease,
 	stream ChatStreamCallbacks,
 ) (ChatResult, error) {
+	tutorInstruction, err := s.exerciseTutorInstruction(ctx, session.ID, userID)
+	if err != nil {
+		return ChatResult{}, err
+	}
 	storedRequest, exists, err := s.repo.GetFirstChatRequest(ctx, session.ID)
 	if err != nil {
 		return ChatResult{}, err
@@ -290,7 +299,7 @@ func (s *Service) replayStartChat(
 		message,
 		attachments,
 		history,
-		sessionModeInstruction(mode),
+		sessionModeInstruction(mode)+tutorInstruction,
 		messages[1].CreatedAt,
 		airiskapp.UsageDate(claimTime),
 		ids,
