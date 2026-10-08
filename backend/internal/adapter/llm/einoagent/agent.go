@@ -1094,6 +1094,12 @@ func diagnosticianPrompt(input exerciseapp.DiagnosisInput) string {
 	builder.WriteString(fmt.Sprintf("- 题目 ID: %s\n", input.Exercise.ID))
 	builder.WriteString(fmt.Sprintf("- 标题: %s\n", input.Exercise.Title))
 	builder.WriteString(fmt.Sprintf("- 内容: %s\n", input.Exercise.Body))
+	if options := metautil.StringSlice(input.Exercise.Meta, "options"); len(options) > 0 {
+		builder.WriteString("- 选项（字母与学生作答对应）：\n")
+		for index, option := range options {
+			builder.WriteString(fmt.Sprintf("  %c. %s\n", 'A'+index, strings.TrimSpace(option)))
+		}
+	}
 	builder.WriteString(fmt.Sprintf("- 难度: %.2f\n", input.Exercise.Difficulty))
 	if len(input.Exercise.ConceptIDs) > 0 {
 		builder.WriteString("- 知识点: " + strings.Join(input.Exercise.ConceptIDs, "、") + "\n")
@@ -1166,6 +1172,7 @@ func mathSolutionPrompt(input exerciseapp.SolutionInput) string {
 	builder.WriteString(fmt.Sprintf("- 答案类型: %s\n", strings.TrimSpace(input.AnswerType)))
 	options := metautil.StringSlice(input.Exercise.Meta, "options")
 	if len(options) > 0 {
+		builder.WriteString("- 选择题的 answer 必须只填写所选选项的完整原文，不添加选项编号、字母、选项前缀或解释；推导放在 steps 中。\n")
 		builder.WriteString("- 选项:\n")
 		for index, option := range options {
 			builder.WriteString(fmt.Sprintf("  %d. %s\n", index+1, strings.TrimSpace(option)))

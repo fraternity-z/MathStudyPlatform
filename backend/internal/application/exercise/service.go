@@ -765,6 +765,7 @@ func (s *Service) verifyGenerated(ctx context.Context, studentID string, generat
 	// 答案交叉验证：solver 数学答案 vs LLM 所标答案
 	// 四选一内部会走 deterministicMultipleChoiceCheck，把 solver 数学答案
 	// 映射到选项再与 LLM 选项比对（service.go:1173/1369）
+	candidate.Answer = normalizeSolutionChoiceAnswer(exercise, candidate.Answer)
 	answerVerification, err := s.verifySolutionAnswer(ctx, exercise, candidate.Answer, generated.Answer)
 	if err != nil {
 		return verifiedGenerated{}, normalizeGenerationSolverError(err)
@@ -2041,6 +2042,7 @@ func (s *Service) GetSolution(ctx context.Context, userID string, exerciseID str
 		}))
 	}
 
+	candidate.Answer = normalizeSolutionChoiceAnswer(exercise, candidate.Answer)
 	answerVerification, err := s.verifySolutionAnswer(ctx, exercise, candidate.Answer, answer)
 	if err != nil {
 		return finalize(unavailableSolution(exerciseID, answer, nil, solutionSolverFailure(err, "solution_verification")))
