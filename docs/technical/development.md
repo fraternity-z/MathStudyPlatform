@@ -154,6 +154,10 @@ git diff --cached --name-only --diff-filter=ACMR | Select-String -Pattern '(_tes
 - 公共入口显式导出对外契约，类型使用 `export type`；不能用 `export *` 将整个内部目录变为公共接口。纯类型入口可以显式使用 `export type` 转导出，已有兼容导出不要求调用方改用包含 UI 的入口。
 - 通用 UI 放入 `src/components/`，与业务绑定的组件留在对应模块。
 
+#### 题面公式显示回归
+
+错题本三个列表视图通过 `QuestionPreview` 完整显示冻结题干，不对含公式的题干使用 `line-clamp` 或固定高度裁切。`ExerciseMathContent` 的外层只负责宽度限制和横向滚动，内层通过独立块布局及上下留白容纳公式实际高度；带分隔符的混合文本和裸 LaTeX 均使用 KaTeX `htmlAndMathml` 输出，保留辅助阅读信息。共享组件变更时，应在 Safari/WebKit 及 Chromium 下检查单层/嵌套分式、极限上下标、块级公式、长题干和窄屏横向滚动，并回归练习题面、选项、答案和错题详情。验收须确认公式上下边缘完整、卡片随内容增高、页面不产生横向溢出，不能只核对公式节点存在。
+
 #### 模块公共入口回归
 
 `npm run lint` 包含 `architecture/module-public-api` 边界规则。该规则在同一处解析别名和相对路径，并检查静态 import、re-export、类型引用及静态字符串形式的动态导入，不能只修改 `from '@/modules/…'` 后留下相对路径旁路。增加公共子入口时同步更新 `frontend/eslint.config.js` 的 `publicModuleEntries`，只登记具体入口，不允许整类内部目录。

@@ -1,6 +1,7 @@
 import React from 'react';
 import { MathRenderer } from '@/libs/math/MathRenderer';
 import { MathText } from '@/libs/math/MathText';
+import { cn } from '@/libs/utils/cn';
 
 const inlineOrBlockMathRegex = /\$\$?[\s\S]+?\$\$?/;
 const latexHintRegex = /\\[a-zA-Z]+|[_^]/;
@@ -24,24 +25,23 @@ export const ExerciseMathContent: React.FC<ExerciseMathContentProps> = ({
   if (!value) return null;
 
   const normalizedValue = normalizeExerciseMathDelimiters(value);
-  const safeContentClassName = [
-    'min-w-0 max-w-full overflow-x-auto overflow-y-hidden [overflow-wrap:anywhere]',
-    className,
-  ].filter(Boolean).join(' ');
+  let content: React.ReactNode = normalizedValue;
 
   if (inlineOrBlockMathRegex.test(normalizedValue)) {
-    return <MathText className={safeContentClassName}>{normalizedValue}</MathText>;
-  }
-
-  if (latexHintRegex.test(normalizedValue)) {
-    return (
+    content = <MathText>{normalizedValue}</MathText>;
+  } else if (latexHintRegex.test(normalizedValue)) {
+    content = (
       <MathRenderer
         expression={normalizedValue}
         block={block}
-        className={`inline-block ${safeContentClassName}`}
+        className="inline-block"
       />
     );
   }
 
-  return <span className={safeContentClassName}>{normalizedValue}</span>;
+  return (
+    <div className={cn('min-w-0 max-w-full overflow-x-auto [overflow-wrap:anywhere]', className)}>
+      <div className="flow-root py-2">{content}</div>
+    </div>
+  );
 };

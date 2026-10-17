@@ -22,8 +22,9 @@ export const MathRenderer: React.FC<MathRendererProps> = ({ expression, block = 
         katex.render(expression, containerRef.current, {
           displayMode: block,
           throwOnError: false,
-          output: 'mathml', // Accessibility
+          output: 'htmlAndMathml',
           strict: katexStrict,
+          trust: false,
         });
       } catch (error) {
         mathLogger.error('KaTeX rendering error', {

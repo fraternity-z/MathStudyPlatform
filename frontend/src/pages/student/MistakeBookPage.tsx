@@ -375,7 +375,7 @@ function QuestionPreview({ exercise }: { exercise: MistakeExercise }) {
       <ExerciseMathContent
         value={normalizedContent}
         block
-        className="w-fit line-clamp-3 text-base font-semibold leading-7 text-surface-900 dark:text-surface-100"
+        className="w-full text-base font-semibold leading-7 text-surface-900 dark:text-surface-100"
       />
     </div>
   );
