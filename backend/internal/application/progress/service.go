@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"mathstudy/backend/internal/application/learningfeedback"
 	"mathstudy/backend/internal/application/learningrange"
 	"mathstudy/backend/internal/application/masteryprojection"
 	"mathstudy/backend/internal/platform/maputil"
@@ -406,10 +407,26 @@ func (s *Service) GetLearningPath(ctx context.Context, userID string, target str
 	}
 
 	sortedIDs := topologicalLearningOrder(nodeMap, prereqEdges, dependents, mastery)
+	// Path completion and prerequisite unlocking use the same evidence floor as portraits.
+	verifiedMastery := map[string]float64{}
+	if reader, ok := s.repo.(learningfeedback.Reader); ok {
+		now := s.now()
+		for start := 0; start < len(sortedIDs); start += 12 {
+			snapshots, err := reader.ReadLearningFeedback(ctx, userID, sortedIDs[start:min(start+12, len(sortedIDs))], now)
+			if err != nil {
+				return PathResponse{}, err
+			}
+			for id, snapshot := range snapshots {
+				if learningfeedback.Build(snapshot, now).Stage == "transfer" {
+					verifiedMastery[id] = mastery[id]
+				}
+			}
+		}
+	}
 	if target != "" {
 		targetNodes := selectTargetNodes(target, nodeMap)
 		if len(targetNodes) > 0 {
-			needed := collectLearningSubgraph(targetNodes, prereqEdges, mastery)
+			needed := collectLearningSubgraph(targetNodes, prereqEdges, verifiedMastery)
 			filtered := make([]string, 0, len(sortedIDs))
 			for _, id := range sortedIDs {
 				if _, ok := needed[id]; ok {
@@ -428,8 +445,8 @@ func (s *Service) GetLearningPath(ctx context.Context, userID string, target str
 		masteryValue := mastery[id]
 		confidenceValue := confidence[id]
 		exerciseCount := attempts[id]
-		lockedBy := lockedPrerequisites(id, prereqEdges, mastery, confidence)
-		status := learningNodeStatus(id, lockedBy, mastery, confidenceValue, exerciseCount)
+		lockedBy := lockedPrerequisites(id, prereqEdges, verifiedMastery, confidence)
+		status := learningNodeStatus(id, lockedBy, verifiedMastery, confidenceValue, exerciseCount)
 		if status == "completed" {
 			completed++
 		} else if remaining := 5 - exerciseCount; remaining > 0 {

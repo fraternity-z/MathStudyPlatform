@@ -15,10 +15,14 @@ const (
 // IsDuplicate reports whether candidate is an exact or near duplicate of a prior question body.
 func IsDuplicate(candidate string, previous []string) bool {
 	candidateNormalized := Normalize(candidate)
+	structuralKey := DerivativeKey(candidate)
 	if candidateNormalized == "" {
 		return false
 	}
 	for _, item := range previous {
+		if structuralKey != "" && structuralKey == DerivativeKey(item) {
+			return true
+		}
 		if similarNormalized(candidateNormalized, Normalize(item)) {
 			return true
 		}

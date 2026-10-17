@@ -238,8 +238,23 @@ func (s *Service) GeneratePortrait(ctx context.Context, userID string, rangeType
 			return left < right
 		})
 		ids := make([]string, 0, min(6, len(masteryStates)))
+		if recentReader, ok := s.repo.(learningfeedback.RecentReader); ok {
+			recent, err := recentReader.ReadRecentLearningFeedback(ctx, userID, snapshotNow)
+			if err != nil {
+				return GenerateResponse{}, err
+			}
+			for _, snapshot := range recent {
+				ids = append(ids, snapshot.ConceptID)
+			}
+		}
 		for _, state := range masteryStates[:min(6, len(masteryStates))] {
-			ids = append(ids, state.ConceptID)
+			found := false
+			for _, id := range ids {
+				found = found || id == state.ConceptID
+			}
+			if !found {
+				ids = append(ids, state.ConceptID)
+			}
 		}
 		snapshots, err := reader.ReadLearningFeedback(ctx, userID, ids, snapshotNow)
 		if err != nil {

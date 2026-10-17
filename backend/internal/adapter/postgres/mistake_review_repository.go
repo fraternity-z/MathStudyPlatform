@@ -238,7 +238,7 @@ func (r MistakeRepository) ArchiveMistakeRecord(ctx context.Context, userID stri
 					            AND newer_archive.student_id = newer_attempt.student_id
 					           WHERE newer_attempt.student_id = attempt.student_id
 					             AND newer_attempt.content_id = attempt.content_id
-					             AND newer_attempt.is_correct = false
+					             AND (newer_attempt.is_correct = false OR newer_attempt.process_evaluation->>'status' = 'incorrect')
 					             AND newer_attempt.submitted_at IS NOT NULL
 					             AND newer_archive.attempt_id IS NULL
 					             AND (
@@ -256,7 +256,7 @@ func (r MistakeRepository) ArchiveMistakeRecord(ctx context.Context, userID stri
 					 AND archive.student_id = attempt.student_id
 					WHERE attempt.id = $1
 					  AND attempt.student_id = $2
-					  AND attempt.is_correct = false
+					  AND (attempt.is_correct = false OR attempt.process_evaluation->>'status' = 'incorrect')
 					  AND attempt.submitted_at IS NOT NULL
 				), accepted_target AS (
 					SELECT *
@@ -272,7 +272,7 @@ func (r MistakeRepository) ArchiveMistakeRecord(ctx context.Context, userID stri
 					  ON archive.attempt_id = candidate.id
 					 AND archive.student_id = candidate.student_id
 					WHERE target.already_archived = false
-					  AND candidate.is_correct = false
+					  AND (candidate.is_correct = false OR candidate.process_evaluation->>'status' = 'incorrect')
 					  AND candidate.submitted_at IS NOT NULL
 					  AND archive.attempt_id IS NULL
 				), archived_record AS (

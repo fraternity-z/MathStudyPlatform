@@ -48,9 +48,10 @@ const renderMathContent = (
 
 export interface ExerciseAnswerDraft {
   answer: string;
+  steps: string;
   answerImage: File | null;
   submittedWithImage: boolean;
-  lastSubmission: { answerText: string; answerImage: File | null } | null;
+  lastSubmission: { answerText: string; answerImage: File | null; answerSteps: string[] } | null;
 }
 
 export interface ExercisePanelProps {
@@ -94,10 +95,10 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
   onAnswerDraftChange,
 }) => {
   const [localDraft, setLocalDraft] = useState<ExerciseAnswerDraft>({
-    answer: '', answerImage: null, submittedWithImage: false, lastSubmission: null,
+    answer: '', steps: '', answerImage: null, submittedWithImage: false, lastSubmission: null,
   });
   const draft = answerDraft ?? localDraft;
-  const { answer, answerImage, submittedWithImage, lastSubmission } = draft;
+  const { answer, steps, answerImage, submittedWithImage, lastSubmission } = draft;
   const updateDraft = useCallback((update: Partial<ExerciseAnswerDraft>) => {
     const nextDraft = { ...draft, ...update };
     if (onAnswerDraftChange) onAnswerDraftChange(nextDraft);
@@ -110,19 +111,21 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
     if (!normalizedAnswer && !answerImage) return;
 
     const isImageOnly = !normalizedAnswer && Boolean(answerImage);
+    const answerSteps = steps.split('\n').map((step) => step.trim()).filter(Boolean);
     updateDraft({
       submittedWithImage: isImageOnly,
       lastSubmission: {
         answerText: normalizedAnswer,
         answerImage: normalizedAnswer ? null : answerImage,
+        answerSteps,
       },
     });
     await submitAnswer(
       normalizedAnswer
-        ? { answerText: normalizedAnswer }
-        : { answerImage }
+        ? { answerText: normalizedAnswer, answerSteps }
+        : { answerImage, answerSteps }
     );
-  }, [answer, answerImage, submitAnswer, updateDraft]);
+  }, [answer, steps, answerImage, submitAnswer, updateDraft]);
 
   // 下一题
   const handleNext = useCallback(async () => {
@@ -140,11 +143,7 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
     }
 
     updateDraft({ submittedWithImage: !lastSubmission.answerText && Boolean(lastSubmission.answerImage) });
-    await submitAnswer(
-      lastSubmission.answerText
-        ? { answerText: lastSubmission.answerText }
-        : { answerImage: lastSubmission.answerImage },
-    );
+    await submitAnswer(lastSubmission);
   }, [errorSource, lastSubmission, onNextQuestion, submitAnswer, updateDraft]);
 
   // ========== 渲染 ==========
@@ -198,6 +197,7 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
   const normalizedAnswer = answer.trim();
   const hasChangedSinceLastSubmission = Boolean(
     !lastSubmission ||
+      JSON.stringify(lastSubmission.answerSteps) !== JSON.stringify(steps.split('\n').map((step) => step.trim()).filter(Boolean)) ||
       (normalizedAnswer
         ? lastSubmission.answerText !== normalizedAnswer
         : lastSubmission.answerText !== '' || lastSubmission.answerImage !== answerImage)
@@ -310,6 +310,23 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
                 ) : null}
               </div>
             )}
+            <div className="space-y-2">
+              <label htmlFor={`exercise-${currentQuestion.id}-steps`} className="block text-sm font-medium text-surface-700 dark:text-surface-300">
+                关键步骤（可选）
+              </label>
+              <textarea
+                id={`exercise-${currentQuestion.id}-steps`}
+                value={steps}
+                onChange={(event) => updateDraft({ steps: event.target.value })}
+                rows={4}
+                maxLength={8000}
+                disabled={isBusy || hasRecordedResult}
+                placeholder="每行写一个关键步骤，帮助定位思路或计算中的问题"
+                aria-describedby={`exercise-${currentQuestion.id}-steps-help`}
+                className="w-full resize-y rounded-md border border-surface-200 bg-white px-3 py-2 text-sm text-surface-800 focus:border-primary-500 focus:outline-none disabled:opacity-60 dark:border-surface-700 dark:bg-surface-900 dark:text-surface-200"
+              />
+              <p id={`exercise-${currentQuestion.id}-steps-help`} className="text-xs text-surface-500">答案和过程分别评价；留空会记录为未提供步骤。</p>
+            </div>
           </div>
         </CardContent>
         <CardFooter className="bg-surface-50 dark:bg-surface-800 p-4 flex justify-between items-center">
@@ -370,8 +387,8 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
                 {isIndeterminate
                   ? '暂无法自动判定'
                   : submitResult.isCorrect
-                    ? '回答正确'
-                    : '回答错误'}
+                    ? '答案正确'
+                    : '答案错误'}
               </span>
             </h4>
 
@@ -383,6 +400,18 @@ const ExercisePanelContent: React.FC<ExercisePanelProps> = ({
                   : submitResult.feedback
               )}
             </div>
+
+            {!isIndeterminate && submitResult.processEvaluation && (
+              <div className="space-y-2 rounded-md bg-white/60 p-3 text-sm dark:bg-surface-900/50">
+                <p className="font-medium">过程评价：{{ not_provided: '未提供步骤', correct: '关键步骤正确', incorrect: '步骤存在错误', indeterminate: '暂无法可靠评价' }[submitResult.processEvaluation.status]}</p>
+                {submitResult.processEvaluation.evaluation?.reason && renderMathContent(submitResult.processEvaluation.evaluation.reason)}
+                {(submitResult.processEvaluation.evaluation?.evidence.length ?? 0) > 0 && (
+                  <ul className="list-disc space-y-1 pl-5">
+                    {submitResult.processEvaluation.evaluation?.evidence.map((item, index) => <li key={`${item.kind}-${index}`}>{renderMathContent(item.summary)}</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
 
             {(submitResult.evaluation?.evidence.length ?? 0) > 0 ? (
               <div className="border-t border-surface-200 pt-3 dark:border-surface-700">

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	exerciseapp "mathstudy/backend/internal/application/exercise"
+	"mathstudy/backend/internal/platform/questiondedupe"
 )
 
 // HasPriorExerciseExposure runs under the student tracking lock, across all
@@ -20,7 +21,32 @@ func (r ExerciseRepository) HasPriorExerciseExposure(ctx context.Context, studen
 				AND public.learning_question_body_v1(review_question_body) = public.learning_question_body_v1($3)
 			)
 		))`, studentID, exercise.ID, exercise.Body).Scan(&found)
-	return found, err
+	if err != nil || found {
+		return found, err
+	}
+	key := questiondedupe.DerivativeKey(exercise.Body)
+	if key == "" {
+		return false, nil
+	}
+	// Inspect immutable first exposures across history, including legacy attempts.
+	// This conservative fallback is used only for the recognized mathematical contract.
+	rows, err := r.DB().Query(ctx, `SELECT DISTINCT review_question_body
+		FROM public.content_attempts WHERE student_id = $1 AND submitted_at IS NOT NULL
+			AND review_question_body IS NOT NULL`, studentID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var body string
+		if err := rows.Scan(&body); err != nil {
+			return false, err
+		}
+		if key == questiondedupe.DerivativeKey(body) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func (r ExerciseRepository) StartExerciseStudyTime(ctx context.Context, studentID, exerciseID string, now time.Time) error {

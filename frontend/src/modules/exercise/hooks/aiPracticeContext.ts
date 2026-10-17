@@ -7,6 +7,9 @@ export type ExerciseMode = 'class' | 'ai';
 
 export interface AIPracticeContextValue {
   exercise: ReturnType<typeof useExerciseViewModel>;
+  classExercise: ReturnType<typeof useExerciseViewModel>;
+  classAnswerDraft: ExerciseAnswerDraft;
+  setClassAnswerDraft: (draft: ExerciseAnswerDraft) => void;
   mode: ExerciseMode;
   setMode: Dispatch<SetStateAction<ExerciseMode>>;
   selectedConceptId: string;

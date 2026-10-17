@@ -75,6 +75,7 @@ export interface ExerciseTutorResponse {
   session_id: string;
   exercise: {
     id: string;
+    source?: 'class' | 'ai_generated';
     title: string;
     content: string;
     options: string[];

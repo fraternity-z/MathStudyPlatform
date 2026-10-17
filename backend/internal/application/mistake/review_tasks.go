@@ -117,8 +117,14 @@ func (s *Service) GetReviewTasks(ctx context.Context, userID string, query Revie
 		return ReviewTaskListResponse{}, err
 	}
 	items := make([]ReviewTaskItem, 0, len(rows))
+	history, err := s.masteryHistory(ctx, userID, contentsFromReviewTaskRows(rows))
+	if err != nil {
+		return ReviewTaskListResponse{}, err
+	}
 	for _, row := range rows {
-		items = append(items, toReviewTaskItem(row, now, knowledgeNames))
+		item := toReviewTaskItem(row, now, knowledgeNames)
+		item.Mastery = measuredMastery(row.Content.ConceptIDs, row.AvgMastery, history)
+		items = append(items, item)
 	}
 	return ReviewTaskListResponse{
 		Items: items,
@@ -236,9 +242,8 @@ func toReviewTaskItem(row ReviewTaskRow, now time.Time, knowledgeNames map[strin
 			RelatedConcepts: sliceutil.CloneStrings(row.Diagnosis.RelatedConceptIDs),
 		},
 		Mastery: MistakeMastery{
-			Current:  row.AvgMastery,
-			Previous: row.AvgMastery,
-			Trend:    masteryTrend(row.AvgMastery),
+			Current: row.AvgMastery,
+			Trend:   "unknown",
 		},
 	}
 }

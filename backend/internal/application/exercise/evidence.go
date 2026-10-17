@@ -77,6 +77,8 @@ func (s *Service) evaluateAnswerSteps(ctx context.Context, exercise Exercise, an
 	if !ok {
 		return unknown
 	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	result, err := verifier.VerifySolution(ctx, SolutionVerificationInput{
 		Exercise: exercise, CandidateAnswer: answer, CandidateSteps: steps,
 		ReferenceAnswer: reference, AnswerType: metautil.String(exercise.Meta, "answer_type"), StepsOnly: true,

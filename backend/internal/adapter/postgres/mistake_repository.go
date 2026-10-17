@@ -55,7 +55,7 @@ func (r MistakeRepository) ListMistakes(ctx context.Context, userID string, filt
 		`+mistakeDailyAssignmentJoin+`
 		WHERE
 			ca.student_id = $1 AND
-			ca.is_correct = false AND
+			(ca.is_correct = false OR ca.process_evaluation->>'status' = 'incorrect') AND
 			ca.submitted_at IS NOT NULL AND
 			($2 = '' OR dr.error_type::text = $2) AND
 			($3 = '' OR EXISTS (
@@ -190,7 +190,7 @@ func (r MistakeRepository) GetMistakeByAttempt(ctx context.Context, userID strin
 		 AND archive.student_id = ca.student_id
 		WHERE ca.id = $1
 		  AND ca.student_id = $2
-		  AND ca.is_correct = false
+		  AND (ca.is_correct = false OR ca.process_evaluation->>'status' = 'incorrect')
 		  AND ca.submitted_at IS NOT NULL
 		  AND `+mistakeRepresentativeAttemptPredicate+`
 		  AND archive.attempt_id IS NULL`,
@@ -209,6 +209,7 @@ func (r MistakeRepository) GetAttemptContent(ctx context.Context, userID string,
 			ca.student_answer,
 			ca.student_steps,
 			ca.is_correct,
+			coalesce(ca.process_evaluation->>'status' = 'incorrect', false),
 			ca.score,
 			ca.submitted_at,
 				ca.time_spent_seconds,
@@ -308,7 +309,7 @@ func (r MistakeRepository) ErrorCountsByContent(ctx context.Context, userID stri
 	rows, err := r.DB().Query(ctx, `
 		SELECT content_id, count(id)::int
 		FROM public.content_attempts
-		WHERE student_id = $1 AND is_correct = false AND submitted_at IS NOT NULL
+		WHERE student_id = $1 AND (is_correct = false OR process_evaluation->>'status' = 'incorrect') AND submitted_at IS NOT NULL
 		GROUP BY content_id`,
 		userID,
 	)
@@ -466,7 +467,7 @@ const mistakeRepresentativeAttemptPredicate = `NOT EXISTS (
 	 AND newer_archive.student_id = newer_attempt.student_id
 	WHERE newer_attempt.student_id = ca.student_id
 	  AND newer_attempt.content_id = ca.content_id
-	  AND newer_attempt.is_correct = false
+	  AND (newer_attempt.is_correct = false OR newer_attempt.process_evaluation->>'status' = 'incorrect')
 	  AND newer_attempt.submitted_at IS NOT NULL
 	  AND newer_archive.attempt_id IS NULL
 	  AND (
@@ -487,7 +488,7 @@ const mistakeListFromWhere = `
 				  ON candidate_archive.attempt_id = candidate.id
 				 AND candidate_archive.student_id = candidate.student_id
 				WHERE candidate.student_id = $1
-				  AND candidate.is_correct = false
+				  AND (candidate.is_correct = false OR candidate.process_evaluation->>'status' = 'incorrect')
 				  AND candidate.submitted_at IS NOT NULL
 				  AND candidate_archive.attempt_id IS NULL
 				ORDER BY candidate.content_id, candidate.submitted_at DESC, candidate.id DESC
@@ -502,7 +503,7 @@ const mistakeListFromWhere = `
 		LEFT JOIN (
 			SELECT content_id, count(id)::int AS error_count
 			FROM public.content_attempts
-			WHERE student_id = $1 AND is_correct = false AND submitted_at IS NOT NULL
+			WHERE student_id = $1 AND (is_correct = false OR process_evaluation->>'status' = 'incorrect') AND submitted_at IS NOT NULL
 			GROUP BY content_id
 		) ec ON ec.content_id = ca.content_id
 		LEFT JOIN LATERAL (
@@ -530,6 +531,7 @@ const mistakeSelectColumns = `
 	ca.student_answer,
 	ca.student_steps,
 	ca.is_correct,
+	coalesce(ca.process_evaluation->>'status' = 'incorrect', false),
 	ca.score,
 	ca.submitted_at,
 	ca.time_spent_seconds,
@@ -663,6 +665,7 @@ func scanMistakeListRow(rows pgx.Rows) (mistakeapp.MistakeListRow, error) {
 		&attempt.StudentAnswer,
 		&studentStepsRaw,
 		&attempt.IsCorrect,
+		&attempt.ProcessIncorrect,
 		&attempt.Score,
 		&submittedAt,
 		&attempt.TimeSpentSeconds,
@@ -776,6 +779,7 @@ func scanMistake(scanner rowScanner) (mistakeapp.MistakeRow, error) {
 		&attempt.StudentAnswer,
 		&studentStepsRaw,
 		&attempt.IsCorrect,
+		&attempt.ProcessIncorrect,
 		&attempt.Score,
 		&submittedAt,
 		&attempt.TimeSpentSeconds,
@@ -843,6 +847,7 @@ func scanAttemptAndContent(scanner rowScanner, attempt *mistakeapp.Attempt, cont
 		&attempt.StudentAnswer,
 		&studentStepsRaw,
 		&attempt.IsCorrect,
+		&attempt.ProcessIncorrect,
 		&attempt.Score,
 		&submittedAt,
 		&attempt.TimeSpentSeconds,

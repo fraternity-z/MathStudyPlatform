@@ -83,7 +83,7 @@ type PortraitMetric struct {
 type PortraitTopic struct {
 	ConceptID         string                     `json:"concept_id"`
 	Name              string                     `json:"name"`
-	Mastery           float64                    `json:"mastery"`
+	Mastery           *float64                   `json:"mastery"`
 	ClassAverage      *float64                   `json:"class_average"`
 	ExceededPercent   *float64                   `json:"exceeded_percent"`
 	AttemptCount      int                        `json:"attempt_count"`
@@ -163,6 +163,13 @@ func (s *Service) GetPortraitInsights(ctx context.Context, userID string, rangeT
 	}
 	metrics := portraitMetrics(userID, studentIDs, personalActivity, comparisonActivity, inClass)
 	strengths, improvements, observations := portraitTopics(now, userID, studentIDs, states, nodeNames, inClass)
+	if reader, ok := s.repo.(learningfeedback.RecentReader); ok {
+		recent, err := reader.ReadRecentLearningFeedback(ctx, userID, now)
+		if err != nil {
+			return PortraitInsightsResponse{}, err
+		}
+		strengths, improvements, observations = mergeRecentPortraitTopics(strengths, improvements, observations, recent, nodeNames, now)
+	}
 	recommendations := improvements
 	if len(recommendations) == 0 {
 		recommendations = observations
@@ -354,10 +361,11 @@ func portraitTopics(now time.Time, userID string, studentIDs []string, states []
 		if !exists || name == "" {
 			continue
 		}
+		mastery := numutil.RoundPlaces(current.Mastery, 4)
 		topic := PortraitTopic{
 			ConceptID:       conceptID,
 			Name:            name,
-			Mastery:         numutil.RoundPlaces(current.Mastery, 4),
+			Mastery:         &mastery,
 			AttemptCount:    current.AttemptCount,
 			Confidence:      numutil.RoundPlaces(current.Confidence, 4),
 			ComparisonBasis: comparisonBasisUnavailable,
@@ -404,26 +412,26 @@ func portraitTopics(now time.Time, userID string, studentIDs []string, states []
 	}
 
 	sort.Slice(topics, func(i, j int) bool {
-		if topics[i].Mastery == topics[j].Mastery {
+		if *topics[i].Mastery == *topics[j].Mastery {
 			return topics[i].Name < topics[j].Name
 		}
-		return topics[i].Mastery > topics[j].Mastery
+		return *topics[i].Mastery > *topics[j].Mastery
 	})
 	strengths := make([]PortraitTopic, 0, 3)
 	for _, topic := range topics {
-		if topic.Mastery >= 0.75 && len(strengths) < 3 {
+		if *topic.Mastery >= 0.75 && len(strengths) < 3 {
 			strengths = append(strengths, topic)
 		}
 	}
 	sort.Slice(topics, func(i, j int) bool {
-		if topics[i].Mastery == topics[j].Mastery {
+		if *topics[i].Mastery == *topics[j].Mastery {
 			return topics[i].Name < topics[j].Name
 		}
-		return topics[i].Mastery < topics[j].Mastery
+		return *topics[i].Mastery < *topics[j].Mastery
 	})
 	improvements := make([]PortraitTopic, 0, 3)
 	for _, topic := range topics {
-		if topic.Mastery < 0.75 && len(improvements) < 3 {
+		if *topic.Mastery < 0.75 && len(improvements) < 3 {
 			improvements = append(improvements, topic)
 		}
 	}
@@ -437,4 +445,43 @@ func portraitTopics(now time.Time, userID string, studentIDs []string, states []
 		observations = observations[:3]
 	}
 	return strengths, improvements, observations
+}
+
+func mergeRecentPortraitTopics(strengths, improvements, observations []PortraitTopic, recent []learningfeedback.Snapshot, names map[string]string, now time.Time) ([]PortraitTopic, []PortraitTopic, []PortraitTopic) {
+	remove := func(topics []PortraitTopic, id string) []PortraitTopic {
+		result := make([]PortraitTopic, 0, len(topics))
+		for _, topic := range topics {
+			if topic.ConceptID != id {
+				result = append(result, topic)
+			}
+		}
+		return result
+	}
+	repairs := []PortraitTopic{}
+	for _, snapshot := range recent {
+		feedback := learningfeedback.Build(snapshot, now)
+		names[snapshot.ConceptID] = snapshot.Name
+		topic := PortraitTopic{ConceptID: snapshot.ConceptID, Name: snapshot.Name,
+			Mastery: feedback.EstimatedMastery, Confidence: feedback.Confidence,
+			AttemptCount: snapshot.LifetimeAttempts, ComparisonBasis: comparisonBasisUnavailable,
+			UnavailableReason: "学习证据不足，暂不提供班级比较", LearningFeedback: &feedback}
+		if feedback.Stage == "repair" {
+			strengths = remove(strengths, snapshot.ConceptID)
+			improvements = remove(improvements, snapshot.ConceptID)
+			observations = remove(observations, snapshot.ConceptID)
+			repairs = append(repairs, topic)
+			continue
+		}
+		found := false
+		for _, topics := range [][]PortraitTopic{strengths, improvements, observations} {
+			for _, existing := range topics {
+				found = found || existing.ConceptID == snapshot.ConceptID
+			}
+		}
+		if !found {
+			observations = append(observations, topic)
+		}
+	}
+	improvements = append(repairs, improvements...)
+	return strengths, improvements[:min(3, len(improvements))], observations[:min(3, len(observations))]
 }

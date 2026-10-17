@@ -47,7 +47,7 @@ func (r ExerciseRepository) CountIncorrectAttempts(ctx context.Context, studentI
 		FROM public.content_attempts
 		WHERE student_id = $1
 		  AND content_id = $2
-		  AND is_correct = false
+		  AND (is_correct = false OR process_evaluation->>'status' = 'incorrect')
 		  AND submitted_at IS NOT NULL`,
 		studentID,
 		contentID,

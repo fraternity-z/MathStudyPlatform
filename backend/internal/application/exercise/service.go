@@ -318,6 +318,7 @@ type MistakeRedoAttemptBinding struct {
 	ContentID             string
 	RedoOriginalAttemptID string
 	IsCorrect             bool
+	ProcessIncorrect      bool
 	IsSubmitted           bool
 	HasDiagnosis          bool
 	IsArchived            bool
@@ -1196,7 +1197,7 @@ func (s *Service) SubmitAnswer(ctx context.Context, userID string, request Submi
 			if bindingErr != nil {
 				return bindingErr
 			}
-			if !found || binding.ContentID != request.ExerciseID || binding.IsCorrect || !binding.IsSubmitted || !binding.HasDiagnosis || binding.IsArchived {
+			if !found || binding.ContentID != request.ExerciseID || (binding.IsCorrect && !binding.ProcessIncorrect) || !binding.IsSubmitted || !binding.HasDiagnosis || binding.IsArchived {
 				return ErrMistakeRecordArchived
 			}
 		}
@@ -1471,7 +1472,7 @@ func mistakeRedoSubmissionExerciseFromBinding(
 	ok bool,
 	exerciseID string,
 ) (Exercise, string, error) {
-	if !ok || binding.ContentID != exerciseID || binding.Exercise.ID != exerciseID || binding.IsCorrect || !binding.IsSubmitted || !binding.HasDiagnosis || binding.IsArchived {
+	if !ok || binding.ContentID != exerciseID || binding.Exercise.ID != exerciseID || (binding.IsCorrect && !binding.ProcessIncorrect) || !binding.IsSubmitted || !binding.HasDiagnosis || binding.IsArchived {
 		return Exercise{}, "", ErrMistakeRecordArchived
 	}
 	correctAnswer := strings.TrimSpace(metautil.String(binding.Exercise.Meta, "answer"))

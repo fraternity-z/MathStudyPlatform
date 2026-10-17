@@ -61,7 +61,7 @@ function comparisonText(metric: PortraitInsightMetric): string {
 }
 
 function TopicCard({ topic, tone }: { topic: PortraitInsightTopic; tone: 'success' | 'warning' }) {
-  const personal = Math.round(topic.mastery * 100);
+  const personal = topic.mastery == null ? null : Math.round(topic.mastery * 100);
   const classAverage = topic.class_average == null ? null : Math.round(topic.class_average * 100);
   const barColor = tone === 'success' ? 'bg-emerald-500' : 'bg-amber-500';
   return (
@@ -70,18 +70,18 @@ function TopicCard({ topic, tone }: { topic: PortraitInsightTopic; tone: 'succes
         <div>
           <p className="font-medium text-surface-900 dark:text-surface-100">{topic.name}</p>
           <p className="mt-1 text-xs text-surface-500 dark:text-surface-400">
-            {topic.attempt_count} 次练习 · 置信度 {Math.round(topic.confidence * 100)}%
+            {topic.attempt_count} 次有效测量 · 置信度 {Math.round(topic.confidence * 100)}%
           </p>
         </div>
-        <span className="text-lg font-semibold text-surface-900 dark:text-surface-100">{personal}%</span>
+        <span className="text-lg font-semibold text-surface-900 dark:text-surface-100">{personal == null ? '待验证' : `${personal}%`}</span>
       </div>
       <div className="space-y-2 text-xs">
         <div className="grid grid-cols-[3rem_1fr_2.5rem] items-center gap-2">
           <span className="text-surface-500">个人</span>
           <div className="h-2 overflow-hidden rounded-full bg-surface-100 dark:bg-surface-800">
-            <div className={`h-full rounded-full ${barColor}`} style={{ width: `${personal}%` }} />
+            {personal != null && <div className={`h-full rounded-full ${barColor}`} style={{ width: `${personal}%` }} />}
           </div>
-          <span className="text-right text-surface-600 dark:text-surface-300">{personal}%</span>
+          <span className="text-right text-surface-600 dark:text-surface-300">{personal == null ? '—' : `${personal}%`}</span>
         </div>
         <div className="grid grid-cols-[3rem_1fr_2.5rem] items-center gap-2">
           <span className="text-surface-500">{topic.comparison_basis === 'eligible_sample' ? '样本' : '班级'}</span>

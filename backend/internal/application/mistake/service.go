@@ -146,6 +146,7 @@ type Attempt struct {
 	StudentAnswer     string
 	StudentSteps      []string
 	IsCorrect         bool
+	ProcessIncorrect  bool
 	Score             float64
 	SubmittedAt       *time.Time
 	TimeSpentSeconds  int
@@ -244,9 +245,9 @@ type MistakeDiagnosis struct {
 
 // MistakeMastery stores mastery state for a mistake row.
 type MistakeMastery struct {
-	Current  float64 `json:"current"`
-	Previous float64 `json:"previous"`
-	Trend    string  `json:"trend"`
+	Current  float64  `json:"current"`
+	Previous *float64 `json:"previous"`
+	Trend    string   `json:"trend"`
 }
 
 // PaginationInfo stores page metadata.
@@ -433,8 +434,13 @@ func (s *Service) GetMistakes(ctx context.Context, userID string, query ListQuer
 	if err != nil {
 		return MistakeListResponse{}, err
 	}
+	history, err := s.masteryHistory(ctx, userID, contentsFromMistakeListRows(rows))
+	if err != nil {
+		return MistakeListResponse{}, err
+	}
 	for _, row := range rows {
 		responseItems = append(responseItems, toMistakeItem(listItemData{
+			masteryHistory:        history,
 			row:                   row.Row,
 			avgMastery:            row.AvgMastery,
 			errorCount:            row.ErrorCount,
@@ -608,7 +614,7 @@ func (s *Service) GetReviewExerciseByAttempt(ctx context.Context, userID string,
 	if err != nil {
 		return ReviewExerciseResponse{}, err
 	}
-	if !ok || row.Attempt.IsCorrect || row.Attempt.SubmittedAt == nil {
+	if !ok || (row.Attempt.IsCorrect && !row.Attempt.ProcessIncorrect) || row.Attempt.SubmittedAt == nil {
 		return ReviewExerciseResponse{}, ErrNotFound
 	}
 	task, hasTask, err := s.repo.GetReviewTaskByAttempt(ctx, userID, attemptID)
@@ -791,11 +797,7 @@ func toMistakeItem(item listItemData) MistakeItem {
 			Suggestion:      row.Diagnosis.Suggestion,
 			RelatedConcepts: sliceutil.CloneStrings(row.Diagnosis.RelatedConceptIDs),
 		},
-		Mastery: MistakeMastery{
-			Current:  item.avgMastery,
-			Previous: item.avgMastery,
-			Trend:    masteryTrend(item.avgMastery),
-		},
+		Mastery:               measuredMastery(row.Content.ConceptIDs, item.avgMastery, item.masteryHistory),
 		ErrorCount:            item.errorCount,
 		LastReviewedAt:        optionalAttemptTimestamp(item.lastReviewedAt),
 		CanReview:             true,
@@ -1036,16 +1038,6 @@ func masteryValue(conceptID string, mastery map[string]float64) float64 {
 	return value
 }
 
-func masteryTrend(avgMastery float64) string {
-	if avgMastery < 0.4 {
-		return "declining"
-	}
-	if avgMastery >= 0.7 {
-		return "improving"
-	}
-	return "stable"
-}
-
 func countWeakConcepts(mastery map[string]float64) int {
 	total := 0
 	for _, value := range mastery {
@@ -1074,6 +1066,7 @@ func nonEmpty(value string, fallback string) string {
 }
 
 type listItemData struct {
+	masteryHistory        map[string]MasteryHistory
 	row                   MistakeRow
 	avgMastery            float64
 	errorCount            int

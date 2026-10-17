@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -702,51 +703,25 @@ func (s exerciseMathSolver) CheckAnswer(ctx context.Context, input exerciseapp.A
 	if s.agent == nil {
 		return exerciseapp.AnswerCheckResult{}, errors.New("eino math solver agent is not configured")
 	}
-	output, err := s.agent.Generate(ctx, sessionapp.ChatAgentInput{
-		Message: mathSolverPrompt(input),
-	})
-	if err != nil {
-		return exerciseapp.AnswerCheckResult{}, err
-	}
-	result, err := parseAnswerCheckJSON(output.Content)
-	if err != nil {
-		return exerciseapp.AnswerCheckResult{}, fmt.Errorf("%w: %v", exerciseapp.ErrMathSolverInvalidResult, err)
-	}
-	return result, nil
+	return generateSolverJSON(ctx, s.agent, "answer_check", mathSolverPrompt(input), parseAnswerCheckJSON)
 }
 
 func (s exerciseMathSolver) Solve(ctx context.Context, input exerciseapp.SolutionInput) (exerciseapp.SolutionResult, error) {
 	if s.agent == nil {
 		return exerciseapp.SolutionResult{}, errors.New("eino math solver agent is not configured")
 	}
-	output, err := s.agent.Generate(ctx, sessionapp.ChatAgentInput{
-		Message: mathSolutionPrompt(input),
-	})
-	if err != nil {
-		return exerciseapp.SolutionResult{}, err
-	}
-	result, err := parseSolutionJSON(output.Content)
-	if err != nil {
-		return exerciseapp.SolutionResult{}, fmt.Errorf("%w: %v", exerciseapp.ErrMathSolverInvalidResult, err)
-	}
-	return result, nil
+	return generateSolverJSON(ctx, s.agent, "solution_generation", mathSolutionPrompt(input), parseSolutionJSON)
 }
 
 func (s exerciseMathSolver) VerifySolution(ctx context.Context, input exerciseapp.SolutionVerificationInput) (exerciseapp.AnswerCheckResult, error) {
 	if s.agent == nil {
 		return exerciseapp.AnswerCheckResult{}, errors.New("eino math solver agent is not configured")
 	}
-	output, err := s.agent.Generate(ctx, sessionapp.ChatAgentInput{
-		Message: mathSolutionVerificationPrompt(input),
-	})
-	if err != nil {
-		return exerciseapp.AnswerCheckResult{}, err
+	stage := "solution_verification"
+	if input.StepsOnly {
+		stage = "process_evaluation"
 	}
-	result, err := parseSolutionVerificationJSON(output.Content)
-	if err != nil {
-		return exerciseapp.AnswerCheckResult{}, fmt.Errorf("%w: %v", exerciseapp.ErrMathSolverInvalidResult, err)
-	}
-	return result, nil
+	return generateSolverJSON(ctx, s.agent, stage, mathSolutionVerificationPrompt(input), parseSolutionVerificationJSON)
 }
 
 type questionParser struct {
@@ -777,14 +752,23 @@ func (g exerciseQuestionGenerator) GenerateQuestion(ctx context.Context, input e
 	if err := validateGenerationInput(input); err != nil {
 		return exerciseapp.GeneratedQuestion{}, err
 	}
+	started, outcome := time.Now(), "success"
+	defer func() {
+		slog.InfoContext(ctx, "exercise model stage", "stage", "question_generation", "duration_ms", time.Since(started).Milliseconds(), "outcome", outcome)
+	}()
 	output, err := g.agent.Generate(ctx, sessionapp.ChatAgentInput{
 		Message: questionGeneratorPrompt(input),
 	})
 	if err != nil {
+		outcome = "upstream_error"
+		if ctx.Err() != nil {
+			outcome = "cancelled_or_timeout"
+		}
 		return exerciseapp.GeneratedQuestion{}, err
 	}
 	question, err := parseGeneratedQuestionJSON(output.Content)
 	if err != nil {
+		outcome = "invalid_response"
 		return exerciseapp.GeneratedQuestion{}, fmt.Errorf("%w: %v", exerciseapp.ErrGeneratedContentInvalid, err)
 	}
 	question.Difficulty = input.Difficulty

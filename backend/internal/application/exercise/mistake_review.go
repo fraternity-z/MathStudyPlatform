@@ -13,6 +13,10 @@ const (
 	mistakeReviewSuccessTarget   = 3
 )
 
+func (attempt AttemptRecord) needsReview() bool {
+	return !attempt.IsCorrect || attempt.ProcessEvaluation.Status == "incorrect"
+}
+
 // MistakeReviewTask is the exercise-side state needed to update one review plan atomically.
 type MistakeReviewTask struct {
 	ID                       string
@@ -78,7 +82,7 @@ func (s *Service) updateMistakeReviewTask(
 		}
 	}
 	if !found {
-		if attempt.IsCorrect {
+		if !attempt.needsReview() {
 			return 0, nil
 		}
 		errorCount, err := repo.CountIncorrectAttempts(ctx, attempt.StudentID, attempt.ContentID)
@@ -97,7 +101,7 @@ func (s *Service) updateMistakeReviewTask(
 		task.DailyAssignmentID == attempt.DailyAssignmentID &&
 		(!boundTask || task.DailyCorrectionAvailable)
 	countAsReview := scheduledReview || dailyCorrection
-	if attempt.IsCorrect && !countAsReview && !boundTask {
+	if !attempt.needsReview() && !countAsReview && !boundTask {
 		return task.Revision, nil
 	}
 	updated := applyMistakeReviewOutcome(task, attempt, attemptExercise, now, countAsReview, boundTask)
@@ -138,7 +142,7 @@ func applyMistakeReviewOutcome(
 	boundTask bool,
 ) MistakeReviewTask {
 	task.Revision++
-	task.LastOutcome = boolPointer(attempt.IsCorrect)
+	task.LastOutcome = boolPointer(!attempt.needsReview())
 	task.UpdatedAt = now
 	if boundTask || countAsReview {
 		task.LastReviewAttemptID = attempt.ID
@@ -149,7 +153,7 @@ func applyMistakeReviewOutcome(
 	}
 	// Keep the submitted review accessible without treating an unverified
 	// process as success. A fresh exposure must wait before another due review.
-	if attempt.IsCorrect && !attempt.ProcessEvaluation.permitsMastery() {
+	if !attempt.needsReview() && !attempt.ProcessEvaluation.permitsMastery() {
 		task.LastOutcome = nil
 		if countAsReview {
 			task.DueAt = timePointer(now.Add(24 * time.Hour))
@@ -157,7 +161,7 @@ func applyMistakeReviewOutcome(
 		return task
 	}
 
-	if !attempt.IsCorrect {
+	if attempt.needsReview() {
 		if !boundTask && !countAsReview {
 			task.LastReviewAttemptID = ""
 			task.LastReviewedAt = nil

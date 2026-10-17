@@ -11,6 +11,7 @@ import (
 
 	"mathstudy/backend/internal/application/masteryprojection"
 	"mathstudy/backend/internal/platform/numutil"
+	"mathstudy/backend/internal/platform/questiondedupe"
 )
 
 const (
@@ -24,6 +25,11 @@ const (
 // Reader supplies student-owned, immutable assessment facts in one snapshot.
 type Reader interface {
 	ReadLearningFeedback(context.Context, string, []string, time.Time) (map[string]Snapshot, error)
+}
+
+// RecentReader includes concepts with assessment evidence even before a DKT measurement exists.
+type RecentReader interface {
+	ReadRecentLearningFeedback(context.Context, string, time.Time) ([]Snapshot, error)
 }
 
 type Attempt struct {
@@ -104,7 +110,7 @@ func Build(snapshot Snapshot, now time.Time) Feedback {
 	// after a hinted or incorrect answer must not turn that body into a new test.
 	firstBodyAttempt := map[string]string{}
 	for index := len(attempts) - 1; index >= 0; index-- {
-		body := strings.Join(strings.Fields(strings.ToLower(attempts[index].Body)), "")
+		body := evidenceBodyKey(attempts[index].Body)
 		if _, exists := firstBodyAttempt[body]; !exists {
 			firstBodyAttempt[body] = attempts[index].ID
 		}
@@ -116,7 +122,7 @@ func Build(snapshot Snapshot, now time.Time) Feedback {
 				errors[kind]++
 			}
 		}
-		body := strings.Join(strings.Fields(strings.ToLower(attempt.Body)), "")
+		body := evidenceBodyKey(attempt.Body)
 		if !attempt.FirstAttempt || attempt.ContentID == "" || body == "" || seenContent[attempt.ContentID] || firstBodyAttempt[body] != attempt.ID {
 			continue
 		}
@@ -175,18 +181,18 @@ func Build(snapshot Snapshot, now time.Time) Feedback {
 	if len(independent) > 0 {
 		lastEvidenceAt = &independent[0].SubmittedAt
 	}
-	if lastEvidenceAt != nil && !lastEvidenceAt.After(now) && now.Sub(*lastEvidenceAt) >= 7*24*time.Hour && snapshot.LifetimeAttempts > 0 {
-		f.Stage, f.Label = "retention", "检验保持"
-		f.Reason = "至少7天没有新的首答证据，需要用新题复核当前表现。"
-		f.NextStep = "先独立完成一道不同情境的基础题，不提前查看提示或解析。"
-		f.SuccessCriterion = "首次作答正确后再增加难度；答错则回到对应错因练习。"
-		return f
-	}
 	if (len(attempts) > 0 && (!attempts[0].Correct || attempts[0].ProcessStatus == "incorrect")) || (f.RecentAccuracy != nil && len(independent) >= 3 && *f.RecentAccuracy < 0.6) {
 		f.Stage, f.Label = "repair", "针对错因巩固"
 		f.Reason = "最近作答仍有错误，先修复关键步骤，再验证迁移。"
 		f.NextStep = repairInstruction(f.DominantError)
 		f.SuccessCriterion = "连续独立做对不同新题后，再间隔至少24小时检验。"
+		return f
+	}
+	if lastEvidenceAt != nil && !lastEvidenceAt.After(now) && now.Sub(*lastEvidenceAt) >= 7*24*time.Hour && snapshot.LifetimeAttempts > 0 {
+		f.Stage, f.Label = "retention", "检验保持"
+		f.Reason = "至少7天没有新的首答证据，需要用新题复核当前表现。"
+		f.NextStep = "先独立完成一道不同情境的基础题，不提前查看提示或解析。"
+		f.SuccessCriterion = "首次作答正确后再增加难度；答错则回到对应错因练习。"
 		return f
 	}
 	if len(independent) < 3 {
@@ -218,6 +224,14 @@ func Build(snapshot Snapshot, now time.Time) Feedback {
 		}
 	}
 	return f
+}
+
+// evidenceBodyKey shares the conservative equivalence rules used at submission.
+func evidenceBodyKey(body string) string {
+	if key := questiondedupe.DerivativeKey(body); key != "" {
+		return key
+	}
+	return strings.Join(strings.Fields(strings.ToLower(body)), "")
 }
 
 // AvoidBodies gives generators a bounded history without answers or student text.

@@ -10,6 +10,7 @@ import (
 // solution and generated hints deliberately never cross this boundary.
 type TutorExercise struct {
 	ID                  string   `json:"id"`
+	Source              string   `json:"source"`
 	Title               string   `json:"title"`
 	Content             string   `json:"content"`
 	Options             []string `json:"options"`
@@ -22,15 +23,12 @@ func (s *Service) GetTutorExercise(ctx context.Context, studentID, exerciseID st
 	if err != nil {
 		return TutorExercise{}, err
 	}
-	if exerciseSource(question) != "ai_generated" {
-		return TutorExercise{}, ErrNotFound
-	}
 	submitted, err := s.repo.HasSubmittedAttempt(ctx, studentID, exerciseID)
 	if err != nil {
 		return TutorExercise{}, err
 	}
 	return TutorExercise{
-		ID: question.ID, Title: question.Title, Content: question.Body,
+		ID: question.ID, Source: exerciseSource(question), Title: question.Title, Content: question.Body,
 		Options:             metautil.StringSlice(question.Meta, "options"),
 		KnowledgePointNames: metautil.StringSlice(question.Meta, "knowledge_point_names"),
 		Submitted:           submitted,

@@ -45,6 +45,7 @@ export type ExerciseErrorSource = 'load' | 'generation' | 'submission';
 export interface ExerciseAnswerSubmission {
   answerText?: string;
   answerImage?: File | null;
+  answerSteps?: string[];
 }
 
 export interface ExerciseViewModelOptions {
@@ -446,6 +447,7 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
         difficulty,
         questionType,
       }, controller.signal);
+      if (controller.signal.aborted || generationControllerRef.current !== controller) return;
       questionVersionRef.current += 1;
       pendingBoundSubmissionRef.current = null;
       setCurrentQuestion(question);
@@ -466,19 +468,33 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
       setErrorSource('generation');
       exerciseLogger.error('Failed to generate question', { error: err });
     } finally {
-      generationInFlightRef.current = false;
       if (generationControllerRef.current === controller) {
+        generationInFlightRef.current = false;
         generationControllerRef.current = null;
         setIsGenerating(false);
       }
     }
   }, []);
 
+  const cancelGeneration = useCallback(() => {
+    generationControllerRef.current?.abort();
+    generationControllerRef.current = null;
+    generationInFlightRef.current = false;
+    setIsGenerating(false);
+  }, []);
+
   const submitAnswer = useCallback(
-    async ({ answerText, answerImage }: ExerciseAnswerSubmission) => {
+    async ({ answerText, answerImage, answerSteps }: ExerciseAnswerSubmission) => {
       if (!currentQuestion || submissionInFlightRef.current || generationInFlightRef.current) return;
 
       const normalizedAnswer = answerText?.trim() ?? '';
+      const normalizedSteps = (answerSteps ?? []).map((step) => step.trim()).filter(Boolean);
+      if (normalizedSteps.length > 20 || normalizedSteps.some((step) => new TextEncoder().encode(step).length > 5000)) {
+        setError(makeUiError('关键步骤最多20行，请精简过长的单行内容后提交'));
+        setErrorType('invalid_answer');
+        setErrorSource('submission');
+        return;
+      }
       if (!normalizedAnswer && !answerImage) {
         setError(makeUiError('请输入答案或上传答案图片'));
         setErrorType('invalid_answer');
@@ -496,9 +512,10 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
         reviewTaskRevision?.toString() ?? '',
         originalAttemptId ?? '',
       ].join('\u0000');
-      const submissionSignature = normalizedAnswer
+      const answerSignature = normalizedAnswer
         ? `${submissionBinding}\u0000${submittedQuestion.id}\u0000text\u0000${normalizedAnswer}`
         : `${submissionBinding}\u0000${submittedQuestion.id}\u0000image`;
+      const submissionSignature = `${answerSignature}\u0000${JSON.stringify(normalizedSteps)}`;
       const currentPending = pendingBoundSubmissionRef.current;
       const matchesPending = currentPending?.signature === submissionSignature
         && (normalizedAnswer !== '' || currentPending.answerImage === answerImage)
@@ -560,6 +577,7 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
           ...(reviewTaskRevision !== undefined ? { reviewTaskRevision } : {}),
           ...(originalAttemptId ? { originalAttemptId } : {}),
           submissionId: pendingBoundSubmission.submissionId,
+          ...(normalizedSteps.length > 0 ? { answerSteps: normalizedSteps } : {}),
           ...(normalizedAnswer ? { answerText: normalizedAnswer } : {}),
           ...(answerImageUrl ? { answerImageUrl } : {}),
           timeSpentSeconds,
@@ -686,6 +704,7 @@ export function useExerciseViewModel(options: ExerciseViewModelOptions = {}) {
     currentQuestion,
     isLoading,
     isGenerating,
+    cancelGeneration,
     isSubmitting: submitPhase !== 'idle',
     submitPhase,
     submitResult,

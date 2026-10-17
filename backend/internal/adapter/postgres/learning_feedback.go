@@ -42,6 +42,46 @@ func (r Repository) ReadLearningFeedback(ctx context.Context, userID string, con
 	return result, rows.Err()
 }
 
+func (r Repository) ReadRecentLearningFeedback(ctx context.Context, userID string, asOf time.Time) ([]learningfeedback.Snapshot, error) {
+	rows, err := r.DB().Query(ctx, `SELECT concept.id
+		FROM public.content_attempts ca
+		CROSS JOIN LATERAL jsonb_array_elements_text(CASE
+			WHEN jsonb_typeof(ca.review_question_concept_ids::jsonb) = 'array' THEN ca.review_question_concept_ids::jsonb
+			ELSE '[]'::jsonb END) concept(id)
+		WHERE ca.student_id = $1 AND ca.submitted_at <= $2
+			AND ca.submitted_at >= $2::timestamp - interval '30 days'
+		GROUP BY concept.id
+		ORDER BY max(ca.submitted_at) DESC, concept.id
+		LIMIT 6`, userID, asOf.UTC())
+	if err != nil {
+		return nil, err
+	}
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	snapshots, err := r.ReadLearningFeedback(ctx, userID, ids, asOf)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]learningfeedback.Snapshot, 0, len(ids))
+	for _, id := range ids {
+		if snapshot, ok := snapshots[id]; ok {
+			result = append(result, snapshot)
+		}
+	}
+	return result, nil
+}
+
 const learningFeedbackQuery = `
 SELECT json_build_object(
 	'concept_id', kn.id, 'name', kn.name,

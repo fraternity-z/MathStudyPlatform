@@ -27,3 +27,4 @@
 | [2026-07-17 全仓代码与性能优化审计](performance/code-performance-optimization-audit-2026-07-17.md) | 记录静态审查、覆盖率、微基准和前端包体基线；当前行动项已同步到 TODO |
 | [2026-10-08 学生学习反馈验收](quality/learning-feedback-evaluation-2026-10-08.md) | 合成教学数据、真实模型样本、画像与练习反馈改进，以及验收边界 |
 | [2026-10-08 提示证据验收](quality/hint-evidence-evaluation-2026-10-08.md) | 提示辅助与独立验证分离、提交快照、迁移及并发验收 |
+| [2026-10-16 学生学习反馈评估](quality/student-feedback-evaluation-2026-10-16.md) | 真实模型与浏览器闭环、合成学生场景，以及重复答题、时长、提示和过程证据问题；当前行动项见 TODO |

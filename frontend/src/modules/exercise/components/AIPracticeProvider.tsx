@@ -9,6 +9,7 @@ import type { ExerciseAnswerDraft } from './ExercisePanel';
 
 const emptyAnswerDraft: ExerciseAnswerDraft = {
   answer: '',
+  steps: '',
   answerImage: null,
   submittedWithImage: false,
   lastSubmission: null,
@@ -18,6 +19,8 @@ function AIPracticeSession({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<ExerciseMode>('class');
   const { pathname } = useLocation();
   const exercise = useExerciseViewModel({ active: pathname === '/exercise' && mode === 'ai' });
+  const classExercise = useExerciseViewModel({ active: pathname === '/exercise' && mode === 'class' });
+  const [classDraft, setClassDraft] = useState<{ questionId: string; answer: ExerciseAnswerDraft } | null>(null);
   const [selectedConceptId, setSelectedConceptId] = useState('');
   const [difficulty, setDifficulty] = useState(0.5);
   const [questionType, setQuestionType] = useState<GenerateQuestionType>('multiple_choice');
@@ -29,6 +32,11 @@ function AIPracticeSession({ children }: { children: ReactNode }) {
   return (
     <AIPracticeContext.Provider value={{
       exercise,
+      classExercise,
+      classAnswerDraft: classDraft && classDraft.questionId === classExercise.currentQuestion?.id ? classDraft.answer : emptyAnswerDraft,
+      setClassAnswerDraft: (answer) => {
+        if (classExercise.currentQuestion) setClassDraft({ questionId: classExercise.currentQuestion.id, answer });
+      },
       mode,
       setMode,
       selectedConceptId,

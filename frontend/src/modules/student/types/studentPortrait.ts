@@ -51,7 +51,7 @@ export interface PortraitInsightTopic {
   learning_feedback?: LearningFeedback;
   concept_id: string;
   name: string;
-  mastery: number;
+  mastery: number | null;
   class_average: number | null;
   exceeded_percent: number | null;
   attempt_count: number;

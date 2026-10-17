@@ -53,6 +53,7 @@ __pycache__/
 # 本地运行、构建和安全测试产物
 output/
 uploads-test/
+.playwright-cli/
 
 # 临时测试源码（本地验证后删除，不提交）
 **/*_test.go

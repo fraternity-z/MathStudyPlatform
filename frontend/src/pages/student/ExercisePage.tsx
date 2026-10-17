@@ -3,7 +3,6 @@ import { Link, useSearchParams } from 'react-router-dom';
 import {
   AIPracticeConfigurator,
   ExercisePanel,
-  useExerciseViewModel,
 } from '@/modules/exercise';
 import { useAIPractice, type ExerciseMode } from '@/modules/exercise/provider';
 import { ExerciseHintButton } from '@/modules/exercise/tutor';
@@ -16,8 +15,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs';
 import {
   Bot,
   GraduationCap,
-  MessageCircle,
-  Sparkles,
   Users,
   WandSparkles,
 } from 'lucide-react';
@@ -55,6 +52,8 @@ export const ExercisePage: React.FC = () => {
   const requestedMode = searchParams.get('mode');
   const {
     exercise: aiExercise,
+    classExercise,
+    classAnswerDraft, setClassAnswerDraft,
     mode, setMode,
     selectedConceptId, setSelectedConceptId,
     difficulty, setDifficulty,
@@ -89,10 +88,11 @@ export const ExercisePage: React.FC = () => {
     loadNextQuestion: loadNextClassQuestion,
     submitAnswer: submitClassAnswer,
     loadSolution: loadClassSolution,
-  } = useExerciseViewModel({ active: mode === 'class' });
+  } = classExercise;
   const {
     currentQuestion: aiQuestion,
     isGenerating,
+    cancelGeneration,
     isSubmitting: isAISubmitting,
     submitPhase: aiSubmitPhase,
     submitResult: aiSubmitResult,
@@ -117,8 +117,8 @@ export const ExercisePage: React.FC = () => {
   const [dailyStatusError, setDailyStatusError] = useState<AppError | null>(null);
 
   useEffect(() => {
-    void loadNextClassQuestion();
-  }, [loadNextClassQuestion]);
+    if (!classQuestion) void loadNextClassQuestion();
+  }, [classQuestion, loadNextClassQuestion]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -319,6 +319,8 @@ export const ExercisePage: React.FC = () => {
                   onNextQuestion={loadNextClassQuestion}
                   submitAnswer={submitClassAnswer}
                   onLoadSolution={loadClassSolution}
+                  answerDraft={classAnswerDraft}
+                  onAnswerDraftChange={setClassAnswerDraft}
                 />
               </TabsContent>
 
@@ -337,6 +339,7 @@ export const ExercisePage: React.FC = () => {
                   onDifficultyChange={setDifficulty}
                   onQuestionTypeChange={setQuestionType}
                   onGenerate={generateQuestion}
+                  onCancelGeneration={cancelGeneration}
                   onRetryKnowledge={retryKnowledgeLoad}
                 />
                 {aiQuestion ? (
@@ -384,15 +387,7 @@ export const ExercisePage: React.FC = () => {
                 <p className="text-sm leading-6 text-surface-600 dark:text-surface-400">
                   {activeTutor.description}
                 </p>
-                {activeQuestion && mode === 'ai' ? <ExerciseHintButton key={activeQuestion.id} exerciseId={activeQuestion.id} /> : activeQuestion ? <a
-                  href={`/session/new?exercise_id=${encodeURIComponent(activeQuestion.id)}`}
-                  target="_blank" rel="noopener noreferrer"
-                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-white"
-                >
-                  <MessageCircle className="h-4 w-4" />
-                  给点提示（新页面）
-                  <Sparkles className="h-4 w-4 opacity-75" />
-                </a> : <Button disabled className="w-full">出题后可请求提示</Button>}
+                {activeQuestion ? <ExerciseHintButton key={activeQuestion.id} exerciseId={activeQuestion.id} /> : <Button disabled className="w-full">出题后可请求提示</Button>}
                 {activeQuestion && <Link
                   to={`/session/new?${new URLSearchParams({ mode: 'study', topic: activeQuestion.knowledgePointNames[0] || activeQuestion.title })}`} target="_blank" rel="noopener noreferrer"
                   className="block text-center text-sm text-primary-600 underline"

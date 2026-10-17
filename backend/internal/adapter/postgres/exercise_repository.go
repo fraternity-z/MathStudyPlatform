@@ -332,6 +332,7 @@ func (r ExerciseRepository) GetMistakeRedoAttemptBinding(
 		SELECT ca.content_id,
 		       coalesce(ca.mistake_redo_original_attempt_id, ''),
 		       ca.is_correct,
+		       coalesce(ca.process_evaluation->>'status' = 'incorrect', false),
 		       ca.submitted_at IS NOT NULL,
 		       EXISTS (
 		           SELECT 1
@@ -370,6 +371,7 @@ func (r ExerciseRepository) GetMistakeRedoAttemptBinding(
 		&binding.ContentID,
 		&binding.RedoOriginalAttemptID,
 		&binding.IsCorrect,
+		&binding.ProcessIncorrect,
 		&binding.IsSubmitted,
 		&binding.HasDiagnosis,
 		&binding.IsArchived,

@@ -46,8 +46,8 @@ export interface MistakeDiagnosis {
 
 export interface MistakeMastery {
   current: number;
-  previous: number;
-  trend: 'improving' | 'declining' | 'stable';
+  previous: number | null;
+  trend: 'improving' | 'declining' | 'stable' | 'unknown';
 }
 
 export interface MistakeRecord {
@@ -313,8 +313,8 @@ interface MistakeListResponseRaw {
     };
     mastery: {
       current: number;
-      previous: number;
-      trend: 'improving' | 'declining' | 'stable';
+      previous: number | null;
+      trend: 'improving' | 'declining' | 'stable' | 'unknown';
     };
     error_count: number;
     last_reviewed_at: string | null;
@@ -477,7 +477,7 @@ interface ReviewTaskListResponseRaw {
     };
     mastery: {
       current: number;
-      previous: number;
+      previous: number | null;
       trend: MistakeMastery['trend'];
     };
   }>;

@@ -32,6 +32,7 @@ export interface AIPracticeConfiguratorProps {
   onDifficultyChange: (difficulty: number) => void;
   onQuestionTypeChange: (questionType: GenerateQuestionType) => void;
   onGenerate: () => void | Promise<void>;
+  onCancelGeneration?: () => void;
   onRetryKnowledge?: () => void | Promise<void>;
 }
 
@@ -49,6 +50,7 @@ export const AIPracticeConfigurator: FC<AIPracticeConfiguratorProps> = ({
   onDifficultyChange,
   onQuestionTypeChange,
   onGenerate,
+  onCancelGeneration,
   onRetryKnowledge,
 }) => {
   const hasKnowledgeOptions = knowledgeOptions.length > 0;
@@ -137,12 +139,21 @@ export const AIPracticeConfigurator: FC<AIPracticeConfiguratorProps> = ({
             ))}
           {canRetryKnowledge
             ? '重试加载'
+            : isGenerating
+              ? '生成并校验中'
             : isLoadingKnowledge
               ? '加载知识点'
               : hasQuestion
                 ? '重新生成'
                 : '生成题目'}
         </Button>
+
+        {isGenerating && (
+          <div role="status" className="flex flex-wrap items-center gap-3 text-sm text-surface-500 sm:col-span-4">
+            <span>正在生成题目并独立验算，请稍候。</span>
+            {onCancelGeneration && <Button type="button" variant="outline" size="sm" onClick={onCancelGeneration}>取消生成</Button>}
+          </div>
+        )}
 
         {error ? (
           typeof error === 'string' ? (

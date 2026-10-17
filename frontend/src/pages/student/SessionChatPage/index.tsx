@@ -771,7 +771,7 @@ export const SessionChatPage: React.FC = () => {
         <div className="flex min-w-0 flex-1 flex-col">
           {/* 顶部栏 + 同一行的模式选择器 */}
           <ChatHeader
-            title={boundTutor ? boundTutor.exercise.title || 'AI 练习题' : undefined}
+            title={boundTutor ? boundTutor.exercise.title || '习题辅导' : undefined}
             currentMode={currentModeConfig}
             sidebarOpen={sidebarOpen}
             onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
@@ -799,14 +799,14 @@ export const SessionChatPage: React.FC = () => {
           {tutorError && <div role="alert" className="shrink-0 border-b border-surface-200 px-4 py-3 text-sm dark:border-surface-700">
             {tutorError.message}
             <button type="button" className="ml-2 text-primary-600 underline" onClick={refreshTutor}>重试</button>
-            <button type="button" className="ml-2 text-primary-600 underline" onClick={() => navigate('/exercise?mode=ai')}>返回练习</button>
+            <button type="button" className="ml-2 text-primary-600 underline" onClick={() => navigate('/exercise')}>返回练习</button>
           </div>}
           {boundTutor && <div className="shrink-0 border-b border-surface-200 px-4 py-3 text-sm dark:border-surface-700">
             <div className="flex items-center justify-between gap-3">
-              <span className="min-w-0 truncate">当前辅导：{boundTutor.exercise.title || 'AI 练习题'}</span>
+              <span className="min-w-0 truncate">当前辅导：{boundTutor.exercise.title || '习题辅导'}</span>
               <div className="flex shrink-0 gap-3">
                 <button type="button" className="text-primary-600 underline" onClick={() => messagesContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}>查看题目</button>
-                <button type="button" className="text-primary-600 underline" onClick={() => navigate('/exercise?mode=ai')}>返回练习</button>
+                <button type="button" className="text-primary-600 underline" onClick={() => navigate(`/exercise?mode=${boundTutor.exercise.source === 'class' ? 'class' : 'ai'}`)}>返回练习</button>
               </div>
             </div>
             <p className="mt-1 text-surface-500">先给一个切入点，你可以继续追问。正式作答和解析请回练习页完成。</p>
